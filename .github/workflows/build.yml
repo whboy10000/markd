@@ -18,7 +18,7 @@ jobs:
     name: Test (ubuntu)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
@@ -45,7 +45,7 @@ jobs:
           - os: windows-latest
             artifact: markd-windows
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -161,7 +161,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # checkout 会执行 git clean，必须放在下载产物之前，否则会把 out/ 清掉
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           path: dist
