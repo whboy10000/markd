@@ -22,8 +22,10 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev \
-            libxcb-xfixes0-dev libxrandr-dev libxi-dev libgl1-mesa-dev libegl1-mesa-dev \
+          sudo apt-get install -y \
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxcursor-dev libxinerama-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-icccm4-dev \
+            libxcb-keysyms1-dev libxrandr-dev libxi-dev libgl1-mesa-dev libegl1-mesa-dev \
             libwayland-dev libgtk-3-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -51,8 +53,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev \
-            libxcb-xfixes0-dev libxrandr-dev libxi-dev libgl1-mesa-dev libegl1-mesa-dev \
+          sudo apt-get install -y \
+            libxkbcommon-dev libxkbcommon-x11-dev libx11-dev libxcursor-dev libxinerama-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxcb-icccm4-dev \
+            libxcb-keysyms1-dev libxrandr-dev libxi-dev libgl1-mesa-dev libegl1-mesa-dev \
             libwayland-dev libgtk-3-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -66,9 +70,13 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Release
-    if: startsWith(github.ref, 'refs/tags/')
+    name: Publish release
     needs: build
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/master' ||
+       github.ref == 'refs/heads/main' ||
+       startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -81,7 +89,40 @@ jobs:
             name="${d%/}"
             (cd "$name" && zip -r "../$name.zip" .)
           done
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.zip
-          generate_release_notes: true
+          ls -lh .
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "rolling=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+            echo "rolling=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish rolling latest release
+        if: steps.tag.outputs.rolling == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          cat > notes.md <<EOF
+          自动构建 ${GITHUB_SHA:0:7}（${GITHUB_REF_NAME}）
+
+          - markd-macos.zip / markd-linux.zip / markd-windows.zip
+          - macOS 首次运行若提示「无法验证开发者」，执行： xattr -d com.apple.quarantine ./markd
+          EOF
+          gh release create latest dist/*.zip \
+            --target "${GITHUB_SHA}" \
+            --title "Latest build" \
+            --notes-file notes.md \
+            --latest
+      - name: Publish tagged release
+        if: steps.tag.outputs.rolling == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" dist/*.zip \
+            --title "${{ steps.tag.outputs.tag }}" \
+            --generate-notes \
+            --verify-tag

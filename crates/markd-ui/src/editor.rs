@@ -507,5 +507,54 @@ mod tests {
             "滚动请求应被 show_editor 消费，否则点大纲不会滚动"
         );
     }
+
+    /// 性能基准（打印耗时）：10 万字级别的文档，看各环节开销。
+    #[test]
+    fn bench_large_doc() {
+        use std::time::Instant;
+        let para = "这是一段用于性能测试的正文，包含 **加粗**、*斜体*、`行内代码` 和 [链接](https://example.com) 以及中文标点。".repeat(3);
+        let mut text = String::new();
+        for i in 0..300 {
+            if i % 20 == 0 {
+                text.push_str(&format!("## 标题 {i}\n\n"));
+            }
+            text.push_str(&para);
+            text.push_str("\n\n");
+        }
+        println!("[bench] chars = {}", text.chars().count());
+
+        let t = Instant::now();
+        let blocks = crate::ast::parse(&text);
+        println!("[bench] parse = {:?}, blocks = {}", t.elapsed(), blocks.len());
+
+        let mut doc = Document::new(&text, None);
+        let t = Instant::now();
+        let _ = doc.stats();
+        println!("[bench] stats = {:?}", t.elapsed());
+        let t = Instant::now();
+        let _ = doc.outline();
+        println!("[bench] outline = {:?}", t.elapsed());
+
+        let t = Instant::now();
+        doc.edit_block(5, "改了一下的段落");
+        println!("[bench] edit_block = {:?}", t.elapsed());
+
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut state = EditorState::default();
+        let outline = doc.outline();
+        for i in 0..4 {
+            let t = Instant::now();
+            frame(1000.0, |ui| {
+                let ctx = ui.ctx().clone();
+                let _ = show_editor(
+                    ui, &mut doc, &mut state, &theme, &ctx, &mut images, None, &outline,
+                    false, false, false, &mut actions,
+                );
+            });
+            println!("[bench] editor frame {i} = {:?}", t.elapsed());
+        }
+    }
 }
 

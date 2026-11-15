@@ -8,7 +8,16 @@ edition = "2024"
 
 [workspace.dependencies]
 egui = "0.37.0"
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "clipboard", "links"] }
+# 注意：关掉 default-features 后必须显式开启 x11 / wayland，否则 Linux 上 winit 会报
+# "The platform you're compiling for is not supported by winit"。
+eframe = { version = "0.37.0", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "clipboard",
+    "links",
+    "x11",
+    "wayland",
+] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 muda = "0.21.2"
 rfd = "0.18.0"
