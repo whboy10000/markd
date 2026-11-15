@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! 文档模型：块列表、撤销/重做、统计、大纲、双向链接。
 
 use crate::ast::{self, Block, Inline};

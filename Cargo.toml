@@ -5,6 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "2026.11.15"
 edition = "2024"
+authors = ["aurelianus <aurelianus@126.com>"]
 
 # 开发构建优化：GUI/文本排版大部分耗时在依赖（egui/epaint）里，
 # 只优化依赖就能让 cargo run 的帧率成倍提升，同时自己的代码仍可断点调试。

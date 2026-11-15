@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! Markd —— 纯 Rust Markdown 编辑器入口。
 
 use std::path::PathBuf;

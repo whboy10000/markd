@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! 应用命令：菜单项、命令面板、快捷键共用的统一动作定义。
 //! 放在 `markd-core` 以便 UI 层与平台（macOS 原生菜单）层共享，避免循环依赖。
 
@@ -6,6 +8,10 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     New,
+    /// 打开快速打开面板（Cmd/Ctrl+Shift+O，也可从「文件」菜单进入）。
+    QuickOpen,
+    /// 打开命令面板（Cmd/Ctrl+P）。
+    CommandPalette,
     OpenWorkspace,
     Save,
     SaveAs,
@@ -39,6 +45,8 @@ pub enum Command {
     CodeBlock,
     Link,
     Image,
+    /// 清除当前块的 Markdown 标记，变回普通段落（工具条橡皮擦同一动作）。
+    ClearFormat,
     Quote,
     Bullet,
     Ordered,
@@ -54,11 +62,15 @@ pub enum Command {
     FrontMatter,
     Snapshot,
     Search,
+    /// 文档内查找/替换（Cmd/Ctrl+F，与工具条放大镜同一面板）。
+    Find,
     Graph,
     Stats,
     Shortcuts,
     Settings,
     About,
+    Minimize,
+    ToggleMaximize,
     Quit,
     OpenFile(PathBuf),
 }
@@ -67,6 +79,8 @@ impl Command {
     pub fn label(&self) -> String {
         let s = match self {
             Command::New => "新建文档",
+            Command::QuickOpen => "快速打开…",
+            Command::CommandPalette => "命令面板…",
             Command::OpenWorkspace => "打开工作区…",
             Command::Save => "保存",
             Command::SaveAs => "另存为…",
@@ -99,6 +113,7 @@ impl Command {
             Command::CodeBlock => "代码块",
             Command::Link => "插入链接",
             Command::Image => "插入图片",
+            Command::ClearFormat => "清除格式",
             Command::Quote => "引用",
             Command::Bullet => "无序列表",
             Command::Ordered => "有序列表",
@@ -114,11 +129,14 @@ impl Command {
             Command::FrontMatter => "插入 YAML Front Matter",
             Command::Snapshot => "版本快照 · 时间机器",
             Command::Search => "工作区全文搜索",
+            Command::Find => "查找 / 替换…",
             Command::Graph => "双向链接关系图",
             Command::Stats => "写作统计",
             Command::Shortcuts => "快捷键一览",
             Command::Settings => "偏好设置…",
             Command::About => "关于",
+            Command::Minimize => "最小化窗口",
+            Command::ToggleMaximize => "最大化 / 还原窗口",
             Command::Quit => "退出",
             Command::OpenFile(p) => {
                 return format!(
@@ -133,6 +151,8 @@ impl Command {
     pub fn all() -> Vec<Command> {
         vec![
             Command::New,
+            Command::QuickOpen,
+            Command::CommandPalette,
             Command::OpenWorkspace,
             Command::Save,
             Command::SaveAs,
@@ -161,6 +181,7 @@ impl Command {
             Command::Italic,
             Command::Strike,
             Command::Underline,
+            Command::ClearFormat,
             Command::Code,
             Command::CodeBlock,
             Command::Link,
@@ -180,11 +201,14 @@ impl Command {
             Command::FrontMatter,
             Command::Snapshot,
             Command::Search,
+            Command::Find,
             Command::Graph,
             Command::Stats,
             Command::Shortcuts,
             Command::Settings,
             Command::About,
+            Command::Minimize,
+            Command::ToggleMaximize,
             Command::Quit,
         ]
     }

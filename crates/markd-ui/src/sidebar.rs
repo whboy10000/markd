@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! 侧边栏：文件树与大纲面板。
 
 use crate::document::OutlineItem;

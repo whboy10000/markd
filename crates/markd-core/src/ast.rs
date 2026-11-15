@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! 自研 Markdown 解析器：块级 + 行内，完全不依赖第三方解析库。
 //!
 //! 设计要点：每个 [`Block`] 都保留自己的原始 `source`，这样编辑器可以在

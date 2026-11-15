@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! 集成终端：基于 PTY 的交互式 shell（VS Code 风格）。
 //!
 //! `portable-pty` 启动一个持久 shell，`vte` 把它的 ANSI 字节流解析成字符网格，
@@ -727,19 +729,6 @@ impl Terminal {
         }
     }
 
-    fn restart(&mut self, ctx: &egui::Context) {
-        self.write_bytes(b"exit\r");
-        self.rx = None;
-        self.master = None;
-        self.writer = None;
-        self.child = None;
-        self.exited = false;
-        self.error = None;
-        self.screen.clear_all();
-        self.focus_req = true;
-        self.start(ctx);
-    }
-
     /// 每帧把后台线程收到的字节喂给 vte 解析器。
     pub fn poll(&mut self) {
         let mut events = Vec::new();
@@ -861,27 +850,6 @@ impl Terminal {
                     .clicked()
                 {
                     self.open = false;
-                }
-                if ui
-                    .button("重启")
-                    .on_hover_cursor(egui::CursorIcon::Default)
-                    .clicked()
-                {
-                    self.restart(ctx);
-                }
-                if ui
-                    .button("复制")
-                    .on_hover_cursor(egui::CursorIcon::Default)
-                    .clicked()
-                {
-                    ctx.copy_text(self.plain_text());
-                }
-                if ui
-                    .button("清空")
-                    .on_hover_cursor(egui::CursorIcon::Default)
-                    .clicked()
-                {
-                    self.screen.clear_all();
                 }
             });
         });

@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! Hybrid View 编辑器：活动块显示源码，其余块实时渲染成富文本。
 
 use crate::ast::Block;
@@ -350,9 +352,12 @@ impl EditKind {
                 s.push_str(lang);
                 s.push('\n');
                 s.push_str(text);
-                if !text.ends_with('\n') {
-                    s.push('\n');
-                }
+                // 闭合围栏前总是补一个换行。解析器把 body 行用 \n 拼成 code
+                //（不带末尾换行），所以缓冲末尾的 \n 表示「末尾有一个空行」，
+                // 必须多补一个 \n 才能往返：缓冲 "abc\n" → 源码 "```lang\nabc\n\n```"
+                // → 解析回 code "abc\n"。若只在不以 \n 结尾时补，回车产生的末尾
+                // 空行会在写回后丢失。
+                s.push('\n');
                 s.push_str("```");
                 s
             }
@@ -415,14 +420,23 @@ pub fn show_editor(
     // ---------------- 源码模式：整篇文档一个多行编辑器 ----------------
     if source_mode {
         let mut src = doc.source();
-        let out = TextEdit::multiline(&mut src)
-            .id(Id::new(("source_editor", tab_key)))
-            .font(egui::TextStyle::Monospace)
-            .desired_width(ui.available_width())
-            .frame(egui::Frame::NONE)
-            .code_editor()
-            .show(ui);
-        if out.response.changed() {
+        // TextEdit 会随内容自动撑高，直接放在父 Ui 上会被裁剪、滚轮无处生效，
+        // 表现就是源码模式下鼠标滚不动；必须像下方混合模式一样包一层 ScrollArea。
+        let mut changed = false;
+        egui::ScrollArea::vertical()
+            .id_salt("source_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let out = TextEdit::multiline(&mut src)
+                    .id(Id::new(("source_editor", tab_key)))
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(ui.available_width())
+                    .frame(egui::Frame::NONE)
+                    .code_editor()
+                    .show(ui);
+                changed = out.response.changed();
+            });
+        if changed {
             doc.maybe_record();
             doc.set_source(&src);
             return EditorEvent::Changed;
@@ -471,6 +485,11 @@ pub fn show_editor(
     // 空块行首退格要并回上一块：这个判断必须基于「按键之前」的缓冲区，
     // 否则删掉最后一个字符的那一帧就会被误判成空块。
     let buf_was_empty = active_buf.is_empty();
+    // 按键前的完整缓冲快照：TextEdit 会原地改写 active_buf，「末尾空行再按回车
+    // 退出代码块」需要比对「本帧的改动是否恰好是在末尾追加了一个换行」，
+    // 以排除同帧既打字又回车的误判。
+    let pre_buf = active_buf.clone();
+    let buf_ended_nl = pre_buf.ends_with('\n');
     let mut changed = false;
     let mut new_active: Option<usize> = None;
     let mut active_rect: Option<egui::Rect> = None;
@@ -592,15 +611,7 @@ pub fn show_editor(
                             if let EditKind::Code(lang) = &edit_kind {
                                 let mut copied = false;
                                 ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(if lang.is_empty() {
-                                            "code"
-                                        } else {
-                                            lang.as_str()
-                                        })
-                                        .small()
-                                        .color(theme.dim),
-                                    );
+                                    // 左上角语言文字标签已移除：右上角语言下拉已显示当前语言。
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
@@ -622,7 +633,7 @@ pub fn show_editor(
                                 });
                                 if copied {
                                     ctx.copy_text(active_buf.clone());
-                                    actions.push(Action::Notify("代码已复制到剪贴板".to_string()));
+                                    actions.push(Action::Notify("复制成功".to_string()));
                                 }
                             }
                             let id = Id::new(("block_edit", tab_key, idx));
@@ -847,6 +858,39 @@ pub fn show_editor(
     // 会直接提前返回，导致「行首退格」永远执行不到。
     if backspace && active > 0 && state.sel.is_none() && (buf_was_empty || state.last_cursor == 0) {
         merge_into_previous_block(doc, state, &active_buf);
+        return EditorEvent::Changed;
+    }
+
+    // ---------------- 代码块末尾空行回车：退出代码块 ----------------
+    // 光标在末尾空行上再按一次回车，退出代码块编辑（Typora 行为）：
+    // 去掉末尾空行写回，在下方插入普通段落块并聚焦。判定条件：
+    // 1) 本帧按了回车且 TextEdit 真的处理了它（changed 为真要求持有焦点）；
+    // 2) 按键前缓冲已以换行结尾（末行是空行）——第一次回车只是新建行，不会命中；
+    // 3) 本帧的改动恰好是在末尾追加一个换行且光标仍在缓冲末尾，
+    //    排除「同帧打字 + 回车」「行中间回车」的误判。
+    if enter
+        && changed
+        && matches!(edit_kind, EditKind::Code(_))
+        && buf_ended_nl
+        && state.sel.is_none()
+        && cursor_idx == active_buf.chars().count()
+        && active_buf == format!("{pre_buf}\n")
+    {
+        let code = active_buf.trim_end_matches('\n').to_string();
+        doc.record();
+        if code.is_empty() {
+            // 空代码块退出：整块直接变成普通段落，不再插入新块
+            doc.edit_block(active, "");
+        } else {
+            doc.edit_block(active, &edit_kind.rebuild(&code));
+            doc.insert_block_after(active, "");
+            state.active = active + 1;
+        }
+        state.focus_req = Some(state.active);
+        state.scroll_req = Some(state.active);
+        state.scroll_top = false;
+        state.last_cursor = 0;
+        state.sel = None;
         return EditorEvent::Changed;
     }
 
@@ -1075,6 +1119,14 @@ mod tests {
         let src = EditKind::Code(String::new()).rebuild("a\nb");
         let blocks = crate::ast::parse(&src);
         assert!(matches!(&blocks[0], Block::Code { code, .. } if code == "a\nb"));
+
+        // 末尾空行（缓冲以 \n 结尾）也要能往返：在末行回车产生的空行不丢失
+        let src = EditKind::Code("rust".to_string()).rebuild("a\n");
+        let blocks = crate::ast::parse(&src);
+        assert!(matches!(&blocks[0], Block::Code { code, .. } if code == "a\n"), "{src}");
+        let src = EditKind::Code("rust".to_string()).rebuild("\n");
+        let blocks = crate::ast::parse(&src);
+        assert!(matches!(&blocks[0], Block::Code { code, .. } if code == "\n"), "{src}");
     }
 
     /// 清除格式：标题 / 引用 / 列表 / 任务列表都变回普通段落，行内加粗也去掉。

@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! 应用外壳：窗口布局、菜单、快捷键、状态栏、各功能面板的整合。
 
 use crate::document::{Document, OutlineItem};
@@ -311,8 +313,11 @@ graph LR
 enum MenuKind {
     File,
     Edit,
+    Paragraph,
+    Format,
     View,
     Theme,
+    Window,
     Help,
 }
 
@@ -366,10 +371,15 @@ fn table_template(rows: usize, cols: usize) -> String {
     s.trim_end().to_string()
 }
 
+/// 菜单栏结构对齐 Typora：文件 / 编辑 / 段落 / 格式 / 视图 / 主题 / 窗口 / 帮助。
+/// 段落 = 块级结构（标题、列表、表格、代码块、公式块…），格式 = 行内样式（加粗、斜体、链接…）。
 fn menu_commands(k: MenuKind) -> Vec<Command> {
     match k {
         MenuKind::File => vec![
             Command::New,
+            Command::QuickOpen,
+            Command::CommandPalette,
+            Command::OpenFileDialog,
             Command::OpenWorkspace,
             Command::Save,
             Command::SaveAs,
@@ -380,12 +390,10 @@ fn menu_commands(k: MenuKind) -> Vec<Command> {
         MenuKind::Edit => vec![
             Command::Undo,
             Command::Redo,
-            Command::Bold,
-            Command::Italic,
-            Command::Strike,
-            Command::Code,
-            Command::Link,
-            Command::Image,
+            Command::Find,
+            Command::ToggleAutoSave,
+        ],
+        MenuKind::Paragraph => vec![
             Command::Paragraph,
             Command::H1,
             Command::H2,
@@ -399,11 +407,24 @@ fn menu_commands(k: MenuKind) -> Vec<Command> {
             Command::Task,
             Command::Table,
             Command::Rule,
+            Command::CodeBlock,
             Command::Math,
+            Command::InlineMath,
             Command::Mermaid,
+            Command::Flowchart,
             Command::Toc,
             Command::Footnote,
             Command::FrontMatter,
+        ],
+        MenuKind::Format => vec![
+            Command::Bold,
+            Command::Italic,
+            Command::Underline,
+            Command::Strike,
+            Command::Code,
+            Command::Link,
+            Command::Image,
+            Command::ClearFormat,
         ],
         MenuKind::View => vec![
             Command::ToggleSource,
@@ -411,16 +432,15 @@ fn menu_commands(k: MenuKind) -> Vec<Command> {
             Command::ToggleTypewriter,
             Command::ToggleSidebar,
             Command::ToggleOutline,
-            Command::ToggleAutoSave,
             Command::ToggleSidebarHeader,
             Command::ToggleWorkspaceBar,
             Command::ToggleTerminal,
-            Command::OpenFileDialog,
             Command::Search,
             Command::Graph,
             Command::Stats,
         ],
         MenuKind::Theme => vec![Command::ThemeNext],
+        MenuKind::Window => vec![Command::Minimize, Command::ToggleMaximize],
         MenuKind::Help => vec![Command::Shortcuts, Command::Settings, Command::About],
     }
 }
@@ -497,6 +517,8 @@ pub struct MarkdApp {
     stats: WritingStats,
     snapshots: SnapshotStore,
     status: String,
+    /// 轻提示弹窗：(文案, 弹出时间)。复制代码等操作的浮动反馈，淡出后自动清除。
+    toast: Option<(String, f64)>,
     about: bool,
     shortcuts: bool,
     table_dialog: bool,
@@ -629,6 +651,7 @@ impl MarkdApp {
             graph: GraphPanel::default(),
             snapshots: SnapshotStore::load(),
             status: String::new(),
+            toast: None,
             about: false,
             shortcuts: false,
             table_dialog: false,
@@ -1201,6 +1224,8 @@ impl MarkdApp {
         match cmd {
             // 直接新建，不弹窗；命名留到保存时
             Command::New => self.new_document(),
+            Command::QuickOpen => self.open_quick_palette(),
+            Command::CommandPalette => self.palette.open_with(PaletteMode::Commands),
             Command::OpenWorkspace => {
                 self.config.show_sidebar = true;
                 self.side_tab = SideTab::Files;
@@ -1308,6 +1333,15 @@ impl MarkdApp {
             Command::Image => {
                 editor::insert_template(&mut self.doc, &mut self.editor, "![](./image.png)")
             }
+            Command::ClearFormat => {
+                // 与工具条橡皮擦同一动作：当前块去掉块级/行内标记变回普通段落。
+                if editor::clear_format(&mut self.doc, &mut self.editor) {
+                    self.on_changed();
+                    self.status = "已清除格式".to_string();
+                } else {
+                    self.status = "这一块不是文本段落，没有可清除的格式".to_string();
+                }
+            }
             Command::Quote => editor::apply_prefix(&mut self.doc, &mut self.editor, "> "),
             Command::CodeBlock => {
                 editor::insert_template(&mut self.doc, &mut self.editor, "```\n\n```")
@@ -1346,6 +1380,7 @@ impl MarkdApp {
                 self.snapshots.open = true;
             }
             Command::Search => self.search.open = true,
+            Command::Find => self.find.open_for(false),
             Command::Graph => {
                 self.spawn_link_graph(ctx);
                 self.graph.open = true;
@@ -1354,6 +1389,11 @@ impl MarkdApp {
             Command::Shortcuts => self.shortcuts = true,
             Command::Settings => self.settings.open(),
             Command::About => self.about = true,
+            Command::Minimize => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
+            Command::ToggleMaximize => {
+                let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+            }
             Command::Quit => {
                 // 不再静默保存：由 close_requested 的统一拦截决定要不要弹确认框。
                 self.config.save();
@@ -1556,8 +1596,11 @@ impl MarkdApp {
                 for (label, kind) in [
                     ("文件", MenuKind::File),
                     ("编辑", MenuKind::Edit),
+                    ("段落", MenuKind::Paragraph),
+                    ("格式", MenuKind::Format),
                     ("视图", MenuKind::View),
                     ("主题", MenuKind::Theme),
+                    ("窗口", MenuKind::Window),
                     ("帮助", MenuKind::Help),
                 ] {
                     if ui
@@ -1629,22 +1672,8 @@ impl MarkdApp {
         // 按钮较多（13 个）：窗口变窄时换行，而不是把最右边的「搜索」挤到看不见。
         ui.horizontal_wrapped(|ui| {
             ui.add_space(6.0);
-            // 功能区最左边：命令面板 / 快速打开
-            if ui
-                .button("命令面板")
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .clicked()
-            {
-                self.palette.open_with(PaletteMode::Commands);
-            }
-            if ui
-                .button("快速打开")
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .clicked()
-            {
-                self.open_quick_palette();
-            }
-            ui.separator();
+            // 「命令面板 / 快速打开」按钮已移除：命令面板的全部功能收进菜单栏「文件」，
+            // 打开面板仍走 Cmd/Ctrl+P（命令面板）与 Cmd/Ctrl+Shift+O（快速打开）。
             // 撤销 / 重做放在「标题」左边：改错了能立刻回退一步。
             if icon_button(ui, "撤销 (Cmd/Ctrl+Z)", painter_undo_icon) {
                 chosen = Some(Command::Undo);
@@ -2100,8 +2129,11 @@ impl MarkdApp {
             let title = match kind {
                 MenuKind::File => "文件",
                 MenuKind::Edit => "编辑",
+                MenuKind::Paragraph => "段落",
+                MenuKind::Format => "格式",
                 MenuKind::View => "视图",
                 MenuKind::Theme => "主题",
+                MenuKind::Window => "窗口",
                 MenuKind::Help => "帮助",
             };
             let guard = self.menu_guard;
@@ -2115,9 +2147,22 @@ impl MarkdApp {
                 .resizable(false)
                 .default_pos(egui::pos2(16.0, 64.0))
                 .show(ctx, |ui| {
-                    for c in menu_commands(kind) {
-                        if ui.button(c.label()).clicked() {
-                            chosen = Some(c);
+                    if matches!(kind, MenuKind::File | MenuKind::Paragraph) {
+                        // 文件 / 段落条目较多，超出高度时内部滚动。
+                        egui::ScrollArea::vertical()
+                            .max_height(480.0)
+                            .show(ui, |ui| {
+                                for c in menu_commands(kind) {
+                                    if ui.button(c.label()).clicked() {
+                                        chosen = Some(c);
+                                    }
+                                }
+                            });
+                    } else {
+                        for c in menu_commands(kind) {
+                            if ui.button(c.label()).clicked() {
+                                chosen = Some(c);
+                            }
                         }
                     }
                     if kind == MenuKind::Theme {
@@ -2499,6 +2544,121 @@ impl MarkdApp {
             self.exit_dialog = false;
         }
     }
+
+    /// 更新状态栏文字并弹出轻提示（底部居中浮层，自动淡出），同时播放一声轻音效。
+    fn notify(&mut self, ctx: &egui::Context, msg: String) {
+        self.status = msg.clone();
+        self.toast = Some((msg, ctx.input(|i| i.time)));
+        Self::play_toast_sound();
+    }
+
+    /// 轻提示音效：不引音频库，直接调系统自带播放器放一声短促的提示音，
+    /// 后台线程 wait 防僵尸进程；系统/音效文件不存在时静默跳过，不影响任何功能。
+    fn play_toast_sound() {
+        #[cfg(target_os = "macos")]
+        let mut cmd = {
+            let mut c = std::process::Command::new("afplay");
+            // Tink 是系统音效里最轻脆短促的一声，-v 0.4 压低音量做轻提示
+            c.args(["-v", "0.4", "/System/Library/Sounds/Tink.aiff"]);
+            c
+        };
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = std::process::Command::new("powershell");
+            c.args([
+                "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                "[System.Media.SystemSounds]::Asterisk.Play()",
+            ]);
+            c
+        };
+        #[cfg(target_os = "linux")]
+        let mut cmd = {
+            let mut c = std::process::Command::new("paplay");
+            c.arg("/usr/share/sounds/freedesktop/stereo/complete.oga");
+            c
+        };
+        cmd.stdout(std::process::Stdio::null());
+        cmd.stderr(std::process::Stdio::null());
+        if let Ok(mut child) = cmd.spawn() {
+            // 后台线程回收子进程，避免反复复制后留下僵尸进程
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+    }
+
+    /// 轻提示渲染：底部居中浮层（白底浅绿描边 + 绿色对勾图标），停留 1.8s 后
+    /// 用 0.4s 淡出。只读不改 UI 状态，不挡鼠标（interactable(false)）。
+    fn show_toast(&mut self, ctx: &egui::Context) {
+        const HOLD: f32 = 1.8;
+        const FADE: f32 = 0.4;
+        let Some((msg, at)) = self.toast.clone() else {
+            return;
+        };
+        let now = ctx.input(|i| i.time);
+        let elapsed = (now - at) as f32;
+        if elapsed > HOLD + FADE {
+            self.toast = None;
+            return;
+        }
+        // 淡出期间持续重绘，否则动画会卡住
+        ctx.request_repaint();
+        let alpha = ((HOLD + FADE - elapsed) / FADE).clamp(0.0, 1.0);
+        let mix = |c: egui::Color32| -> egui::Color32 {
+            let a = (c.a() as f32 * alpha) as u8;
+            egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+        };
+        // 配色固定为参考样式：白底 / 浅绿描边 / 绿色对勾 / 深色文字，不随主题变化
+        const BG: egui::Color32 = egui::Color32::WHITE;
+        const BORDER: egui::Color32 = egui::Color32::from_rgb(0x9B, 0xD8, 0x76);
+        const ICON: egui::Color32 = egui::Color32::from_rgb(0x52, 0xC4, 0x1A);
+        const TEXT: egui::Color32 = egui::Color32::from_rgb(0x33, 0x33, 0x33);
+        // 不用 anchor：Area 会记住上次位置，anchor 在状态残留时可能被顶到窗口中部；
+        // 直接每帧按屏幕矩形算出定位点，用 fixed_pos + pivot 强制定位。
+        // 气泡下缘落在窗口高度的 40% 处（中上部）：醒目且不与顶部工具条打架。
+        let screen = ctx.viewport_rect();
+        let pos = egui::pos2(screen.center().x, screen.top() + screen.height() * 0.40);
+        egui::Area::new(egui::Id::new("toast"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .pivot(egui::Align2::CENTER_BOTTOM)
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(mix(BG))
+                    .stroke(egui::Stroke::new(1.0, mix(BORDER)))
+                    .corner_radius(8.0)
+                    .inner_margin(egui::Margin::symmetric(14, 8))
+                    .shadow(egui::Shadow {
+                        offset: [0, 2],
+                        blur: 10,
+                        spread: 0,
+                        color: mix(egui::Color32::from_rgba_unmultiplied(0, 0, 0, 45)),
+                    })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            // 自绘绿色圆 + 白色对勾图标，不依赖 emoji 字体
+                            let (ir, _) =
+                                ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                            let p = ui.painter();
+                            let c = ir.center();
+                            p.circle_filled(c, 8.0, mix(ICON));
+                            p.add(egui::Shape::line(
+                                vec![
+                                    egui::pos2(c.x - 3.5, c.y + 0.5),
+                                    egui::pos2(c.x - 1.0, c.y + 3.0),
+                                    egui::pos2(c.x + 3.5, c.y - 2.5),
+                                ],
+                                egui::Stroke::new(1.8, mix(egui::Color32::WHITE)),
+                            ));
+                            ui.label(egui::RichText::new(&msg).size(13.0).color(mix(TEXT)));
+                        });
+                    });
+            });
+    }
 }
 
 impl eframe::App for MarkdApp {
@@ -2646,7 +2806,11 @@ impl eframe::App for MarkdApp {
         // 终端持有焦点时编辑区进入只读，避免它每帧把焦点抢回去。
         self.editor.read_only = self.terminal.has_focus();
         let show_home = self.home;
+        // CentralPanel 默认填充 panel_fill（浅色 #F3F3F3），编辑区应是正文色：
+        // 复现 egui 0.37 Frame::central_panel（inner_margin 8），仅把底色换成 theme.bg（浅色 #FFFFFF）。
+        let central_frame = egui::Frame::new().inner_margin(8).fill(self.theme.bg);
         let (event, actions, home_act) = egui::CentralPanel::default()
+            .frame(central_frame)
             .show(&mut *root_ui, |ui| {
                 if show_home {
                     let actions: Vec<Action> = Vec::new();
@@ -2710,7 +2874,7 @@ impl eframe::App for MarkdApp {
                     self.editor.scroll_req = Some(self.editor.active);
                     self.editor.scroll_top = true;
                 }
-                Action::Notify(msg) => self.status = msg,
+                Action::Notify(msg) => self.notify(&ctx, msg),
                 Action::Caret(i, off) => {
                     self.editor.active = i;
                     self.editor.focus_req = Some(i);
@@ -2755,6 +2919,7 @@ impl eframe::App for MarkdApp {
                 ctx.memory(|m| m.focused())
             );
         }
+        self.show_toast(&ctx);
         self.windows(&ctx);
         self.auto_save();
         // TEMP 调试：模拟「在首页点新建文档」——CentralPanel 之后再建，下一帧才渲染编辑器

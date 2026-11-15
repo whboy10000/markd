@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! 主题系统：内置多套配色 + 全局字号/行高设置。
 
 use egui::{Color32, Context, FontFamily, FontId, Visuals};
@@ -83,13 +85,14 @@ impl Theme {
             selection,
         ) = match kind {
             // 对齐 VS Code 默认浅色（Light+）：editor #FFFFFF、侧栏 #F3F3F3、链接 #006AB1、选区 #ADD6FF
+            // 代码块背景 #F5F5F5（比正文 #FFFFFF 略深，比侧栏 #F3F3F3 略浅）
             ThemeKind::Light => (
                 rgb(255, 255, 255),
                 rgb(243, 243, 243),
                 rgb(0, 0, 0),
                 rgb(139, 139, 139),
                 rgb(0, 106, 177),
-                rgb(243, 243, 243),
+                rgb(245, 245, 245),
                 rgb(229, 229, 229),
                 rgb(0, 0, 0),
                 rgb(0, 106, 177),

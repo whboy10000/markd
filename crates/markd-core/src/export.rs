@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! 导出：把 AST 渲染成自包含的 HTML（可用浏览器打印为 PDF）。
 
 use crate::ast::{self, Align, Block, DiagramKind, Inline};

@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! 渲染层：把 AST 画成富文本 / 表格 / 代码块 / 流程图 / 图片。
 //!
 //! 非活动块走这里；活动块由 editor.rs 用 TextEdit 显示源码，形成 Hybrid View。
@@ -41,6 +43,10 @@ pub fn language_combo(
             current.to_string()
         })
         .width(118.0)
+        // 默认 CloseOnClick 会在弹层内任意点击（包括点搜索框）时关闭整个下拉，
+        // 表现就是「一点搜索框就消失、没法搜索」；改成只在外部点击时关闭，
+        // 选中语言后再手动收起。
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show_ui(ui, |ui| {
             let filter_id = id.with("filter");
             let mut filter = ui
@@ -67,6 +73,9 @@ pub fn language_combo(
                         let label = if l.is_empty() { "纯文本" } else { l };
                         if ui.selectable_label(current == l, label).clicked() {
                             picked = Some(l.to_string());
+                            // 选好了就收起下拉（CloseOnClickOutside 模式下不会自动关）。
+                            // ComboBox::widget_to_popup_id 是私有的，其实现就是 widget_id.with("popup")。
+                            egui::Popup::close_id(ui.ctx(), id.with("popup"));
                         }
                     }
                 });
@@ -123,7 +132,6 @@ pub const LANGUAGES: &[&str] = &[
     "graphql",
     "prisma",
     "html",
-    "xml",
     "css",
     "scss",
     "sass",
@@ -1007,15 +1015,7 @@ pub fn render_block(
                 let mut new_lang: Option<String> = None;
                 let r = panel_frame(theme).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(if lang.is_empty() {
-                                "code"
-                            } else {
-                                lang.as_str()
-                            })
-                            .small()
-                            .color(theme.dim),
-                        );
+                        // 左上角的语言文字标签已移除：右上角的语言下拉里已经显示当前语言，再标一遍是冗余。
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // 右上角：复制 + 语言选择（改的是代码块的 info string）
                             if ui
@@ -1041,7 +1041,7 @@ pub fn render_block(
                 if copied {
                     env.ctx.copy_text(code.clone());
                     env.actions
-                        .push(Action::Notify("代码已复制到剪贴板".to_string()));
+                        .push(Action::Notify("复制成功".to_string()));
                 }
                 if let Some(l) = new_lang {
                     env.actions.push(Action::SetLang(idx, l));

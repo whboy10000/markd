@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! 工作区文件系统：目录扫描、Markdown 读写、配置持久化、路径解析。
 
 use crate::theme::ThemeKind;

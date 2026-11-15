@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! 设置弹窗：左侧分类 + 右侧选项，风格对齐 Typora 的偏好设置。
 
 use crate::theme::{Theme, ThemeKind};

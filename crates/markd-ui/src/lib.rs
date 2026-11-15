@@ -1,3 +1,5 @@
+//! Author: aurelianus <aurelianus@126.com>
+
 //! egui 界面层。
 //!
 //! 这里用 `pub use` 把 `markd-core` / `markd-platform` 的模块挂到本 crate 根，
