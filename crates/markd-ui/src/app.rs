@@ -96,13 +96,14 @@ fn painter_eraser_icon(
     fg: egui::Color32,
 ) {
     painter.rect_filled(rect, egui::CornerRadius::same(4), bg);
-    let stroke = egui::Stroke::new(1.6, fg);
+    let stroke = egui::Stroke::new(1.5, fg);
     let h = rect.height();
-    let c = rect.center() + egui::vec2(0.0, -h * 0.07);
-    // 橡皮形体：长条矩形绕中心转 -35°，长边 half.x、短边 half.y
+    let c = rect.center() + egui::vec2(0.0, -h * 0.05);
+    // 橡皮形体：长条矩形绕中心转 -35°，长边 half.x、短边 half.y。
+    // 整体尺寸比按钮明显小一圈，和放大镜图标的视觉重量一致。
     let angle = -0.62;
-    let long = rotate(egui::vec2(h * 0.36, 0.0), angle);
-    let short = rotate(egui::vec2(0.0, h * 0.21), angle);
+    let long = rotate(egui::vec2(h * 0.29, 0.0), angle);
+    let short = rotate(egui::vec2(0.0, h * 0.165), angle);
     let body = vec![
         c - long - short,
         c + long - short,
@@ -122,11 +123,11 @@ fn painter_eraser_icon(
     // 橡胶与外壳的分界
     painter.line_segment([t - short, t + short], stroke);
     // 底下的擦拭痕迹
-    let y = rect.center().y + h * 0.37;
+    let y = rect.center().y + h * 0.30;
     painter.line_segment(
         [
-            egui::pos2(rect.center().x - h * 0.2, y),
-            egui::pos2(rect.center().x + h * 0.2, y),
+            egui::pos2(rect.center().x - h * 0.15, y),
+            egui::pos2(rect.center().x + h * 0.15, y),
         ],
         stroke,
     );

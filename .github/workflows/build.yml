@@ -160,6 +160,8 @@ jobs:
        startsWith(github.ref, 'refs/tags/20'))
     runs-on: ubuntu-latest
     steps:
+      # checkout 会执行 git clean，必须放在下载产物之前，否则会把 out/ 清掉
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -170,7 +172,6 @@ jobs:
           ls -lh out
       # 滚动版（非 tag 的 master 构建）也要用版本号当标题：
       # 版本从 Cargo.toml 动态读，发版时只改 Cargo.toml 一处，标题与产物文件名自然一致。
-      - uses: actions/checkout@v4
       - name: Resolve version
         id: ver
         run: |
