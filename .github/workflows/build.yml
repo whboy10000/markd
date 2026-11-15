@@ -168,6 +168,14 @@ jobs:
           mkdir -p out
           find dist -type f | while read -r f; do cp "$f" out/; done
           ls -lh out
+      # 滚动版（非 tag 的 master 构建）也要用版本号当标题：
+      # 版本从 Cargo.toml 动态读，发版时只改 Cargo.toml 一处，标题与产物文件名自然一致。
+      - uses: actions/checkout@v4
+      - name: Resolve version
+        id: ver
+        run: |
+          VERSION=$(awk -F'"' '/^version/{print $2; exit}' Cargo.toml)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Resolve tag
         id: tag
         run: |
@@ -195,7 +203,7 @@ jobs:
           EOF
           gh release create latest out/* --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
-            --title "Latest build" \
+            --title "${{ steps.ver.outputs.version }}" \
             --notes-file notes.md \
             --latest
       - name: Publish tagged release
