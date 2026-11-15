@@ -561,10 +561,6 @@ pub fn show_editor(
                                                             .frame(
                                                                 egui::Frame::NONE
                                                                     .fill(fill)
-                                                                    .stroke(egui::Stroke::new(
-                                                                        0.8,
-                                                                        theme.border,
-                                                                    ))
                                                                     .inner_margin(3.0),
                                                             ),
                                                     );

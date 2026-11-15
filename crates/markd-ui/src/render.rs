@@ -1050,27 +1050,30 @@ pub fn render_block(
                 r.inner.interact(Sense::click())
             }
             Block::Table { head, rows, .. } => {
+                // 表格随窗口浮动：列宽平分可用宽度（扣除内边距与列间距），
+                // 窗口变宽表就变宽；窄窗口下自动收窄并让单元格内文字换行。
+                let cols = head.len().max(1);
+                let avail = (ui.available_width() - 12.0).max(120.0);
+                let gap = ui.spacing().item_spacing.x * cols.saturating_sub(1) as f32;
+                let col_w = ((avail - gap) / cols as f32).max(56.0);
+                // 记录每个单元格的矩形，用于画「单线」分隔（不是每格一个框）
+                let mut row_rects: Vec<Vec<egui::Rect>> = Vec::new();
                 let r = egui::Frame::NONE
                     .fill(theme.bg)
                     .stroke(Stroke::new(1.0, theme.border))
                     .corner_radius(4.0)
                     .inner_margin(6.0)
                     .show(ui, |ui| {
-                        // 表格随窗口浮动：列宽平分可用宽度（扣掉内边距与列间距），
-                        // 窗口变宽表就变宽；窄窗口下自动收窄并让单元格内文字换行。
-                        let cols = head.len().max(1);
-                        let gap = ui.spacing().item_spacing.x * cols.saturating_sub(1) as f32;
-                        let col_w =
-                            ((ui.available_width() - gap).max(120.0) / cols as f32).max(56.0);
                         ui.set_min_width(col_w * cols as f32 + gap);
                         egui::Grid::new(("md_table", idx))
                             .min_col_width(col_w)
                             .max_col_width(col_w)
                             .show(ui, |ui| {
+                                // 表头行：最深一档底色
+                                let mut rects = Vec::new();
                                 for c in head {
-                                    egui::Frame::NONE
+                                    let fr = egui::Frame::NONE
                                         .fill(theme.table_head)
-                                        .stroke(Stroke::new(0.8, theme.border))
                                         .inner_margin(3.0)
                                         .show(ui, |ui| {
                                             ui.set_min_width(col_w - 12.0);
@@ -1087,15 +1090,16 @@ pub fn render_block(
                                                 Sense::hover(),
                                             );
                                         });
+                                    rects.push(fr.response.rect);
                                 }
+                                row_rects.push(rects);
                                 ui.end_row();
-                                // 数据行只保留正文底色：表头一档颜色就够分了，
-                                // 首列加深和斑马纹按需求撤掉。
+                                // 数据行：正文底色（表头一档颜色就够分了）
                                 for row in rows {
+                                    let mut rects = Vec::new();
                                     for c in row {
-                                        egui::Frame::NONE
+                                        let fr = egui::Frame::NONE
                                             .fill(theme.bg)
-                                            .stroke(Stroke::new(0.8, theme.border))
                                             .inner_margin(3.0)
                                             .show(ui, |ui| {
                                                 ui.set_min_width(col_w - 12.0);
@@ -1112,11 +1116,38 @@ pub fn render_block(
                                                     Sense::hover(),
                                                 );
                                             });
+                                        rects.push(fr.response.rect);
                                     }
+                                    row_rects.push(rects);
                                     ui.end_row();
                                 }
                             });
                     });
+                // 分隔线：行与行、列与列之间只画一条线（不是每个单元格一个盒子）
+                let content = r.response.rect.shrink2(egui::vec2(12.0, 12.0));
+                let stroke = Stroke::new(1.0, theme.border);
+                let p = ui.painter();
+                for i in 1..row_rects.len() {
+                    let next_top = row_rects[i].first().map(|x| x.top());
+                    let prev_bottom = row_rects[i - 1]
+                        .iter()
+                        .map(|x| x.bottom())
+                        .fold(f32::MIN, f32::max);
+                    if let Some(t) = next_top {
+                        let y = (t + prev_bottom) / 2.0;
+                        p.line_segment(
+                            [Pos2::new(content.left(), y), Pos2::new(content.right(), y)],
+                            stroke,
+                        );
+                    }
+                }
+                for k in 1..cols {
+                    let x = content.left() + k as f32 * (col_w + gap) - gap / 2.0;
+                    p.line_segment(
+                        [Pos2::new(x, content.top()), Pos2::new(x, content.bottom())],
+                        stroke,
+                    );
+                }
                 r.response.interact(Sense::click())
             }
             Block::Rule { .. } => {
