@@ -24,7 +24,57 @@ pub enum Action {
 }
 
 /// 代码块可选语言，覆盖常见前端/后端/脚本/配置/标记语言。
-const LANGUAGES: &[&str] = &[
+/// 带搜索的语言选择下拉：顶部输入框实时过滤，语言按 A→Z 正序排列
+/// （纯文本排最前）。返回用户选中的语言（与 current 不同时为 Some）。
+#[allow(deprecated)]
+pub fn language_combo(
+    ui: &mut egui::Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    current: &str,
+) -> Option<String> {
+    let id = egui::Id::new(id_salt);
+    let mut picked: Option<String> = None;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if current.is_empty() {
+            "纯文本".to_string()
+        } else {
+            current.to_string()
+        })
+        .width(118.0)
+        .show_ui(ui, |ui| {
+            let filter_id = id.with("filter");
+            let mut filter = ui
+                .ctx()
+                .memory(|m| m.data.get_temp::<String>(filter_id).unwrap_or_default());
+            ui.add(
+                egui::TextEdit::singleline(&mut filter)
+                    .hint_text("搜索语言…")
+                    .desired_width(110.0),
+            );
+            let f = filter.trim().to_lowercase();
+            ui.ctx()
+                .memory_mut(|m| m.data.insert_temp(filter_id, f.clone()));
+            // A→Z 正序；"" (纯文本) 自然排最前
+            let mut list = LANGUAGES.to_vec();
+            list.sort_unstable();
+            egui::ScrollArea::vertical()
+                .max_height(320.0)
+                .show(ui, |ui| {
+                    for l in list {
+                        if !f.is_empty() && !l.to_lowercase().contains(&f) {
+                            continue;
+                        }
+                        let label = if l.is_empty() { "纯文本" } else { l };
+                        if ui.selectable_label(current == l, label).clicked() {
+                            picked = Some(l.to_string());
+                        }
+                    }
+                });
+        });
+    picked
+}
+
+pub const LANGUAGES: &[&str] = &[
     "",
     "json",
     "xml",
@@ -975,32 +1025,8 @@ pub fn render_block(
                             {
                                 copied = true;
                             }
-                            let mut picked = lang.clone();
-                            egui::ComboBox::from_id_salt(("code_lang", idx))
-                                .selected_text(if picked.is_empty() {
-                                    "纯文本".to_string()
-                                } else {
-                                    picked.clone()
-                                })
-                                .width(118.0)
-                                .show_ui(ui, |ui| {
-                                    egui::ScrollArea::vertical()
-                                        .max_height(320.0)
-                                        .show(ui, |ui| {
-                                            for l in LANGUAGES {
-                                                let label =
-                                                    if l.is_empty() { "纯文本" } else { *l };
-                                                if ui
-                                                    .selectable_label(picked == *l, label)
-                                                    .clicked()
-                                                {
-                                                    picked = l.to_string();
-                                                }
-                                            }
-                                        });
-                                });
-                            if picked != *lang {
-                                new_lang = Some(picked);
+                            if let Some(l) = language_combo(ui, ("code_lang", idx), lang) {
+                                new_lang = Some(l);
                             }
                         });
                     });
@@ -1044,6 +1070,7 @@ pub fn render_block(
                                 for c in head {
                                     egui::Frame::NONE
                                         .fill(theme.table_head)
+                                        .stroke(Stroke::new(0.8, theme.border))
                                         .inner_margin(3.0)
                                         .show(ui, |ui| {
                                             ui.set_min_width(col_w - 12.0);
@@ -1066,9 +1093,11 @@ pub fn render_block(
                                 // 首列加深和斑马纹按需求撤掉。
                                 for row in rows {
                                     for c in row {
-                                        egui::Frame::NONE.fill(theme.bg).inner_margin(3.0).show(
-                                            ui,
-                                            |ui| {
+                                        egui::Frame::NONE
+                                            .fill(theme.bg)
+                                            .stroke(Stroke::new(0.8, theme.border))
+                                            .inner_margin(3.0)
+                                            .show(ui, |ui| {
                                                 ui.set_min_width(col_w - 12.0);
                                                 wrapped_label(
                                                     ui,
@@ -1082,8 +1111,7 @@ pub fn render_block(
                                                     col_w,
                                                     Sense::hover(),
                                                 );
-                                            },
-                                        );
+                                            });
                                     }
                                     ui.end_row();
                                 }

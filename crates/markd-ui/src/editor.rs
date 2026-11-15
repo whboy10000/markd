@@ -478,6 +478,8 @@ pub fn show_editor(
     let mut selection: Option<(usize, usize)> = None;
     let mut pair_insert: Option<(usize, String)> = None;
     let mut table_edit_src: Option<String> = None;
+    // 代码块编辑态里更换语言时置位，帧末统一处理
+    let mut lang_change: Option<String> = None;
 
     egui::ScrollArea::vertical()
         .id_salt("editor_scroll")
@@ -559,6 +561,10 @@ pub fn show_editor(
                                                             .frame(
                                                                 egui::Frame::NONE
                                                                     .fill(fill)
+                                                                    .stroke(egui::Stroke::new(
+                                                                        0.8,
+                                                                        theme.border,
+                                                                    ))
                                                                     .inner_margin(3.0),
                                                             ),
                                                     );
@@ -585,6 +591,44 @@ pub fn show_editor(
                             // 的点击聚焦，表现为「点了没反应」。单元格自己处理点击。
                             inner.response
                         } else if editing {
+                            // 代码块编辑态也保留工具行：复制 + 语言选择（可搜索、A→Z），
+                            // 和渲染态完全一致，点进去不会失去这两样能力。
+                            if let EditKind::Code(lang) = &edit_kind {
+                                let mut copied = false;
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(if lang.is_empty() {
+                                            "code"
+                                        } else {
+                                            lang.as_str()
+                                        })
+                                        .small()
+                                        .color(theme.dim),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui
+                                                .button(egui::RichText::new("复制").small())
+                                                .clicked()
+                                            {
+                                                copied = true;
+                                            }
+                                            if let Some(l) = render::language_combo(
+                                                ui,
+                                                ("code_lang_edit", tab_key, idx),
+                                                lang,
+                                            ) {
+                                                lang_change = Some(l);
+                                            }
+                                        },
+                                    );
+                                });
+                                if copied {
+                                    ctx.copy_text(active_buf.clone());
+                                    actions.push(Action::Notify("代码已复制到剪贴板".to_string()));
+                                }
+                            }
                             let id = Id::new(("block_edit", tab_key, idx));
                             // 标题只编辑文字、代码块只编辑代码（不含围栏），像 Typora 一样直接改。
                             let rows = if matches!(edit_kind, EditKind::Code(_)) {
@@ -778,6 +822,22 @@ pub fn show_editor(
         );
     }
     state.focus_req = None;
+
+    // ---------------- 代码块换语言 ----------------
+    // 先把本帧可能发生的文本修改按旧语言写回，再整体重建源码换语言，
+    // 避免旧的 edit_kind 把新语言覆盖回去。
+    if let Some(new_lang) = lang_change.take() {
+        if changed {
+            doc.maybe_record();
+            let src = edit_kind.rebuild(&active_buf);
+            doc.edit_block(active, &src);
+        }
+        let mut code = active_buf.trim_end_matches('\n').to_string();
+        code.push('\n');
+        doc.record();
+        doc.edit_block(active, &format!("```{new_lang}\n{code}```"));
+        return EditorEvent::Changed;
+    }
 
     // ---------------- 行首退格：并回上一块 ----------------
     // 放在写回之前：以前这段在 `if changed { return }` 之后，删空那块文本的那一帧
