@@ -111,6 +111,16 @@ fn outline_toggle(showing: bool) -> (bool, SideTab) {
     }
 }
 
+/// 「文件 / 大纲」入口被点击后的侧栏状态：(show_sidebar, side_tab, show_outline)。
+/// 当前正显示该页签时再点一次 → 收起；否则展开并切到该页签。
+fn sidebar_click(visible: bool, tab: SideTab, target: SideTab) -> (bool, SideTab, bool) {
+    if visible && tab == target {
+        (false, tab, tab == SideTab::Outline)
+    } else {
+        (true, target, target == SideTab::Outline)
+    }
+}
+
 fn menu_commands(k: MenuKind) -> Vec<Command> {
     match k {
         MenuKind::File => vec![
@@ -768,26 +778,24 @@ impl MarkdApp {
                     .on_hover_cursor(egui::CursorIcon::Default)
                     .clicked()
                 {
-                    if self.side_tab == SideTab::Files {
-                        // 再次点击当前标签 → 收起侧栏
-                        self.config.show_sidebar = false;
-                        self.config.save();
-                    } else {
-                        self.side_tab = SideTab::Files;
-                    }
+                    let (show, tab, show_outline) =
+                        sidebar_click(self.config.show_sidebar, self.side_tab, SideTab::Files);
+                    self.config.show_sidebar = show;
+                    self.side_tab = tab;
+                    self.config.show_outline = show_outline;
+                    self.config.save();
                 }
                 if ui
                     .selectable_label(self.side_tab == SideTab::Outline, "大纲")
                     .on_hover_cursor(egui::CursorIcon::Default)
                     .clicked()
                 {
-                    if self.side_tab == SideTab::Outline {
-                        self.config.show_sidebar = false;
-                        self.config.save();
-                    } else {
-                        self.side_tab = SideTab::Outline;
-                        self.config.show_outline = true;
-                    }
+                    let (show, tab, show_outline) =
+                        sidebar_click(self.config.show_sidebar, self.side_tab, SideTab::Outline);
+                    self.config.show_sidebar = show;
+                    self.side_tab = tab;
+                    self.config.show_outline = show_outline;
+                    self.config.save();
                 }
                 if ui
                     .button("刷新")
@@ -901,12 +909,11 @@ impl MarkdApp {
                 .on_hover_cursor(egui::CursorIcon::Default)
                 .clicked()
             {
-                // 已经在显示文件树时再点一次 → 收起侧栏；否则显示并切到文件树。
-                self.config.show_sidebar = !files_on;
-                if !files_on {
-                    self.config.show_outline = false;
-                    self.side_tab = SideTab::Files;
-                }
+                let (show, tab, show_outline) =
+                    sidebar_click(self.config.show_sidebar, self.side_tab, SideTab::Files);
+                self.config.show_sidebar = show;
+                self.side_tab = tab;
+                self.config.show_outline = show_outline;
                 self.config.save();
             }
 
@@ -921,11 +928,11 @@ impl MarkdApp {
                 .on_hover_cursor(egui::CursorIcon::Default)
                 .clicked()
             {
-                self.config.show_sidebar = !outline_on;
-                if !outline_on {
-                    self.config.show_outline = true;
-                    self.side_tab = SideTab::Outline;
-                }
+                let (show, tab, show_outline) =
+                    sidebar_click(self.config.show_sidebar, self.side_tab, SideTab::Outline);
+                self.config.show_sidebar = show;
+                self.side_tab = tab;
+                self.config.show_outline = show_outline;
                 self.config.save();
             }
 
@@ -1448,5 +1455,39 @@ mod tests {
         let (show3, tab3) = outline_toggle(show2 && tab2 == SideTab::Outline);
         assert!(show3);
         assert_eq!(tab3, SideTab::Outline);
+    }
+
+    /// 验证「文件 / 大纲」入口的四种点击组合：展开、收起、互切。
+    #[test]
+    fn sidebar_click_toggles_and_switches() {
+        // 1) 收起状态点「文件」→ 展开文件树
+        let (show, tab, outline) = sidebar_click(false, SideTab::Outline, SideTab::Files);
+        assert!(show, "应收起->展开");
+        assert_eq!(tab, SideTab::Files);
+        assert!(!outline);
+
+        // 2) 正显示文件树再点「文件」→ 收起
+        let (show, tab, outline) = sidebar_click(true, SideTab::Files, SideTab::Files);
+        assert!(!show, "再点当前页签应收起侧栏");
+        assert_eq!(tab, SideTab::Files);
+        assert!(!outline);
+
+        // 3) 正显示文件树点「大纲」→ 切换到大纲
+        let (show, tab, outline) = sidebar_click(true, SideTab::Files, SideTab::Outline);
+        assert!(show, "切到另一页签应保持展开");
+        assert_eq!(tab, SideTab::Outline);
+        assert!(outline);
+
+        // 4) 正显示大纲再点「大纲」→ 收起
+        let (show, tab, outline) = sidebar_click(true, SideTab::Outline, SideTab::Outline);
+        assert!(!show, "再点当前页签应收起侧栏");
+        assert_eq!(tab, SideTab::Outline);
+        assert!(outline);
+
+        // 5) 收起状态点「大纲」→ 展开大纲
+        let (show, tab, outline) = sidebar_click(false, SideTab::Files, SideTab::Outline);
+        assert!(show);
+        assert_eq!(tab, SideTab::Outline);
+        assert!(outline);
     }
 }
