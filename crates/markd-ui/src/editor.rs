@@ -24,6 +24,10 @@ pub struct EditorState {
     pub table_draft: Option<(usize, Vec<Vec<String>>, Vec<crate::ast::Align>)>,
     /// 点击进入编辑时，光标应落在的位置（相对块左上角）。
     pub pending_caret: Option<egui::Vec2>,
+    /// 缩进空格数（设置里可调）。
+    pub tab_size: usize,
+    /// 是否自动补全括号/引号。
+    pub auto_pair: bool,
 }
 
 pub enum EditorEvent {
@@ -519,7 +523,7 @@ pub fn show_editor(
     state.focus_req = None;
 
     // ---------------- 自动配对（括号与引号） ----------------
-    if changed {
+    if changed && state.auto_pair {
         if let Some(close) = &typed_pair {
             let pos = cursor_idx.min(active_buf.chars().count());
             pair_insert = Some((pos, close.clone()));
@@ -601,10 +605,11 @@ pub fn show_editor(
     }
     if tab {
         let cur = active_buf.clone();
+        let indent = " ".repeat(state.tab_size.max(1));
         let updated = if shift {
-            cur.strip_prefix("  ").unwrap_or(&cur).to_string()
+            cur.strip_prefix(indent.as_str()).unwrap_or(&cur).to_string()
         } else {
-            format!("  {}", cur)
+            format!("{indent}{cur}")
         };
         if updated != cur {
             doc.record();

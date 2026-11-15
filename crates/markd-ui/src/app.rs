@@ -167,7 +167,7 @@ fn menu_commands(k: MenuKind) -> Vec<Command> {
             Command::Search, Command::Graph, Command::Stats,
         ],
         MenuKind::Theme => vec![Command::ThemeNext],
-        MenuKind::Help => vec![Command::Shortcuts, Command::About],
+        MenuKind::Help => vec![Command::Shortcuts, Command::Settings, Command::About],
     }
 }
 
@@ -231,6 +231,7 @@ pub struct MarkdApp {
     quick_cache: Vec<PathBuf>,
     menu_queue: crate::native_menu::CommandQueue,
     terminal: Terminal,
+    settings: crate::settings::Settings,
 }
 
 impl MarkdApp {
@@ -243,7 +244,20 @@ impl MarkdApp {
         // macOS 原生系统菜单栏（屏幕最左上角），事件通过队列转发。
         let menu_queue = crate::native_menu::install(&cc.egui_ctx);
 
-        let (doc, root) = if let Some(p) = initial.filter(|p| p.is_file()) {
+        let initial = initial.filter(|p| p.is_file());
+        // 没有命令行参数时，按设置恢复上次打开的文件
+        let initial = initial.or_else(|| {
+            if config.restore_last_file {
+                config
+                    .last_file
+                    .as_ref()
+                    .map(PathBuf::from)
+                    .filter(|p| p.is_file())
+            } else {
+                None
+            }
+        });
+        let (doc, root) = if let Some(p) = initial {
             let text = workspace::read(&p).unwrap_or_else(|_| WELCOME.to_string());
             let r = p.parent().map(|x| x.to_path_buf());
             (Document::new(&text, Some(p)), r)
@@ -316,7 +330,19 @@ impl MarkdApp {
             quick_cache: Vec::new(),
             menu_queue,
             terminal,
+            settings: Default::default(),
         }
+    }
+
+    /// 把配置里的外观项应用到主题/缩放/编辑器。
+    fn apply_config(&mut self, ctx: &egui::Context) {
+        self.theme = Theme::get(self.config.theme);
+        self.theme.body = self.config.font_size;
+        self.theme.mono = (self.config.font_size * 0.84).max(11.0);
+        self.theme_dirty = true;
+        ctx.set_zoom_factor(self.config.ui_scale.clamp(0.8, 1.6));
+        self.editor.tab_size = self.config.tab_size.max(1);
+        self.editor.auto_pair = self.config.auto_pair;
     }
 
     fn on_changed(&mut self) {
@@ -449,6 +475,8 @@ impl MarkdApp {
                 self.refresh_stats();
                 self.refresh_tree();
                 self.status = format!("已打开 {}", path.display());
+                self.config.last_file = Some(path.to_string_lossy().to_string());
+                self.config.save();
             }
             Err(e) => self.status = format!("打开失败: {}", e),
         }
@@ -661,6 +689,7 @@ impl MarkdApp {
             }
             Command::Stats => self.stats.open = true,
             Command::Shortcuts => self.shortcuts = true,
+            Command::Settings => self.settings.open(),
             Command::About => self.about = true,
             Command::Quit => {
                 let _ = self.doc.save();
@@ -785,6 +814,8 @@ impl MarkdApp {
             self.execute(Command::Redo, ctx);
         } else if key(egui::Key::Z) {
             self.execute(Command::Undo, ctx);
+        } else if key(egui::Key::Comma) {
+            self.execute(Command::Settings, ctx);
         } else if key(egui::Key::Num1) {
             self.execute(Command::H1, ctx);
         } else if key(egui::Key::Num2) {
@@ -820,6 +851,15 @@ impl MarkdApp {
         ui.horizontal(|ui| {
             // 给 macOS 系统红绿灯按钮留出空间；其它平台只用常规边距。
             ui.add_space(if cfg!(target_os = "macos") { 78.0 } else { 4.0 });
+            // 左上角设置入口
+            if ui
+                .button("⚙")
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .on_hover_text("偏好设置 (Cmd/Ctrl+,)")
+                .clicked()
+            {
+                self.settings.open();
+            }
             // macOS 的菜单已移到屏幕左上角的系统菜单栏，窗口内不再重复显示。
             if !cfg!(target_os = "macos") {
                 for (label, kind) in [
@@ -1210,6 +1250,17 @@ impl MarkdApp {
                 });
         }
 
+        let (settings_changed, settings_reset) =
+            self.settings.show(ctx, &self.theme, &mut self.config);
+        if settings_reset {
+            self.config = Config::default();
+            self.apply_config(ctx);
+            self.config.save();
+        } else if settings_changed {
+            self.apply_config(ctx);
+            self.config.save();
+        }
+
         if self.shortcuts {
             egui::Window::new("快捷键一览")
                 .open(&mut self.shortcuts)
@@ -1398,7 +1449,7 @@ impl MarkdApp {
         if self.config.auto_save
             && self.doc.dirty
             && self.doc.path.is_some()
-            && n.saturating_sub(self.last_autosave) > 20
+            && n.saturating_sub(self.last_autosave) > self.config.auto_save_interval.max(5)
         {
             if self.doc.save().is_ok() {
                 self.last_autosave = n;
@@ -1423,6 +1474,9 @@ impl eframe::App for MarkdApp {
             self.theme.apply(&ctx);
             self.theme_dirty = false;
         }
+        // 设置里的编辑器选项每帧同步到编辑器状态
+        self.editor.tab_size = self.config.tab_size.max(1);
+        self.editor.auto_pair = self.config.auto_pair;
         self.handle_shortcuts(&ctx);
         self.handle_dropped_files(&ctx);
 

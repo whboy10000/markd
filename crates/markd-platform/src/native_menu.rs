@@ -23,8 +23,10 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
 
     // macOS 把第一个子菜单作为「应用菜单」，显示在屏幕最左上角。
     let m_about = mk(&mut map, "about", "关于 Markd", Command::About);
+    let m_settings = mk(&mut map, "settings", "偏好设置…", Command::Settings);
     let m_quit = mk(&mut map, "quit", "退出 Markd", Command::Quit);
-    let app_menu = Submenu::with_items("Markd", true, &[&m_about, &m_quit]).unwrap();
+    let app_menu =
+        Submenu::with_items("Markd", true, &[&m_about, &m_settings, &m_quit]).unwrap();
 
     let m_new = mk(&mut map, "new", "新建", Command::New);
     let m_open_ws = mk(&mut map, "open_ws", "打开工作区…", Command::OpenWorkspace);

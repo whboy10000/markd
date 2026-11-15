@@ -11,5 +11,6 @@ pub mod app;
 pub mod editor;
 pub mod features;
 pub mod render;
+pub mod settings;
 pub mod sidebar;
 pub mod terminal;

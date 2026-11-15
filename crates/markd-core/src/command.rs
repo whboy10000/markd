@@ -49,6 +49,7 @@ pub enum Command {
     Graph,
     Stats,
     Shortcuts,
+    Settings,
     About,
     Quit,
     OpenFile(PathBuf),
@@ -101,6 +102,7 @@ impl Command {
             Command::Graph => "双向链接关系图",
             Command::Stats => "写作统计",
             Command::Shortcuts => "快捷键一览",
+            Command::Settings => "偏好设置…",
             Command::About => "关于",
             Command::Quit => "退出",
             Command::OpenFile(p) => {
@@ -123,7 +125,7 @@ impl Command {
             Command::Bullet, Command::Ordered, Command::Task, Command::Rule, Command::Table,
             Command::Math, Command::Mermaid, Command::Toc, Command::Footnote,
             Command::FrontMatter, Command::Snapshot, Command::Search, Command::Graph,
-            Command::Stats, Command::Shortcuts, Command::About, Command::Quit,
+            Command::Stats, Command::Shortcuts, Command::Settings, Command::About, Command::Quit,
         ]
     }
 }

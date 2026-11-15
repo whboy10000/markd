@@ -35,6 +35,60 @@ pub struct Config {
     pub sidebar_width: f32,
     #[serde(default = "default_show_workspace_bar")]
     pub show_workspace_bar: bool,
+
+    // ---- 设置弹窗里的可调项（全部带 serde 默认值，兼容旧配置） ----
+    #[serde(default = "default_true")]
+    pub auto_pair: bool,
+    #[serde(default = "default_tab_size")]
+    pub tab_size: usize,
+    #[serde(default = "default_true")]
+    pub highlight_code: bool,
+    #[serde(default = "default_auto_save_interval")]
+    pub auto_save_interval: u64,
+    #[serde(default = "default_true")]
+    pub restore_last_file: bool,
+    #[serde(default)]
+    pub last_file: Option<String>,
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
+    #[serde(default = "default_true")]
+    pub insert_image_to_assets: bool,
+    #[serde(default = "default_assets_dir")]
+    pub image_assets_dir: String,
+    #[serde(default = "default_true")]
+    pub image_relative: bool,
+    #[serde(default = "default_true")]
+    pub export_embed_images: bool,
+    #[serde(default)]
+    pub export_open_after: bool,
+    #[serde(default = "default_true")]
+    pub math_enabled: bool,
+    #[serde(default = "default_true")]
+    pub mermaid_enabled: bool,
+    #[serde(default = "default_true")]
+    pub toc_enabled: bool,
+    #[serde(default = "default_true")]
+    pub footnote_enabled: bool,
+    #[serde(default)]
+    pub auto_number_heading: bool,
+    #[serde(default)]
+    pub confirm_on_exit: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_tab_size() -> usize {
+    2
+}
+fn default_auto_save_interval() -> u64 {
+    20
+}
+fn default_ui_scale() -> f32 {
+    1.0
+}
+fn default_assets_dir() -> String {
+    "assets".to_string()
 }
 
 impl Default for Config {
@@ -52,6 +106,24 @@ impl Default for Config {
             show_sidebar_header: true,
             sidebar_width: 240.0,
             show_workspace_bar: false,
+            auto_pair: true,
+            tab_size: 2,
+            highlight_code: true,
+            auto_save_interval: 20,
+            restore_last_file: true,
+            last_file: None,
+            ui_scale: 1.0,
+            insert_image_to_assets: true,
+            image_assets_dir: "assets".to_string(),
+            image_relative: true,
+            export_embed_images: true,
+            export_open_after: false,
+            math_enabled: true,
+            mermaid_enabled: true,
+            toc_enabled: true,
+            footnote_enabled: true,
+            auto_number_heading: false,
+            confirm_on_exit: false,
         }
     }
 }
