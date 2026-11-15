@@ -877,7 +877,24 @@ impl MarkdApp {
                 ui.separator();
             }
 
-            // 大纲显隐开关：正在显示时点击隐藏，隐藏时点击显示。
+            // 状态栏入口：点「文件」显示文件树，点「大纲」显示大纲。
+            let files_on = self.config.show_sidebar && self.side_tab == SideTab::Files;
+            let files_txt = if files_on {
+                RichText::new("文件").strong().color(self.theme.accent)
+            } else {
+                RichText::new("文件").color(self.theme.dim)
+            };
+            if ui
+                .selectable_label(files_on, files_txt)
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .clicked()
+            {
+                self.config.show_sidebar = true;
+                self.config.show_outline = false;
+                self.side_tab = SideTab::Files;
+                self.config.save();
+            }
+
             let outline_on = self.config.show_sidebar && self.side_tab == SideTab::Outline;
             let outline_txt = if outline_on {
                 RichText::new("大纲").strong().color(self.theme.accent)
@@ -889,7 +906,10 @@ impl MarkdApp {
                 .on_hover_cursor(egui::CursorIcon::Default)
                 .clicked()
             {
-                chosen = Some(Command::ToggleOutline);
+                self.config.show_sidebar = true;
+                self.config.show_outline = true;
+                self.side_tab = SideTab::Outline;
+                self.config.save();
             }
 
             // 侧栏标签栏（文件 / 大纲 / 刷新）的显示开关，隐藏后仍可从状态栏恢复。

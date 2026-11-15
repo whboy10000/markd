@@ -261,6 +261,7 @@ pub fn show_editor(
                                 base_dir,
                                 outline,
                                 actions,
+                                max_width: page_w,
                             };
                             render::render_block(ui, idx, &block, &mut env, focus_mode)
                         };
@@ -371,3 +372,86 @@ pub fn show_editor(
 
     EditorEvent::None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(width: f32, mut f: impl FnMut(&mut egui::Ui)) {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 900.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |root| {
+            egui::CentralPanel::default().show(root, |ui| f(ui));
+        });
+        // 无头环境下没有渲染器消费纹理增删，必须显式清掉，否则析构会 panic。
+        out.textures_delta.clear();
+    }
+
+    /// 回归：编辑区正文（段落 / 活动块 / 引用）都必须按窗口宽度软换行。
+    #[test]
+    fn long_paragraph_wraps_in_editor_column() {
+        let text = "word ".repeat(300);
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut label_size = egui::Vec2::ZERO;
+        let mut edit_size = egui::Vec2::ZERO;
+        let mut quote_size = egui::Vec2::ZERO;
+        frame(700.0, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("t")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let outer_w = ui.available_width();
+                    let page_w = (outer_w * 0.9).max(200.0);
+                    ui.horizontal_top(|ui| {
+                        let pad = ((outer_w - page_w) / 2.0).max(0.0);
+                        ui.add_space(pad);
+                        ui.vertical(|ui| {
+                            ui.set_width(page_w);
+                            label_size = ui.add(egui::Label::new(text.clone())).rect.size();
+                            let mut buf = text.clone();
+                            let out = TextEdit::multiline(&mut buf)
+                                .desired_rows(1)
+                                .desired_width(page_w)
+                                .frame(egui::Frame::NONE)
+                                .return_key(Option::<egui::KeyboardShortcut>::None)
+                                .show(ui);
+                            edit_size = out.response.response.rect.size();
+
+                            // 引用块内部是横向布局，最容易退化成不换行。
+                            let quote = Block::Quote {
+                                level: 1,
+                                content: vec![crate::ast::Inline::Text(text.clone())],
+                                source: text.clone(),
+                            };
+                            let ctx_q = ui.ctx().clone();
+                            let mut env = RenderEnv {
+                                theme: &theme,
+                                ctx: &ctx_q,
+                                images: &mut images,
+                                base_dir: None,
+                                outline: &[],
+                                actions: &mut actions,
+                                max_width: page_w,
+                            };
+                            quote_size =
+                                render::render_block(ui, 0, &quote, &mut env, false).rect.size();
+                        });
+                    });
+                });
+        });
+        assert!(label_size.y > 40.0, "Label 没有换行：size={label_size:?}");
+        assert!(label_size.x <= 700.0, "Label 超出窗口：size={label_size:?}");
+        assert!(edit_size.y > 40.0, "TextEdit 没有换行：size={edit_size:?}");
+        assert!(quote_size.y > 40.0, "引用块没有换行：size={quote_size:?}");
+        assert!(quote_size.x <= 700.0, "引用块超出窗口：size={quote_size:?}");
+    }
+}
+

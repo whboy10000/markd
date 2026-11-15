@@ -778,6 +778,9 @@ impl Terminal {
         ui.horizontal(|ui| {
             ui.label(RichText::new("终端").strong().color(theme.accent));
             ui.label(RichText::new(self.cwd.to_string_lossy()).small().color(theme.dim));
+            if self.master.is_some() && !self.focused {
+                ui.label(RichText::new("· 点击下方区域输入").small().color(theme.dim));
+            }
             if let Some(e) = &self.error {
                 ui.label(RichText::new(e).small().color(Color32::from_rgb(220, 95, 90)));
             } else if self.exited {
@@ -853,11 +856,16 @@ impl Terminal {
             .auto_shrink([false, false])
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                let response = ui.add(
-                    egui::Label::new(job)
-                        .extend()
-                        .sense(Sense::click() | Sense::FOCUSABLE),
+                // 先把文本排版好，再把整块可见区域做成可点击/可聚焦控件。
+                // 只让文字本身可点的话，短输出时几乎点不中，表现就是「怎么点都没反应」。
+                let galley = ui.fonts_mut(|f| f.layout_job(job));
+                let body_w = (avail.x - 12.0).max(1.0);
+                let size = egui::vec2(
+                    body_w.max(galley.size().x),
+                    avail.y.max(galley.size().y),
                 );
+                let response = ui.allocate_response(size, Sense::click() | Sense::FOCUSABLE);
+                ui.painter().galley(response.rect.min, galley, theme.text);
                 if response.clicked() {
                     response.request_focus();
                 }
@@ -866,6 +874,14 @@ impl Terminal {
                     self.focus_req = false;
                 }
                 self.focused = response.has_focus();
+                if self.focused {
+                    ui.painter().rect_stroke(
+                        response.rect,
+                        egui::CornerRadius::ZERO,
+                        egui::Stroke::new(1.0, theme.accent),
+                        egui::StrokeKind::Inside,
+                    );
+                }
                 if self.focused {
                     let events: Vec<egui::Event> = ui.input(|i| i.events.clone());
                     let mut out = Vec::new();
@@ -950,3 +966,131 @@ fn key_bytes(key: egui::Key, m: egui::Modifiers, app_cursor: bool) -> Option<Vec
     };
     Some(seq.to_vec())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row_text(screen: &Screen, r: usize) -> String {
+        screen.grid[r]
+            .iter()
+            .map(|c| c.ch)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    fn new_screen(rows: usize, cols: usize) -> (Screen, vte::Parser) {
+        (Screen::new(rows, cols), vte::Parser::new())
+    }
+
+    #[test]
+    fn prints_wraps_and_breaks_line() {
+        let (mut s, mut p) = new_screen(3, 5);
+        p.advance(&mut s, b"abcdefg");
+        assert_eq!(row_text(&s, 0), "abcde");
+        assert_eq!(row_text(&s, 1), "fg");
+    }
+
+    #[test]
+    fn carriage_return_overwrites_line() {
+        let (mut s, mut p) = new_screen(3, 10);
+        p.advance(&mut s, b"hello\rHI");
+        assert_eq!(row_text(&s, 0), "HIllo");
+    }
+
+    #[test]
+    fn erase_line_and_display() {
+        let (mut s, mut p) = new_screen(3, 10);
+        p.advance(&mut s, b"abcdef\x1b[2K");
+        assert_eq!(row_text(&s, 0), "");
+        p.advance(&mut s, b"one\r\ntwo\r\nthree\x1b[2J");
+        assert_eq!(row_text(&s, 0), "");
+        assert_eq!(row_text(&s, 1), "");
+    }
+
+    #[test]
+    fn cursor_positioning_and_sgr() {
+        let (mut s, mut p) = new_screen(3, 10);
+        p.advance(&mut s, b"\x1b[2;3HZ");
+        assert_eq!(s.grid[1][2].ch, 'Z');
+        p.advance(&mut s, b"\x1b[31mR");
+        assert_eq!(s.grid[1][3].fg, Some(ansi_color(1)));
+        p.advance(&mut s, b"\x1b[38;2;1;2;3mT");
+        assert_eq!(s.grid[1][4].fg, Some(Color32::from_rgb(1, 2, 3)));
+        p.advance(&mut s, b"\x1b[0mN");
+        assert_eq!(s.grid[1][5].fg, None);
+    }
+
+    #[test]
+    fn alt_screen_roundtrip() {
+        let (mut s, mut p) = new_screen(3, 10);
+        p.advance(&mut s, b"AAA");
+        p.advance(&mut s, b"\x1b[?1049h");
+        assert_eq!(row_text(&s, 0), "");
+        p.advance(&mut s, b"BBB");
+        assert_eq!(row_text(&s, 0), "BBB");
+        p.advance(&mut s, b"\x1b[?1049l");
+        assert_eq!(row_text(&s, 0), "AAA");
+    }
+
+    #[test]
+    fn scrolling_pushes_into_scrollback() {
+        let (mut s, mut p) = new_screen(2, 4);
+        p.advance(&mut s, b"1\r\n2\r\n3");
+        assert_eq!(s.scrollback.len(), 1);
+        assert_eq!(row_text(&s, 0), "2");
+        assert_eq!(row_text(&s, 1), "3");
+    }
+
+    #[test]
+    fn bracketed_paste_mode_toggles() {
+        let (mut s, mut p) = new_screen(2, 10);
+        assert!(!s.bracketed_paste);
+        p.advance(&mut s, b"\x1b[?2004h");
+        assert!(s.bracketed_paste);
+        p.advance(&mut s, b"\x1b[?2004l");
+        assert!(!s.bracketed_paste);
+    }
+
+    #[test]
+    fn maps_special_keys_to_pty_bytes() {
+        let none = egui::Modifiers::NONE;
+        assert_eq!(key_bytes(egui::Key::Enter, none, false).unwrap(), vec![b'\r']);
+        assert_eq!(key_bytes(egui::Key::Backspace, none, false).unwrap(), vec![0x7f]);
+        assert_eq!(key_bytes(egui::Key::Tab, none, false).unwrap(), vec![b'\t']);
+        assert_eq!(key_bytes(egui::Key::ArrowUp, none, false).unwrap(), b"\x1b[A".to_vec());
+        assert_eq!(key_bytes(egui::Key::ArrowUp, none, true).unwrap(), b"\x1bOA".to_vec());
+        let ctrl = egui::Modifiers { ctrl: true, ..Default::default() };
+        assert_eq!(key_bytes(egui::Key::C, ctrl, false).unwrap(), vec![0x03]);
+        assert_eq!(key_bytes(egui::Key::D, ctrl, false).unwrap(), vec![0x04]);
+        // Ctrl+V 留给粘贴事件，不能被当成控制字符写进 PTY。
+        assert!(key_bytes(egui::Key::V, ctrl, false).is_none());
+        assert!(key_bytes(egui::Key::Space, none, false).is_none());
+    }
+
+    /// 端到端：真的起一个 PTY shell，写入命令，再从解析结果里找输出。
+    /// Windows 默认 shell 是 cmd，命令语法不同，这里只在类 Unix 上跑。
+    #[cfg(not(windows))]
+    #[test]
+    fn pty_shell_executes_command() {
+        let ctx = egui::Context::default();
+        let mut term = Terminal::new(std::env::temp_dir());
+        term.start(&ctx);
+        assert!(term.master.is_some(), "PTY 未启动：{:?}", term.error);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        term.write_bytes(b"echo $((123456*2))\r");
+        let mut text = String::new();
+        for _ in 0..60 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            term.poll();
+            text = term.plain_text();
+            if text.contains("246912") {
+                break;
+            }
+        }
+        term.write_bytes(b"exit\r");
+        assert!(text.contains("246912"), "PTY 没有回显命令结果：\n{text}");
+    }
+}
+

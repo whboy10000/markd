@@ -55,6 +55,9 @@ pub struct RenderEnv<'a> {
     pub base_dir: Option<&'a Path>,
     pub outline: &'a [OutlineItem],
     pub actions: &'a mut Vec<Action>,
+    /// 正文排版宽度。显式传给每个文本块，避免在横向布局里
+    /// Label 退回 `Extend`（无限宽）后长段落永远不换行。
+    pub max_width: f32,
 }
 
 fn append_inline(
@@ -177,6 +180,18 @@ fn first_link(inlines: &[Inline]) -> Option<String> {
     None
 }
 
+/// 用显式宽度排版成 galley 再交给 Label。
+/// `Label` 默认按 Ui 的 wrap 模式决定宽度，横向布局（引用/列表）里会退化成
+/// 无限宽导致长段落不换行；这里直接给定宽度，任何布局下都会换行。
+fn wrapped_label(ui: &mut egui::Ui, mut job: LayoutJob, max_w: f32, sense: Sense) -> egui::Response {
+    let avail = ui.available_width();
+    let w = if avail.is_finite() { avail.min(max_w) } else { max_w };
+    job.wrap.max_width = w.max(80.0);
+    job.wrap.break_anywhere = true;
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
+    ui.add(egui::Label::new(egui::WidgetText::Galley(galley)).sense(sense))
+}
+
 fn text_response(
     ui: &mut egui::Ui,
     inlines: &[Inline],
@@ -188,7 +203,7 @@ fn text_response(
     idx: usize,
 ) -> egui::Response {
     let job = build_layout(inlines, theme, size, color, bold);
-    let resp = ui.add(egui::Label::new(job).sense(Sense::click()));
+    let resp = wrapped_label(ui, job, env.max_width, Sense::click());
     if resp.clicked() && ui.input(|i| i.modifiers.ctrl || i.modifiers.command) {
         if let Some(url) = first_link(inlines) {
             env.actions.push(Action::OpenLink(url));
@@ -553,7 +568,7 @@ pub fn render_block(
                         });
                     });
                     ui.add_space(3.0);
-                    ui.label(code_job(code, lang, theme))
+                    wrapped_label(ui, code_job(code, lang, theme), env.max_width, Sense::hover())
                 });
                 if copied {
                     env.ctx.copy_text(code.clone());
@@ -582,13 +597,23 @@ pub fn render_block(
                                     .fill(theme.table_head)
                                     .inner_margin(3.0)
                                     .show(ui, |ui| {
-                                        ui.label(build_layout(c, theme, theme.body * 0.95, theme.heading, true));
+                                        wrapped_label(
+                                            ui,
+                                            build_layout(c, theme, theme.body * 0.95, theme.heading, true),
+                                            max_col,
+                                            Sense::hover(),
+                                        );
                                     });
                             }
                             ui.end_row();
                             for row in rows {
                                 for c in row {
-                                    ui.label(build_layout(c, theme, theme.body * 0.95, color, false));
+                                    wrapped_label(
+                                        ui,
+                                        build_layout(c, theme, theme.body * 0.95, color, false),
+                                        max_col,
+                                        Sense::hover(),
+                                    );
                                 }
                                 ui.end_row();
                             }
@@ -612,7 +637,7 @@ pub fn render_block(
                         f.color = theme.heading;
                         let mut job = LayoutJob::default();
                         job.append(&math_pretty(tex), 0.0, f);
-                        ui.label(job)
+                        wrapped_label(ui, job, env.max_width, Sense::hover())
                     })
                 });
                 r.response.interact(Sense::click())
@@ -693,6 +718,7 @@ mod tests {
                 base_dir: None,
                 outline: &outline,
                 actions: &mut actions,
+                max_width: 800.0,
             };
             let _ = render_block(ui, 0, &block, &mut env, false);
             assert!(actions.is_empty(), "未点击时不应产生 action");
