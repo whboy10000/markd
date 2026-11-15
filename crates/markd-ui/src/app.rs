@@ -768,14 +768,26 @@ impl MarkdApp {
                     .on_hover_cursor(egui::CursorIcon::Default)
                     .clicked()
                 {
-                    self.side_tab = SideTab::Files;
+                    if self.side_tab == SideTab::Files {
+                        // 再次点击当前标签 → 收起侧栏
+                        self.config.show_sidebar = false;
+                        self.config.save();
+                    } else {
+                        self.side_tab = SideTab::Files;
+                    }
                 }
                 if ui
                     .selectable_label(self.side_tab == SideTab::Outline, "大纲")
                     .on_hover_cursor(egui::CursorIcon::Default)
                     .clicked()
                 {
-                    self.toggle_outline();
+                    if self.side_tab == SideTab::Outline {
+                        self.config.show_sidebar = false;
+                        self.config.save();
+                    } else {
+                        self.side_tab = SideTab::Outline;
+                        self.config.show_outline = true;
+                    }
                 }
                 if ui
                     .button("刷新")
@@ -889,9 +901,12 @@ impl MarkdApp {
                 .on_hover_cursor(egui::CursorIcon::Default)
                 .clicked()
             {
-                self.config.show_sidebar = true;
-                self.config.show_outline = false;
-                self.side_tab = SideTab::Files;
+                // 已经在显示文件树时再点一次 → 收起侧栏；否则显示并切到文件树。
+                self.config.show_sidebar = !files_on;
+                if !files_on {
+                    self.config.show_outline = false;
+                    self.side_tab = SideTab::Files;
+                }
                 self.config.save();
             }
 
@@ -906,9 +921,11 @@ impl MarkdApp {
                 .on_hover_cursor(egui::CursorIcon::Default)
                 .clicked()
             {
-                self.config.show_sidebar = true;
-                self.config.show_outline = true;
-                self.side_tab = SideTab::Outline;
+                self.config.show_sidebar = !outline_on;
+                if !outline_on {
+                    self.config.show_outline = true;
+                    self.side_tab = SideTab::Outline;
+                }
                 self.config.save();
             }
 
