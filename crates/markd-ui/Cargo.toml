@@ -8,6 +8,7 @@ description = "egui 界面：渲染、编辑器交互、侧栏、特色功能与
 egui.workspace = true
 eframe.workspace = true
 image.workspace = true
+regex.workspace = true
 rfd.workspace = true
 serde.workspace = true
 serde_json.workspace = true

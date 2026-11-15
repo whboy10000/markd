@@ -31,6 +31,8 @@ pub struct Document {
     pub path: Option<PathBuf>,
     pub blocks: Vec<Block>,
     pub dirty: bool,
+    /// 内容修订号：每次改动 +1。弹窗类功能（查找）用它判断要不要重算，避免每帧全量扫描。
+    pub rev: u64,
     undo: Vec<String>,
     redo: Vec<String>,
     last_record: Instant,
@@ -42,6 +44,7 @@ impl Document {
             path,
             blocks: ast::parse(text),
             dirty: false,
+            rev: 0,
             undo: Vec::new(),
             redo: Vec::new(),
             last_record: Instant::now(),
@@ -49,7 +52,11 @@ impl Document {
     }
 
     pub fn source(&self) -> String {
-        self.blocks.iter().map(|b| b.source()).collect::<Vec<_>>().join("\n")
+        self.blocks
+            .iter()
+            .map(|b| b.source())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// 记录一次可撤销的快照（去重、限长）。
@@ -75,6 +82,7 @@ impl Document {
     pub fn set_source(&mut self, s: &str) {
         self.blocks = ast::parse(s);
         self.dirty = true;
+        self.rev += 1;
     }
 
     /// 编辑单个块。
@@ -89,6 +97,7 @@ impl Document {
                 *b = parsed.pop().unwrap();
             }
             self.dirty = true;
+            self.rev += 1;
             return;
         }
         if let Some(b) = self.blocks.get_mut(idx) {
@@ -97,20 +106,31 @@ impl Document {
         let s = self.source();
         self.blocks = ast::parse(&s);
         self.dirty = true;
+        self.rev += 1;
     }
 
     /// 在 `idx` 之后插入新块；只解析这段新源码，不重解析全文。
     pub fn insert_block_after(&mut self, idx: usize, source: &str) {
-        let at = if idx < self.blocks.len() { idx + 1 } else { self.blocks.len() };
+        let at = if idx < self.blocks.len() {
+            idx + 1
+        } else {
+            self.blocks.len()
+        };
         let parsed = ast::parse(source);
         if parsed.is_empty() {
-            self.blocks.insert(at, Block::Blank { source: source.to_string() });
+            self.blocks.insert(
+                at,
+                Block::Blank {
+                    source: source.to_string(),
+                },
+            );
         } else {
             for (k, b) in parsed.into_iter().enumerate() {
                 self.blocks.insert(at + k, b);
             }
         }
         self.dirty = true;
+        self.rev += 1;
     }
 
     pub fn remove_block(&mut self, idx: usize) {
@@ -119,6 +139,7 @@ impl Document {
         }
         self.blocks.remove(idx);
         self.dirty = true;
+        self.rev += 1;
     }
 
     pub fn undo(&mut self) -> bool {
@@ -127,6 +148,7 @@ impl Document {
             self.redo.push(cur);
             self.blocks = ast::parse(&prev);
             self.dirty = true;
+            self.rev += 1;
             true
         } else {
             false
@@ -139,6 +161,7 @@ impl Document {
             self.undo.push(cur);
             self.blocks = ast::parse(&next);
             self.dirty = true;
+            self.rev += 1;
             true
         } else {
             false
@@ -170,24 +193,40 @@ impl Document {
     }
 
     pub fn stats(&self) -> Stats {
-        let src = self.blocks.iter().map(|b| b.plain()).collect::<Vec<_>>().join(" ");
+        let src = self
+            .blocks
+            .iter()
+            .map(|b| b.plain())
+            .collect::<Vec<_>>()
+            .join(" ");
         let chars = src.chars().filter(|c| !c.is_whitespace()).count();
         let cjk = src.chars().filter(|c| is_cjk(*c)).count();
         let latin = src.split_whitespace().count();
         let words = latin + cjk;
         let lines = self.source().split('\n').count();
         let reading_min = ((words as f32 / 300.0).ceil() as usize).max(1);
-        Stats { words, chars, cjk, lines, reading_min }
+        Stats {
+            words,
+            chars,
+            cjk,
+            lines,
+            reading_min,
+        }
     }
 
     pub fn outline(&self) -> Vec<OutlineItem> {
         self.blocks
             .iter()
             .enumerate()
-            .filter_map(|(i, b)| b.heading().map(|(level, title)| OutlineItem { level, title, block: i }))
+            .filter_map(|(i, b)| {
+                b.heading().map(|(level, title)| OutlineItem {
+                    level,
+                    title,
+                    block: i,
+                })
+            })
             .collect()
     }
-
 }
 
 /// 收集块中的顶层行内节点，供搜索/双链提取使用。
@@ -212,6 +251,33 @@ pub fn block_inlines(b: &Block) -> Vec<&Inline> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 自动保存最终落到 Document::save：写盘后必须清掉脏标记，
+    /// 否则每次检查都会重复写同一个文件。
+    #[test]
+    fn save_writes_file_and_clears_dirty() {
+        let dir = std::env::temp_dir().join(format!("markd-save-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("doc.md");
+        let mut d = Document::new("# 标题", Some(file.clone()));
+        d.record();
+        d.edit_block(0, "# 改过");
+        assert!(d.dirty);
+        d.save().unwrap();
+        assert!(!d.dirty, "保存后应清掉脏标记");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "# 改过");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 未命名文档没有路径：save() 是空操作，脏状态必须保留（等用户选路径）。
+    #[test]
+    fn save_without_path_keeps_dirty() {
+        let mut d = Document::new("# 标题", None);
+        d.record();
+        d.edit_block(0, "# 改过");
+        assert!(d.save().is_ok());
+        assert!(d.dirty, "没有路径时不该清掉脏标记");
+    }
 
     #[test]
     fn edit_and_undo() {

@@ -24,6 +24,8 @@ pub struct EditorState {
     pub table_draft: Option<(usize, Vec<Vec<String>>, Vec<crate::ast::Align>)>,
     /// 点击进入编辑时，光标应落在的位置（相对块左上角）。
     pub pending_caret: Option<egui::Vec2>,
+    /// 查找/替换跳转要求选中的文字：(块下标, 起始字符, 结束字符)，用后清零。
+    pub select_req: Option<(usize, usize, usize)>,
     /// 缩进空格数（设置里可调）。
     pub tab_size: usize,
     /// 是否自动补全括号/引号。
@@ -112,24 +114,80 @@ pub fn insert_template(doc: &mut Document, state: &mut EditorState, template: &s
 /// 给活动块设置/替换行首前缀（标题、引用、列表等）。
 pub fn apply_prefix(doc: &mut Document, state: &mut EditorState, prefix: &str) {
     let idx = state.active;
-    let Some(b) = doc.blocks.get(idx) else { return; };
-    let src = b.source().to_string();
-    let cleaned = src
-        .trim_start_matches('#')
-        .trim_start_matches('>')
-        .trim_start_matches('-')
-        .trim_start_matches('*')
-        .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ')
-        .to_string();
+    let Some(b) = doc.blocks.get(idx) else {
+        return;
+    };
+    let cleaned = strip_block_prefix(b.source());
     doc.record();
     doc.edit_block(idx, &format!("{}{}", prefix, cleaned));
     state.last_cursor = (prefix.chars().count() + cleaned.chars().count()).min(usize::MAX);
 }
 
+/// 去掉块级标记：#、>、-、*、1.、[ ] 以及前导空格。
+fn strip_block_prefix(src: &str) -> String {
+    src.trim_start_matches('#')
+        .trim_start_matches('>')
+        .trim_start_matches('-')
+        .trim_start_matches('*')
+        .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ' ')
+        .trim_start_matches("[ ] ")
+        .trim_start_matches("[x] ")
+        .trim_start_matches("[X] ")
+        .to_string()
+}
+
+/// 去掉行内强调标记：反引号全部去掉，成对的星号/下划线/波浪号去掉。
+/// 单个 * 和 _ 保留，免得把 snake_case、2*3 这种正常文字也擦掉。
+fn strip_inline_markers(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{60}' => {}
+            '*' | '_' | '~' if chars.peek() == Some(&c) => {
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// 擦除格式（WPS 橡皮擦那种用法）：把光标所在块变回普通段落，
+/// 同时去掉行内强调标记。表格 / 公式 / 图表 / 分隔线 / 空白这些结构块不动，
+/// 返回 false 由调用方提示。
+pub fn clear_format(doc: &mut Document, state: &mut EditorState) -> bool {
+    let idx = state.active;
+    let Some(b) = doc.blocks.get(idx) else {
+        return false;
+    };
+    let raw = match b {
+        Block::Heading { .. }
+        | Block::Paragraph { .. }
+        | Block::Quote { .. }
+        | Block::ListItem { .. }
+        | Block::Footnote { .. } => strip_block_prefix(b.source()),
+        // 代码块擦成段落时保留代码文字，但不再带围栏
+        Block::Code { code, .. } => code.trim_end().to_string(),
+        _ => return false,
+    };
+    let plain = strip_inline_markers(&raw);
+    doc.record();
+    doc.edit_block(idx, plain.trim());
+    true
+}
+
+/// 把当前块还原成普通段落：apply_prefix 的空前缀就是「去掉所有块级标记」。
+pub fn make_paragraph(doc: &mut Document, state: &mut EditorState) {
+    apply_prefix(doc, state, "");
+}
+
 /// 用标记包裹当前选区（无选区时包裹光标所在位置）。
 pub fn wrap(doc: &mut Document, state: &mut EditorState, open: &str, close: &str) {
     let idx = state.active;
-    let Some(b) = doc.blocks.get(idx) else { return; };
+    let Some(b) = doc.blocks.get(idx) else {
+        return;
+    };
     let src = b.source().to_string();
     let len = src.chars().count();
     let (a, z) = state.sel.unwrap_or_else(|| {
@@ -145,7 +203,9 @@ pub fn wrap(doc: &mut Document, state: &mut EditorState, open: &str, close: &str
 }
 
 pub fn toggle_task(doc: &mut Document, idx: usize) {
-    let Some(b) = doc.blocks.get(idx) else { return; };
+    let Some(b) = doc.blocks.get(idx) else {
+        return;
+    };
     let s = b.source().to_string();
     let new = if s.contains("[ ]") {
         s.replacen("[ ]", "[x]", 1)
@@ -214,7 +274,11 @@ impl EditKind {
         match self {
             EditKind::Source => text.to_string(),
             EditKind::Heading(level) => {
-                format!("{} {}", "#".repeat((*level).max(1) as usize), text.trim_end())
+                format!(
+                    "{} {}",
+                    "#".repeat((*level).max(1) as usize),
+                    text.trim_end()
+                )
             }
             EditKind::Code(lang) => {
                 let mut s = String::with_capacity(text.len() + lang.len() + 8);
@@ -232,6 +296,20 @@ impl EditKind {
     }
 }
 
+/// 块的「可编辑文本」：标题只含文字、代码块只含代码，其余块就是 Markdown 源码。
+/// 查找/替换都基于这份文本，替换后再用 rebuild_source 还原成源码写回。
+pub(crate) fn block_buffer(b: &Block) -> String {
+    match EditKind::of(b) {
+        EditKind::Source => b.source().to_string(),
+        _ => b.plain(),
+    }
+}
+
+/// 把改过的可编辑文本还原成块的 Markdown 源码（标题补 #、代码块补围栏）。
+pub(crate) fn rebuild_source(b: &Block, text: &str) -> String {
+    EditKind::of(b).rebuild(text)
+}
+
 #[allow(clippy::too_many_arguments, deprecated)]
 pub fn show_editor(
     ui: &mut egui::Ui,
@@ -245,13 +323,15 @@ pub fn show_editor(
     source_mode: bool,
     focus_mode: bool,
     typewriter: bool,
+    // 标签唯一编号：拼进 TextEdit 的 Id，光标/选中状态才不会被别的标签复用。
+    tab_key: u64,
     actions: &mut Vec<Action>,
 ) -> EditorEvent {
     // ---------------- 源码模式：整篇文档一个多行编辑器 ----------------
     if source_mode {
         let mut src = doc.source();
         let out = TextEdit::multiline(&mut src)
-            .id(Id::new("source_editor"))
+            .id(Id::new(("source_editor", tab_key)))
             .font(egui::TextStyle::Monospace)
             .desired_width(ui.available_width())
             .frame(egui::Frame::NONE)
@@ -267,7 +347,11 @@ pub fn show_editor(
 
     let active = state.active.min(doc.blocks.len().saturating_sub(1));
     state.active = active;
-    let active_multiline = doc.blocks.get(active).map(|b| b.is_multiline()).unwrap_or(false);
+    let active_multiline = doc
+        .blocks
+        .get(active)
+        .map(|b| b.is_multiline())
+        .unwrap_or(false);
 
     let key_state = ctx.input(|i| {
         (
@@ -289,7 +373,11 @@ pub fn show_editor(
 
     // 只维护「活动块」的可编辑缓冲；其它块直接借用 doc.blocks。
     // 之前每帧把所有块的源码 clone 一遍，10 万字时要分配上千个 String。
-    let edit_kind = doc.blocks.get(active).map(EditKind::of).unwrap_or(EditKind::Source);
+    let edit_kind = doc
+        .blocks
+        .get(active)
+        .map(EditKind::of)
+        .unwrap_or(EditKind::Source);
     let mut active_buf = match doc.blocks.get(active) {
         Some(b) if !matches!(edit_kind, EditKind::Source) => b.plain(),
         Some(b) => b.source().to_string(),
@@ -325,13 +413,21 @@ pub fn show_editor(
 
                         let resp = if editing && matches!(block, Block::Table { .. }) {
                             // 表格：像 Typora 一样直接在表格单元格里编辑，不看管道源码。
-                            if let Block::Table { head, rows, align, .. } = block {
-                                let need = !matches!(&state.table_draft, Some((i, _, _)) if *i == idx);
+                            if let Block::Table {
+                                head, rows, align, ..
+                            } = block
+                            {
+                                let need =
+                                    !matches!(&state.table_draft, Some((i, _, _)) if *i == idx);
                                 if need {
                                     let mut grid: Vec<Vec<String>> = Vec::new();
-                                    grid.push(head.iter().map(|c| crate::ast::inline_plain(c)).collect());
+                                    grid.push(
+                                        head.iter().map(|c| crate::ast::inline_plain(c)).collect(),
+                                    );
                                     for r in rows.iter() {
-                                        grid.push(r.iter().map(|c| crate::ast::inline_plain(c)).collect());
+                                        grid.push(
+                                            r.iter().map(|c| crate::ast::inline_plain(c)).collect(),
+                                        );
                                     }
                                     state.table_draft = Some((idx, grid, align.clone()));
                                 }
@@ -344,9 +440,9 @@ pub fn show_editor(
                                 .inner_margin(6.0);
                             let inner = frame.show(ui, |ui| {
                                 if let Some((_, grid, _)) = state.table_draft.as_mut() {
-                                    egui::Grid::new(("table_edit", idx))
-                                        .striped(true)
-                                        .show(ui, |ui| {
+                                    egui::Grid::new(("table_edit", idx)).striped(true).show(
+                                        ui,
+                                        |ui| {
                                             for row in grid.iter_mut() {
                                                 for cell in row.iter_mut() {
                                                     let r = ui.add(
@@ -360,7 +456,8 @@ pub fn show_editor(
                                                 }
                                                 ui.end_row();
                                             }
-                                        });
+                                        },
+                                    );
                                 }
                             });
                             if edited {
@@ -371,7 +468,7 @@ pub fn show_editor(
                             }
                             inner.response.interact(egui::Sense::click())
                         } else if editing {
-                            let id = Id::new(("block_edit", idx));
+                            let id = Id::new(("block_edit", tab_key, idx));
                             // 标题只编辑文字、代码块只编辑代码（不含围栏），像 Typora 一样直接改。
                             let rows = if matches!(edit_kind, EditKind::Code(_)) {
                                 3
@@ -407,7 +504,10 @@ pub fn show_editor(
                                     .frame(egui::Frame::NONE)
                                     .return_key(Option::<egui::KeyboardShortcut>::None),
                                 EditKind::Code(_) => te
-                                    .font(egui::FontId::new(theme.mono, egui::FontFamily::Monospace))
+                                    .font(egui::FontId::new(
+                                        theme.mono,
+                                        egui::FontFamily::Monospace,
+                                    ))
                                     .text_color(theme.text)
                                     .frame(
                                         egui::Frame::NONE
@@ -429,12 +529,26 @@ pub fn show_editor(
                             if let Some(off) = state.pending_caret.take() {
                                 let ccursor = out.galley.cursor_from_pos(off);
                                 let mut ts = out.state.clone();
-                                ts.cursor.set_char_range(Some(
-                                    egui::text::CCursorRange::one(ccursor),
-                                ));
+                                ts.cursor
+                                    .set_char_range(Some(egui::text::CCursorRange::one(ccursor)));
                                 ts.store(ui.ctx(), id);
-                                cursor_idx =
-                                    ccursor.index.0.min(active_buf.chars().count());
+                                cursor_idx = ccursor.index.0.min(active_buf.chars().count());
+                            }
+                            // 查找/替换跳转：把命中的文字选中（字符下标按当前缓冲算）。
+                            if let Some((bi, a, b)) = state.select_req
+                                && bi == idx
+                            {
+                                state.select_req = None;
+                                let len = active_buf.chars().count();
+                                let (a, b) = (a.min(len), b.min(len));
+                                let mut ts = out.state.clone();
+                                ts.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(a),
+                                    egui::text::CCursor::new(b),
+                                )));
+                                ts.store(ui.ctx(), id);
+                                out.response.request_focus();
+                                cursor_idx = a;
                             }
                             let cr = out.cursor_range;
                             let resp = out.response;
@@ -519,6 +633,15 @@ pub fn show_editor(
     if !state.read_only {
         state.last_cursor = cursor_idx;
         state.sel = selection;
+    }
+    if std::env::var("MARKD_TRACE_FOCUS").is_ok() {
+        eprintln!(
+            "[focus] req={:?} focused={:?} editing_block={} active={}",
+            state.focus_req,
+            ctx.memory(|m| m.focused()),
+            !state.read_only,
+            active
+        );
     }
     state.focus_req = None;
 
@@ -607,7 +730,9 @@ pub fn show_editor(
         let cur = active_buf.clone();
         let indent = " ".repeat(state.tab_size.max(1));
         let updated = if shift {
-            cur.strip_prefix(indent.as_str()).unwrap_or(&cur).to_string()
+            cur.strip_prefix(indent.as_str())
+                .unwrap_or(&cur)
+                .to_string()
         } else {
             format!("{indent}{cur}")
         };
@@ -621,13 +746,44 @@ pub fn show_editor(
     EditorEvent::None
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn frame(width: f32, f: impl FnMut(&mut egui::Ui)) {
         frame_sized(width, 900.0, f);
+    }
+
+    /// 复用同一个 Context 跑一帧：模拟真实运行时（galley / 纹理缓存都是热的）。
+    #[allow(clippy::too_many_arguments)]
+    fn frame_warm(
+        ctx: &egui::Context,
+        width: f32,
+        height: f32,
+        doc: &mut Document,
+        state: &mut EditorState,
+        theme: &Theme,
+        images: &mut ImageCache,
+        outline: &[crate::document::OutlineItem],
+        actions: &mut Vec<crate::render::Action>,
+    ) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, height),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |root| {
+            egui::CentralPanel::default().show(root, |ui| {
+                let c = ui.ctx().clone();
+                let _ = show_editor(
+                    ui, doc, state, theme, &c, images, None, outline, false, false, false, 1,
+                    actions,
+                );
+            });
+        });
+        out.textures_delta.clear();
     }
 
     fn frame_sized(width: f32, height: f32, mut f: impl FnMut(&mut egui::Ui)) {
@@ -694,8 +850,9 @@ mod tests {
                                 actions: &mut actions,
                                 max_width: page_w,
                             };
-                            quote_size =
-                                render::render_block(ui, 0, &quote, &mut env, false).rect.size();
+                            quote_size = render::render_block(ui, 0, &quote, &mut env, false)
+                                .rect
+                                .size();
                         });
                     });
                 });
@@ -724,6 +881,52 @@ mod tests {
         let src = EditKind::Code(String::new()).rebuild("a\nb");
         let blocks = crate::ast::parse(&src);
         assert!(matches!(&blocks[0], Block::Code { code, .. } if code == "a\nb"));
+    }
+
+    /// 清除格式：标题 / 引用 / 列表 / 任务列表都变回普通段落，行内加粗也去掉。
+    #[test]
+    fn clear_format_turns_blocks_into_paragraph() {
+        for (src, want) in [
+            ("## **粗体**标题", "粗体标题"),
+            ("> 引用文字", "引用文字"),
+            ("- 列表项", "列表项"),
+            ("1. 有序项", "有序项"),
+            ("- [ ] 待办", "待办"),
+            ("正文里有 ~~删除线~~ 和 `代码`", "正文里有 删除线 和 代码"),
+        ] {
+            let mut doc = Document::new(src, None);
+            let mut st = EditorState::default();
+            assert!(clear_format(&mut doc, &mut st), "{src}");
+            assert_eq!(doc.source(), want);
+        }
+    }
+
+    /// 代码块擦成段落时保留代码正文，不带围栏；表格等结构块不做处理。
+    #[test]
+    fn clear_format_handles_code_and_refuses_structures() {
+        let mut doc = Document::new(
+            "\u{60}\u{60}\u{60}rust\nfn main() {}\n\u{60}\u{60}\u{60}",
+            None,
+        );
+        let mut st = EditorState::default();
+        assert!(clear_format(&mut doc, &mut st));
+        assert_eq!(doc.source(), "fn main() {}");
+
+        let mut table = Document::new("| a | b |\n| - | - |\n| 1 | 2 |", None);
+        assert!(!clear_format(&mut table, &mut st));
+    }
+
+    /// 删除线（工具条按钮）：选中文字后两侧各补一个 ~~，渲染成一条横线。
+    #[test]
+    fn strike_wraps_selection() {
+        let mut doc = Document::new("普通文字", None);
+        let mut st = EditorState {
+            sel: Some((0, 2)),
+            ..Default::default()
+        };
+        wrap(&mut doc, &mut st, "~~", "~~");
+        assert_eq!(doc.source(), "~~普通~~文字");
+        assert!(doc.dirty);
     }
 
     /// 大纲跳转：点击标题后应把该块设为活动块，并消费滚动请求
@@ -762,6 +965,7 @@ mod tests {
                 false,
                 false,
                 false,
+                1,
                 &mut actions,
             );
         });
@@ -813,8 +1017,19 @@ mod tests {
             frame(1200.0, |ui| {
                 let ctx = ui.ctx().clone();
                 let _ = show_editor(
-                    ui, &mut doc, &mut state, &theme, &ctx, &mut images, None, &outline,
-                    false, false, false, &mut actions,
+                    ui,
+                    &mut doc,
+                    &mut state,
+                    &theme,
+                    &ctx,
+                    &mut images,
+                    None,
+                    &outline,
+                    false,
+                    false,
+                    false,
+                    1,
+                    &mut actions,
                 );
             });
             let e = t.elapsed();
@@ -836,6 +1051,137 @@ mod tests {
         println!("[100k] 20 次 edit_block = {:?}", t.elapsed());
     }
 
+    /// 50 万字（中文）整篇打开、滚动浏览与连续输入的实测。
+    #[test]
+    fn bench_500k_doc() {
+        use std::time::Instant;
+        let para = "这是一段用于性能测试的正文，包含 **加粗**、*斜体*、`行内代码` 和 [链接](https://example.com) 以及中文标点。".repeat(3);
+        let per = para.chars().count() + 2;
+        let n = 500_000 / per + 1;
+        let mut text = String::new();
+        for i in 0..n {
+            if i % 20 == 0 {
+                text.push_str(&format!(
+                    "## 标题 {i}
+
+"
+                ));
+            }
+            text.push_str(&para);
+            text.push_str(
+                "
+
+",
+            );
+        }
+        let chars = text.chars().count();
+        println!("[500k] chars = {chars}");
+
+        let t = Instant::now();
+        let blocks = crate::ast::parse(&text);
+        println!(
+            "[500k] 打开时解析 = {:?}, blocks = {}",
+            t.elapsed(),
+            blocks.len()
+        );
+
+        let mut doc = Document::new(&text, None);
+        let t = Instant::now();
+        let outline = doc.outline();
+        println!("[500k] 大纲 = {:?}", t.elapsed());
+        let t = Instant::now();
+        let _ = doc.stats();
+        println!("[500k] 统计 = {:?}", t.elapsed());
+
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut state = EditorState::default();
+        let total = doc.blocks.len();
+
+        // 冷启动第一帧（缓存全空）：打开文档那一瞬间的成本
+        let ctx = egui::Context::default();
+        let t = Instant::now();
+        frame_warm(
+            &ctx,
+            1200.0,
+            900.0,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &outline,
+            &mut actions,
+        );
+        println!("[500k] 首帧（冷缓存）= {:?}", t.elapsed());
+
+        // 热缓存下的滚动浏览：真实使用时的每帧成本
+        let mut worst = std::time::Duration::ZERO;
+        let mut sum = std::time::Duration::ZERO;
+        let mut cnt = 0;
+        for frac in 0..20 {
+            let target = (total.saturating_sub(1) * frac) / 20;
+            state.active = target;
+            state.scroll_req = Some(target);
+            let t = Instant::now();
+            frame_warm(
+                &ctx,
+                1200.0,
+                900.0,
+                &mut doc,
+                &mut state,
+                &theme,
+                &mut images,
+                &outline,
+                &mut actions,
+            );
+            let e = t.elapsed();
+            sum += e;
+            worst = worst.max(e);
+            cnt += 1;
+        }
+        println!(
+            "[500k] 热缓存滚动 20 帧：avg = {:?}, worst = {:?}",
+            sum / cnt,
+            worst
+        );
+
+        // 连续输入：改一个字 + 重绘一帧，测真实打字的手感
+        state.active = total / 2;
+        state.scroll_req = None;
+        let t = Instant::now();
+        let mut worst_edit = std::time::Duration::ZERO;
+        let mut sum_edit = std::time::Duration::ZERO;
+        for k in 0..30 {
+            doc.edit_block(total / 2, &format!("连续输入测试 {k}"));
+            let t1 = Instant::now();
+            frame_warm(
+                &ctx,
+                1200.0,
+                900.0,
+                &mut doc,
+                &mut state,
+                &theme,
+                &mut images,
+                &outline,
+                &mut actions,
+            );
+            let e = t1.elapsed();
+            sum_edit += e;
+            worst_edit = worst_edit.max(e);
+        }
+        let _ = t.elapsed();
+        println!(
+            "[500k] 每键一帧 30 次：avg = {:?}, worst = {:?}",
+            sum_edit / 30,
+            worst_edit
+        );
+
+        let t = Instant::now();
+        doc.edit_block(total / 2, &format!("最终 {}", chars));
+        println!("[500k] 单次 edit_block = {:?}", t.elapsed());
+    }
+
     /// 性能基准（打印耗时）：10 万字级别的文档，看各环节开销。
     #[test]
     fn bench_large_doc() {
@@ -853,7 +1199,11 @@ mod tests {
 
         let t = Instant::now();
         let blocks = crate::ast::parse(&text);
-        println!("[bench] parse = {:?}, blocks = {}", t.elapsed(), blocks.len());
+        println!(
+            "[bench] parse = {:?}, blocks = {}",
+            t.elapsed(),
+            blocks.len()
+        );
 
         let mut doc = Document::new(&text, None);
         let t = Instant::now();
@@ -877,8 +1227,19 @@ mod tests {
             frame(1000.0, |ui| {
                 let ctx = ui.ctx().clone();
                 let _ = show_editor(
-                    ui, &mut doc, &mut state, &theme, &ctx, &mut images, None, &outline,
-                    false, false, false, &mut actions,
+                    ui,
+                    &mut doc,
+                    &mut state,
+                    &theme,
+                    &ctx,
+                    &mut images,
+                    None,
+                    &outline,
+                    false,
+                    false,
+                    false,
+                    1,
+                    &mut actions,
                 );
             });
             println!("[bench] editor frame {i} = {:?}", t.elapsed());
@@ -889,12 +1250,22 @@ mod tests {
             frame_sized(1000.0, 300.0, |ui| {
                 let ctx = ui.ctx().clone();
                 let _ = show_editor(
-                    ui, &mut doc, &mut state, &theme, &ctx, &mut images, None, &outline,
-                    false, false, false, &mut actions,
+                    ui,
+                    &mut doc,
+                    &mut state,
+                    &theme,
+                    &ctx,
+                    &mut images,
+                    None,
+                    &outline,
+                    false,
+                    false,
+                    false,
+                    1,
+                    &mut actions,
                 );
             });
             println!("[bench] small-viewport frame {i} = {:?}", t.elapsed());
         }
     }
 }
-

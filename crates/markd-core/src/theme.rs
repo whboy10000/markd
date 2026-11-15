@@ -36,7 +36,10 @@ impl ThemeKind {
     }
 
     pub fn is_dark(self) -> bool {
-        matches!(self, ThemeKind::Dark | ThemeKind::Nord | ThemeKind::Solarized)
+        matches!(
+            self,
+            ThemeKind::Dark | ThemeKind::Nord | ThemeKind::Solarized
+        )
     }
 }
 
@@ -65,41 +68,121 @@ fn rgb(r: u8, g: u8, b: u8) -> Color32 {
 
 impl Theme {
     pub fn get(kind: ThemeKind) -> Self {
-        let (bg, panel, text, dim, accent, code_bg, border, heading, link, quote, table_head, selection) = match kind {
+        let (
+            bg,
+            panel,
+            text,
+            dim,
+            accent,
+            code_bg,
+            border,
+            heading,
+            link,
+            quote,
+            table_head,
+            selection,
+        ) = match kind {
             ThemeKind::Light => (
-                rgb(255, 255, 255), rgb(247, 247, 248), rgb(38, 38, 40), rgb(140, 140, 145),
-                rgb(46, 117, 182), rgb(245, 245, 247), rgb(224, 224, 228), rgb(28, 28, 30),
-                rgb(46, 117, 182), rgb(120, 120, 125), rgb(249, 249, 251), rgb(200, 222, 248),
+                rgb(255, 255, 255),
+                rgb(247, 247, 248),
+                rgb(38, 38, 40),
+                rgb(140, 140, 145),
+                rgb(46, 117, 182),
+                rgb(245, 245, 247),
+                rgb(224, 224, 228),
+                rgb(28, 28, 30),
+                rgb(46, 117, 182),
+                rgb(120, 120, 125),
+                rgb(249, 249, 251),
+                rgb(200, 222, 248),
             ),
             ThemeKind::Dark => (
-                rgb(32, 33, 36), rgb(26, 27, 30), rgb(222, 224, 227), rgb(120, 122, 128),
-                rgb(108, 166, 240), rgb(42, 44, 48), rgb(62, 64, 70), rgb(240, 242, 245),
-                rgb(120, 178, 250), rgb(140, 142, 148), rgb(38, 40, 44), rgb(55, 90, 140),
+                rgb(32, 33, 36),
+                rgb(26, 27, 30),
+                rgb(222, 224, 227),
+                rgb(120, 122, 128),
+                rgb(108, 166, 240),
+                rgb(42, 44, 48),
+                rgb(62, 64, 70),
+                rgb(240, 242, 245),
+                rgb(120, 178, 250),
+                rgb(140, 142, 148),
+                rgb(38, 40, 44),
+                rgb(55, 90, 140),
             ),
             ThemeKind::Github => (
-                rgb(255, 255, 255), rgb(246, 248, 250), rgb(36, 41, 47), rgb(110, 118, 129),
-                rgb(9, 105, 218), rgb(246, 248, 250), rgb(208, 215, 222), rgb(27, 31, 36),
-                rgb(9, 105, 218), rgb(89, 99, 110), rgb(246, 248, 250), rgb(181, 213, 255),
+                rgb(255, 255, 255),
+                rgb(246, 248, 250),
+                rgb(36, 41, 47),
+                rgb(110, 118, 129),
+                rgb(9, 105, 218),
+                rgb(246, 248, 250),
+                rgb(208, 215, 222),
+                rgb(27, 31, 36),
+                rgb(9, 105, 218),
+                rgb(89, 99, 110),
+                rgb(246, 248, 250),
+                rgb(181, 213, 255),
             ),
             ThemeKind::Sepia => (
-                rgb(244, 236, 216), rgb(236, 226, 203), rgb(76, 60, 42), rgb(150, 132, 105),
-                rgb(155, 82, 44), rgb(236, 226, 205), rgb(214, 199, 172), rgb(66, 48, 32),
-                rgb(155, 82, 44), rgb(133, 112, 85), rgb(238, 229, 208), rgb(222, 197, 160),
+                rgb(244, 236, 216),
+                rgb(236, 226, 203),
+                rgb(76, 60, 42),
+                rgb(150, 132, 105),
+                rgb(155, 82, 44),
+                rgb(236, 226, 205),
+                rgb(214, 199, 172),
+                rgb(66, 48, 32),
+                rgb(155, 82, 44),
+                rgb(133, 112, 85),
+                rgb(238, 229, 208),
+                rgb(222, 197, 160),
             ),
             ThemeKind::Nord => (
-                rgb(46, 52, 64), rgb(40, 46, 58), rgb(216, 222, 233), rgb(122, 132, 148),
-                rgb(136, 192, 208), rgb(52, 59, 72), rgb(67, 76, 94), rgb(236, 239, 244),
-                rgb(143, 188, 187), rgb(135, 146, 163), rgb(50, 57, 70), rgb(76, 106, 133),
+                rgb(46, 52, 64),
+                rgb(40, 46, 58),
+                rgb(216, 222, 233),
+                rgb(122, 132, 148),
+                rgb(136, 192, 208),
+                rgb(52, 59, 72),
+                rgb(67, 76, 94),
+                rgb(236, 239, 244),
+                rgb(143, 188, 187),
+                rgb(135, 146, 163),
+                rgb(50, 57, 70),
+                rgb(76, 106, 133),
             ),
             ThemeKind::Solarized => (
-                rgb(0, 43, 54), rgb(7, 54, 66), rgb(131, 148, 150), rgb(101, 123, 131),
-                rgb(38, 139, 210), rgb(7, 54, 66), rgb(30, 76, 88), rgb(147, 161, 161),
-                rgb(42, 161, 152), rgb(101, 123, 131), rgb(10, 60, 72), rgb(32, 92, 112),
+                rgb(0, 43, 54),
+                rgb(7, 54, 66),
+                rgb(131, 148, 150),
+                rgb(101, 123, 131),
+                rgb(38, 139, 210),
+                rgb(7, 54, 66),
+                rgb(30, 76, 88),
+                rgb(147, 161, 161),
+                rgb(42, 161, 152),
+                rgb(101, 123, 131),
+                rgb(10, 60, 72),
+                rgb(32, 92, 112),
             ),
         };
         Self {
-            kind, bg, panel, text, dim, accent, code_bg, border, heading, link, quote,
-            table_head, selection, body: 16.0, mono: 13.5,
+            kind,
+            bg,
+            panel,
+            text,
+            dim,
+            accent,
+            code_bg,
+            border,
+            heading,
+            link,
+            quote,
+            table_head,
+            selection,
+            body: 16.0,
+            mono: 13.5,
         }
     }
 
@@ -141,7 +224,11 @@ impl Theme {
     }
 
     pub fn apply(&self, ctx: &Context) {
-        let mut visuals = if self.kind.is_dark() { Visuals::dark() } else { Visuals::light() };
+        let mut visuals = if self.kind.is_dark() {
+            Visuals::dark()
+        } else {
+            Visuals::light()
+        };
         visuals.override_text_color = Some(self.text);
         visuals.panel_fill = self.panel;
         visuals.window_fill = self.bg;

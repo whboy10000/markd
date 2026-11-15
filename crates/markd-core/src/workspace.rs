@@ -49,6 +49,9 @@ pub struct Config {
     pub restore_last_file: bool,
     #[serde(default)]
     pub last_file: Option<String>,
+    /// 首页「最近打开」列表，最新的排在最前面。
+    #[serde(default)]
+    pub recent: Vec<String>,
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f32,
     #[serde(default = "default_true")]
@@ -112,6 +115,7 @@ impl Default for Config {
             auto_save_interval: 20,
             restore_last_file: true,
             last_file: None,
+            recent: Vec::new(),
             ui_scale: 1.0,
             insert_image_to_assets: true,
             image_assets_dir: "assets".to_string(),
@@ -199,10 +203,26 @@ pub fn scan_tree(root: &Path, expanded: &HashSet<PathBuf>) -> Vec<FileNode> {
             let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
             if is_dir {
                 let is_open = expanded.contains(&path);
-                let children = if is_open { walk(&path, depth + 1, expanded) } else { Vec::new() };
-                out.push(FileNode { name, path, is_dir: true, children, expanded: is_open });
+                let children = if is_open {
+                    walk(&path, depth + 1, expanded)
+                } else {
+                    Vec::new()
+                };
+                out.push(FileNode {
+                    name,
+                    path,
+                    is_dir: true,
+                    children,
+                    expanded: is_open,
+                });
             } else if is_md(&name) {
-                out.push(FileNode { name, path, is_dir: false, children: Vec::new(), expanded: false });
+                out.push(FileNode {
+                    name,
+                    path,
+                    is_dir: false,
+                    children: Vec::new(),
+                    expanded: false,
+                });
             }
         }
         out
@@ -210,20 +230,29 @@ pub fn scan_tree(root: &Path, expanded: &HashSet<PathBuf>) -> Vec<FileNode> {
     walk(root, 0, expanded)
 }
 
+/// 链接图扫描的上限：文件数与遍历条目数都要封顶。
+/// 把桌面、家目录甚至整盘当成工作区时，无上限遍历会让启动卡死。
+const MAX_MARKDOWN_FILES: usize = 4000;
+const MAX_SCAN_ENTRIES: usize = 60_000;
+
 pub fn collect_markdown(root: &Path) -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
-        if depth > 8 {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize, seen: &mut usize) {
+        if depth > 8 || out.len() >= MAX_MARKDOWN_FILES || *seen >= MAX_SCAN_ENTRIES {
             return;
         }
         if let Ok(rd) = fs::read_dir(dir) {
             for e in rd.filter_map(|e| e.ok()) {
+                *seen += 1;
+                if out.len() >= MAX_MARKDOWN_FILES || *seen >= MAX_SCAN_ENTRIES {
+                    return;
+                }
                 let name = e.file_name().to_string_lossy().to_string();
                 if hidden(&name) {
                     continue;
                 }
                 let p = e.path();
                 if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    walk(&p, out, depth + 1);
+                    walk(&p, out, depth + 1, seen);
                 } else if is_md(&name) {
                     out.push(p);
                 }
@@ -231,7 +260,8 @@ pub fn collect_markdown(root: &Path) -> Vec<PathBuf> {
         }
     }
     let mut v = Vec::new();
-    walk(root, &mut v, 0);
+    let mut seen = 0usize;
+    walk(root, &mut v, 0, &mut seen);
     v.sort();
     v
 }
@@ -250,7 +280,11 @@ pub fn write(path: &Path, s: &str) -> std::io::Result<()> {
 /// 解析 Markdown 中的本地图片/链接路径；http(s) 与 data: 返回 None。
 pub fn resolve(base: Option<&Path>, url: &str) -> Option<PathBuf> {
     let u = url.trim();
-    if u.starts_with("http://") || u.starts_with("https://") || u.starts_with("data:") || u.is_empty() {
+    if u.starts_with("http://")
+        || u.starts_with("https://")
+        || u.starts_with("data:")
+        || u.is_empty()
+    {
         return None;
     }
     let p = PathBuf::from(u);

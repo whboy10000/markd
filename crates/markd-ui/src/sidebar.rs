@@ -82,18 +82,29 @@ pub fn outline_panel(
     actions: &mut Vec<SideAction>,
 ) {
     if outline.is_empty() {
-        ui.label(RichText::new("（暂无标题）").color(theme.dim));
+        ui.label(
+            RichText::new("（暂无标题）")
+                .size(theme.body + 2.0)
+                .color(theme.dim),
+        );
         return;
     }
+    // 大纲和文件树共用侧栏宽度：显式撑满可用宽度，避免条目短时面板看起来更窄。
+    let full_w = ui.available_width();
     for item in outline {
         let indent = (item.level.saturating_sub(1) as f32) * 13.0;
         let resp = ui
             .horizontal(|ui| {
+                ui.set_min_width(full_w.max(60.0));
                 ui.add_space(indent);
                 ui.add(
-                    egui::Label::new(RichText::new(item.title.clone()).color(theme.text))
-                        .selectable(false)
-                        .sense(Sense::click()),
+                    egui::Label::new(
+                        RichText::new(item.title.clone())
+                            .size(theme.body + 2.0)
+                            .color(theme.text),
+                    )
+                    .selectable(false)
+                    .sense(Sense::click()),
                 )
                 .on_hover_cursor(egui::CursorIcon::Default)
             })

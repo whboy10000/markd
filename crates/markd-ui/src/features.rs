@@ -4,7 +4,7 @@
 use crate::document::Document;
 use crate::theme::Theme;
 use crate::workspace;
-use egui::{self, Align2, Color32, FontId, FontFamily, Pos2, Rect, RichText, Sense, Stroke, Vec2};
+use egui::{self, Align2, Color32, FontFamily, FontId, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -99,12 +99,17 @@ impl Palette {
 
                 let q = self.query.trim().to_lowercase();
                 let mut items: Vec<(String, Command)> = match self.mode {
-                    PaletteMode::Commands => Command::all().into_iter().map(|c| (c.label(), c)).collect(),
+                    PaletteMode::Commands => {
+                        Command::all().into_iter().map(|c| (c.label(), c)).collect()
+                    }
                     PaletteMode::Files => files
                         .iter()
                         .map(|p| {
                             (
-                                p.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                                p.file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string(),
                                 Command::OpenFile(p.clone()),
                             )
                         })
@@ -133,15 +138,17 @@ impl Palette {
                     result = Some(items[self.cursor].1.clone());
                     close = true;
                 }
-                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                    for (i, (name, cmd)) in items.iter().enumerate() {
-                        let r = ui.selectable_label(i == self.cursor, name);
-                        if r.clicked() {
-                            result = Some(cmd.clone());
-                            close = true;
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        for (i, (name, cmd)) in items.iter().enumerate() {
+                            let r = ui.selectable_label(i == self.cursor, name);
+                            if r.clicked() {
+                                result = Some(cmd.clone());
+                                close = true;
+                            }
                         }
-                    }
-                });
+                    });
             });
         if close {
             self.open = false;
@@ -196,7 +203,11 @@ impl SnapshotStore {
             id: format!("{}-{}", ts, self.items.len()),
             label,
             ts,
-            path: doc.path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+            path: doc
+                .path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
             content,
         });
         if self.items.len() > 60 {
@@ -219,34 +230,43 @@ impl SnapshotStore {
             .show(ctx, |ui| {
                 ui.label("每次保存或手动拍摄都会留下一个可回溯的版本。");
                 ui.add_space(6.0);
-                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                    let mut i = 0usize;
-                    while i < self.items.len() {
-                        let s = &self.items[i];
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(&s.label).strong());
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button("恢复").clicked() {
-                                    restore = Some(s.content.clone());
-                                }
-                                if ui.button("删除").clicked() {
-                                    remove = Some(i);
-                                }
+                egui::ScrollArea::vertical()
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        let mut i = 0usize;
+                        while i < self.items.len() {
+                            let s = &self.items[i];
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&s.label).strong());
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.button("恢复").clicked() {
+                                            restore = Some(s.content.clone());
+                                        }
+                                        if ui.button("删除").clicked() {
+                                            remove = Some(i);
+                                        }
+                                    },
+                                );
                             });
-                        });
-                        ui.label(
-                            RichText::new(format!(
-                                "{}  ·  {}",
-                                if s.path.is_empty() { "未命名" } else { &s.path },
-                                s.content.lines().count()
-                            ))
-                            .small()
-                            .color(Color32::GRAY),
-                        );
-                        ui.separator();
-                        i += 1;
-                    }
-                });
+                            ui.label(
+                                RichText::new(format!(
+                                    "{}  ·  {}",
+                                    if s.path.is_empty() {
+                                        "未命名"
+                                    } else {
+                                        &s.path
+                                    },
+                                    s.content.lines().count()
+                                ))
+                                .small()
+                                .color(Color32::GRAY),
+                            );
+                            ui.separator();
+                            i += 1;
+                        }
+                    });
             });
         if let Some(i) = remove {
             if i < self.items.len() {
@@ -275,7 +295,11 @@ pub struct SearchPanel {
 
 impl Default for SearchPanel {
     fn default() -> Self {
-        Self { open: false, query: String::new(), hits: Vec::new() }
+        Self {
+            open: false,
+            query: String::new(),
+            hits: Vec::new(),
+        }
     }
 }
 
@@ -320,23 +344,30 @@ impl SearchPanel {
                         .desired_width(420.0)
                         .show(ui);
                     out.response.request_focus();
-                    if ui.button("搜索").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    if ui.button("搜索").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
                         run = true;
                     }
                 });
-                ui.label(RichText::new(format!("命中 {} 条", self.hits.len())).small().color(Color32::GRAY));
-                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                    for h in &self.hits {
-                        let name = h.path.file_name().unwrap_or_default().to_string_lossy();
-                        let r = ui.selectable_label(
-                            false,
-                            format!("{}:{}  {}", name, h.line, h.text),
-                        );
-                        if r.clicked() {
-                            jump = Some((h.path.clone(), h.line.saturating_sub(1)));
+                ui.label(
+                    RichText::new(format!("命中 {} 条", self.hits.len()))
+                        .small()
+                        .color(Color32::GRAY),
+                );
+                egui::ScrollArea::vertical()
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        for h in &self.hits {
+                            let name = h.path.file_name().unwrap_or_default().to_string_lossy();
+                            let r = ui.selectable_label(
+                                false,
+                                format!("{}:{}  {}", name, h.line, h.text),
+                            );
+                            if r.clicked() {
+                                jump = Some((h.path.clone(), h.line.saturating_sub(1)));
+                            }
                         }
-                    }
-                });
+                    });
             });
         if run {
             self.run(root);
@@ -405,7 +436,10 @@ impl GraphPanel {
                     if let Some(a) = pos.get(src) {
                         for t in targets {
                             if let Some(b) = pos.get(t) {
-                                p.line_segment([*a, *b], Stroke::new(1.0, Color32::from_rgb(120, 140, 170)));
+                                p.line_segment(
+                                    [*a, *b],
+                                    Stroke::new(1.0, Color32::from_rgb(120, 140, 170)),
+                                );
                             }
                         }
                     }
@@ -495,12 +529,20 @@ impl WritingStats {
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(380.0, 110.0), Sense::hover());
                 if self.history.len() > 1 {
                     let min = self.history.iter().map(|(_, w)| *w).min().unwrap_or(0);
-                    let max = self.history.iter().map(|(_, w)| *w).max().unwrap_or(1).max(min + 1);
+                    let max = self
+                        .history
+                        .iter()
+                        .map(|(_, w)| *w)
+                        .max()
+                        .unwrap_or(1)
+                        .max(min + 1);
                     let p = ui.painter();
                     let mut prev: Option<Pos2> = None;
                     for (i, (_, w)) in self.history.iter().enumerate() {
-                        let x = rect.min.x + (i as f32 / (self.history.len() - 1) as f32) * rect.width();
-                        let y = rect.max.y - ((w - min) as f32 / (max - min) as f32) * rect.height();
+                        let x = rect.min.x
+                            + (i as f32 / (self.history.len() - 1) as f32) * rect.width();
+                        let y =
+                            rect.max.y - ((w - min) as f32 / (max - min) as f32) * rect.height();
                         let cur = Pos2::new(x, y);
                         if let Some(pr) = prev {
                             p.line_segment([pr, cur], Stroke::new(2.0, theme.accent));

@@ -44,19 +44,62 @@ pub enum DiagramKind {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Block {
-    Heading { level: u8, content: Vec<Inline>, source: String },
-    Paragraph { content: Vec<Inline>, source: String },
-    Quote { level: usize, content: Vec<Inline>, source: String },
-    ListItem { item: ListItem, source: String },
-    Code { lang: String, code: String, source: String },
-    Table { head: Vec<Vec<Inline>>, rows: Vec<Vec<Vec<Inline>>>, align: Vec<Align>, source: String },
-    Rule { source: String },
-    Math { tex: String, source: String },
-    Diagram { kind: DiagramKind, code: String, source: String },
-    FrontMatter { yaml: String, source: String },
-    Footnote { id: String, content: Vec<Inline>, source: String },
-    Toc { source: String },
-    Blank { source: String },
+    Heading {
+        level: u8,
+        content: Vec<Inline>,
+        source: String,
+    },
+    Paragraph {
+        content: Vec<Inline>,
+        source: String,
+    },
+    Quote {
+        level: usize,
+        content: Vec<Inline>,
+        source: String,
+    },
+    ListItem {
+        item: ListItem,
+        source: String,
+    },
+    Code {
+        lang: String,
+        code: String,
+        source: String,
+    },
+    Table {
+        head: Vec<Vec<Inline>>,
+        rows: Vec<Vec<Vec<Inline>>>,
+        align: Vec<Align>,
+        source: String,
+    },
+    Rule {
+        source: String,
+    },
+    Math {
+        tex: String,
+        source: String,
+    },
+    Diagram {
+        kind: DiagramKind,
+        code: String,
+        source: String,
+    },
+    FrontMatter {
+        yaml: String,
+        source: String,
+    },
+    Footnote {
+        id: String,
+        content: Vec<Inline>,
+        source: String,
+    },
+    Toc {
+        source: String,
+    },
+    Blank {
+        source: String,
+    },
 }
 
 impl Block {
@@ -141,7 +184,10 @@ pub fn inline_plain(inlines: &[Inline]) -> String {
     for i in inlines {
         match i {
             Inline::Text(t) | Inline::Code(t) | Inline::Math(t) | Inline::Wiki(t) => s.push_str(t),
-            Inline::Strong(v) | Inline::Emph(v) | Inline::Strike(v) | Inline::Link { label: v, .. } => {
+            Inline::Strong(v)
+            | Inline::Emph(v)
+            | Inline::Strike(v)
+            | Inline::Link { label: v, .. } => {
                 s.push_str(&inline_plain(v));
             }
             Inline::Image { alt, .. } => s.push_str(alt),
@@ -156,7 +202,10 @@ pub fn collect_wiki(inlines: &[Inline], out: &mut Vec<String>) {
     for i in inlines {
         match i {
             Inline::Wiki(name) => out.push(name.clone()),
-            Inline::Strong(v) | Inline::Emph(v) | Inline::Strike(v) | Inline::Link { label: v, .. } => {
+            Inline::Strong(v)
+            | Inline::Emph(v)
+            | Inline::Strike(v)
+            | Inline::Link { label: v, .. } => {
                 collect_wiki(v, out);
             }
             _ => {}
@@ -273,7 +322,10 @@ pub fn parse_inline(s: &str) -> Vec<Inline> {
             }
             if let Some((label, url, end)) = parse_link(&c, i) {
                 flush!();
-                out.push(Inline::Link { label: parse_inline(&label), url });
+                out.push(Inline::Link {
+                    label: parse_inline(&label),
+                    url,
+                });
                 i = end;
                 continue;
             }
@@ -321,7 +373,10 @@ pub fn parse_inline(s: &str) -> Vec<Inline> {
                 let inside: String = c[i + 1..end].iter().collect();
                 if inside.starts_with("http://") || inside.starts_with("https://") {
                     flush!();
-                    out.push(Inline::Link { label: parse_inline(&inside), url: inside });
+                    out.push(Inline::Link {
+                        label: parse_inline(&inside),
+                        url: inside,
+                    });
                     i = end + 1;
                     continue;
                 }
@@ -351,7 +406,10 @@ fn heading(line: &str) -> Option<(u8, &str)> {
 
 fn is_rule(line: &str) -> bool {
     let t: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-    t.len() >= 3 && (t.chars().all(|c| c == '-') || t.chars().all(|c| c == '*') || t.chars().all(|c| c == '_'))
+    t.len() >= 3
+        && (t.chars().all(|c| c == '-')
+            || t.chars().all(|c| c == '*')
+            || t.chars().all(|c| c == '_'))
 }
 
 fn footnote_def(line: &str) -> Option<(&str, &str)> {
@@ -385,7 +443,11 @@ fn list_marker(line: &str) -> Option<(usize, String, Option<bool>, &str)> {
         while k < bytes.len() && bytes[k].is_ascii_digit() {
             k += 1;
         }
-        if k > 0 && k + 1 < bytes.len() && (bytes[k] == b'.' || bytes[k] == b')') && bytes[k + 1] == b' ' {
+        if k > 0
+            && k + 1 < bytes.len()
+            && (bytes[k] == b'.' || bytes[k] == b')')
+            && bytes[k + 1] == b' '
+        {
             marker_len = k + 1;
         }
     }
@@ -458,12 +520,16 @@ pub fn parse(src: &str) -> Vec<Block> {
         let t = line.trim_end();
 
         if t.is_empty() {
-            out.push(Block::Blank { source: String::new() });
+            out.push(Block::Blank {
+                source: String::new(),
+            });
             i += 1;
             continue;
         }
         if is_rule(t) {
-            out.push(Block::Rule { source: line.to_string() });
+            out.push(Block::Rule {
+                source: line.to_string(),
+            });
             i += 1;
             continue;
         }
@@ -478,7 +544,10 @@ pub fn parse(src: &str) -> Vec<Block> {
                 body.push(lines[j].to_string());
                 j += 1;
             }
-            let closing = lines.get(j).map(|s| s.to_string()).unwrap_or_else(|| fence3.to_string());
+            let closing = lines
+                .get(j)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| fence3.to_string());
             let mut parts = vec![line.to_string()];
             parts.extend(body.iter().cloned());
             parts.push(closing);
@@ -486,17 +555,37 @@ pub fn parse(src: &str) -> Vec<Block> {
             let code = body.join("\n");
             let lang = info.to_lowercase();
             let block = if lang.starts_with("mermaid") {
-                Block::Diagram { kind: DiagramKind::Mermaid, code, source }
+                Block::Diagram {
+                    kind: DiagramKind::Mermaid,
+                    code,
+                    source,
+                }
             } else if lang == "flow" || lang == "flowchart" {
-                Block::Diagram { kind: DiagramKind::Flow, code, source }
+                Block::Diagram {
+                    kind: DiagramKind::Flow,
+                    code,
+                    source,
+                }
             } else if lang == "sequence" || lang == "seq" {
-                Block::Diagram { kind: DiagramKind::Sequence, code, source }
+                Block::Diagram {
+                    kind: DiagramKind::Sequence,
+                    code,
+                    source,
+                }
             } else if lang == "gantt" {
-                Block::Diagram { kind: DiagramKind::Gantt, code, source }
+                Block::Diagram {
+                    kind: DiagramKind::Gantt,
+                    code,
+                    source,
+                }
             } else if lang == "math" || lang == "latex" {
                 Block::Math { tex: code, source }
             } else {
-                Block::Code { lang: info, code, source }
+                Block::Code {
+                    lang: info,
+                    code,
+                    source,
+                }
             };
             out.push(block);
             i = if j < lines.len() { j + 1 } else { j };
@@ -509,21 +598,33 @@ pub fn parse(src: &str) -> Vec<Block> {
                 body.push(lines[j].to_string());
                 j += 1;
             }
-            let closing = lines.get(j).map(|s| s.to_string()).unwrap_or_else(|| "$$".to_string());
+            let closing = lines
+                .get(j)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "$$".to_string());
             let mut parts = vec![line.to_string()];
             parts.extend(body.iter().cloned());
             parts.push(closing);
-            out.push(Block::Math { tex: body.join("\n"), source: parts.join("\n") });
+            out.push(Block::Math {
+                tex: body.join("\n"),
+                source: parts.join("\n"),
+            });
             i = if j < lines.len() { j + 1 } else { j };
             continue;
         }
         if t.eq_ignore_ascii_case("[toc]") {
-            out.push(Block::Toc { source: line.to_string() });
+            out.push(Block::Toc {
+                source: line.to_string(),
+            });
             i += 1;
             continue;
         }
         if let Some((level, rest)) = heading(t) {
-            out.push(Block::Heading { level, content: parse_inline(rest), source: line.to_string() });
+            out.push(Block::Heading {
+                level,
+                content: parse_inline(rest),
+                source: line.to_string(),
+            });
             i += 1;
             continue;
         }
@@ -531,21 +632,38 @@ pub fn parse(src: &str) -> Vec<Block> {
             let raw = t.trim_start_matches('>');
             let level = t.len() - t.trim_start_matches('>').len();
             let body = raw.trim_start_matches(' ');
-            out.push(Block::Quote { level, content: parse_inline(body), source: line.to_string() });
+            out.push(Block::Quote {
+                level,
+                content: parse_inline(body),
+                source: line.to_string(),
+            });
             i += 1;
             continue;
         }
         if is_table_start(&lines, i) {
-            let head: Vec<Vec<Inline>> = split_cells(lines[i]).iter().map(|c| parse_inline(c)).collect();
+            let head: Vec<Vec<Inline>> = split_cells(lines[i])
+                .iter()
+                .map(|c| parse_inline(c))
+                .collect();
             let align = parse_align(lines[i + 1]);
             let mut rows: Vec<Vec<Vec<Inline>>> = Vec::new();
             let mut j = i + 2;
             while j < lines.len() && !lines[j].trim().is_empty() && lines[j].contains('|') {
-                rows.push(split_cells(lines[j]).iter().map(|c| parse_inline(c)).collect());
+                rows.push(
+                    split_cells(lines[j])
+                        .iter()
+                        .map(|c| parse_inline(c))
+                        .collect(),
+                );
                 j += 1;
             }
             let source = lines[i..j].join("\n");
-            out.push(Block::Table { head, rows, align, source });
+            out.push(Block::Table {
+                head,
+                rows,
+                align,
+                source,
+            });
             i = j;
             continue;
         }
@@ -557,7 +675,10 @@ pub fn parse(src: &str) -> Vec<Block> {
                 content: parse_inline(body),
                 line: line.to_string(),
             };
-            out.push(Block::ListItem { item, source: line.to_string() });
+            out.push(Block::ListItem {
+                item,
+                source: line.to_string(),
+            });
             i += 1;
             continue;
         }
@@ -593,11 +714,16 @@ pub fn parse(src: &str) -> Vec<Block> {
             i += 1;
         }
         let source = lines[start..i].join("\n");
-        out.push(Block::Paragraph { content: parse_inline(&source), source });
+        out.push(Block::Paragraph {
+            content: parse_inline(&source),
+            source,
+        });
     }
 
     if out.is_empty() {
-        out.push(Block::Blank { source: String::new() });
+        out.push(Block::Blank {
+            source: String::new(),
+        });
     }
     out
 }
@@ -629,7 +755,13 @@ mod tests {
         let b = parse("- [x] 完成\n- [ ] 待办\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n");
         assert!(b.iter().any(|x| matches!(
             x,
-            Block::ListItem { item: ListItem { checked: Some(true), .. }, .. }
+            Block::ListItem {
+                item: ListItem {
+                    checked: Some(true),
+                    ..
+                },
+                ..
+            }
         )));
         assert!(b.iter().any(|x| matches!(x, Block::Table { .. })));
     }
@@ -637,10 +769,17 @@ mod tests {
     #[test]
     fn fenced_code_and_diagram() {
         let b = parse("```rust\nfn main() {}\n```\n\n```mermaid\ngraph LR\nA[X] --> B[Y]\n```\n");
-        assert!(b.iter().any(|x| matches!(x, Block::Code { lang, .. } if lang == "rust")));
-        assert!(b
-            .iter()
-            .any(|x| matches!(x, Block::Diagram { kind: DiagramKind::Mermaid, .. })));
+        assert!(
+            b.iter()
+                .any(|x| matches!(x, Block::Code { lang, .. } if lang == "rust"))
+        );
+        assert!(b.iter().any(|x| matches!(
+            x,
+            Block::Diagram {
+                kind: DiagramKind::Mermaid,
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -660,7 +799,11 @@ mod tests {
     fn source_roundtrip() {
         let src = "# H\n\n段落**粗**\n\n- a\n- b\n\n```js\nlet x=1;\n```\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n";
         let blocks = parse(src);
-        let joined = blocks.iter().map(|b| b.source()).collect::<Vec<_>>().join("\n");
+        let joined = blocks
+            .iter()
+            .map(|b| b.source())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(joined.trim_end(), src.trim_end());
     }
 

@@ -6,8 +6,8 @@ use crate::ast::*;
 use crate::document::OutlineItem;
 use crate::theme::Theme;
 use crate::workspace;
-use egui::{self, Align2, Color32, FontId, FontFamily, Pos2, Rect, Sense, Stroke, Vec2};
 use egui::text::{LayoutJob, TextFormat};
+use egui::{self, Align2, Color32, FontFamily, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -26,18 +26,91 @@ pub enum Action {
 /// 代码块可选语言，覆盖常见前端/后端/脚本/配置/标记语言。
 const LANGUAGES: &[&str] = &[
     "",
-    "json", "xml", "yaml", "toml", "ini", "csv",
-    "rust", "c", "cpp", "csharp", "java", "kotlin", "scala", "swift", "go", "dart",
-    "python", "javascript", "typescript", "jsx", "tsx", "vue", "svelte", "php", "ruby",
-    "perl", "lua", "r", "julia", "matlab", "objective-c", "fsharp", "haskell", "ocaml",
-    "clojure", "elixir", "erlang", "groovy", "lisp", "prolog", "fortran", "cobol",
-    "sql", "plsql", "graphql", "prisma",
-    "html", "xml", "css", "scss", "sass", "less", "stylus",
+    "json",
+    "xml",
+    "yaml",
+    "toml",
+    "ini",
+    "csv",
+    "rust",
+    "c",
+    "cpp",
+    "csharp",
+    "java",
+    "kotlin",
+    "scala",
+    "swift",
+    "go",
+    "dart",
+    "python",
+    "javascript",
+    "typescript",
+    "jsx",
+    "tsx",
+    "vue",
+    "svelte",
+    "php",
+    "ruby",
+    "perl",
+    "lua",
+    "r",
+    "julia",
+    "matlab",
+    "objective-c",
+    "fsharp",
+    "haskell",
+    "ocaml",
+    "clojure",
+    "elixir",
+    "erlang",
+    "groovy",
+    "lisp",
+    "prolog",
+    "fortran",
+    "cobol",
+    "sql",
+    "plsql",
+    "graphql",
+    "prisma",
+    "html",
+    "xml",
+    "css",
+    "scss",
+    "sass",
+    "less",
+    "stylus",
     "properties",
-    "bash", "sh", "zsh", "fish", "powershell", "bat", "awk", "sed", "vim", "makefile",
-    "dockerfile", "cmake", "nginx", "apache", "terraform", "hcl", "protobuf", "thrift",
-    "markdown", "latex", "tex", "mermaid", "plantuml", "diff", "asm", "wasm",
-    "solidity", "verilog", "vhdl", "text", "plaintext",
+    "bash",
+    "sh",
+    "zsh",
+    "fish",
+    "powershell",
+    "bat",
+    "awk",
+    "sed",
+    "vim",
+    "makefile",
+    "dockerfile",
+    "cmake",
+    "nginx",
+    "apache",
+    "terraform",
+    "hcl",
+    "protobuf",
+    "thrift",
+    "markdown",
+    "latex",
+    "tex",
+    "mermaid",
+    "plantuml",
+    "diff",
+    "asm",
+    "wasm",
+    "solidity",
+    "verilog",
+    "vhdl",
+    "text",
+    "plaintext",
 ];
 
 pub struct ImageCache(pub HashMap<PathBuf, Option<egui::TextureHandle>>);
@@ -94,7 +167,11 @@ fn append_inline(
 ) {
     match inl {
         Inline::Text(t) => {
-            let mut f = if bold { theme.bold_fmt(size, color) } else { theme.fmt(size) };
+            let mut f = if bold {
+                theme.bold_fmt(size, color)
+            } else {
+                theme.fmt(size)
+            };
             f.color = if linked { theme.link } else { color };
             f.italics = italic;
             if strike {
@@ -156,7 +233,13 @@ fn append_inline(
     }
 }
 
-pub fn build_layout(inlines: &[Inline], theme: &Theme, size: f32, color: Color32, bold: bool) -> LayoutJob {
+pub fn build_layout(
+    inlines: &[Inline],
+    theme: &Theme,
+    size: f32,
+    color: Color32,
+    bold: bool,
+) -> LayoutJob {
     let mut job = LayoutJob::default();
     // 长 URL / 无空格的中文也要按宽度折断，避免溢出窗口被裁掉。
     job.wrap.break_anywhere = true;
@@ -172,13 +255,33 @@ pub fn build_layout(inlines: &[Inline], theme: &Theme, size: f32, color: Color32
 pub fn math_pretty(tex: &str) -> String {
     let mut s = tex.to_string();
     const PAIRS: &[(&str, &str)] = &[
-        ("\\times", "×"), ("\\cdot", "·"), ("\\int", "∫"), ("\\sum", "∑"),
-        ("\\alpha", "α"), ("\\beta", "β"), ("\\gamma", "γ"), ("\\delta", "δ"),
-        ("\\pi", "π"), ("\\infty", "∞"), ("\\sqrt", "√"), ("\\leq", "≤"),
-        ("\\geq", "≥"), ("\\neq", "≠"), ("\\rightarrow", "→"), ("\\Rightarrow", "⇒"),
-        ("\\in", "∈"), ("\\partial", "∂"), ("\\nabla", "∇"), ("\\approx", "≈"),
-        ("\\pm", "±"), ("\\frac", ""), ("\\left", ""), ("\\right", ""),
-        ("{", ""), ("}", ""), ("$$", ""),
+        ("\\times", "×"),
+        ("\\cdot", "·"),
+        ("\\int", "∫"),
+        ("\\sum", "∑"),
+        ("\\alpha", "α"),
+        ("\\beta", "β"),
+        ("\\gamma", "γ"),
+        ("\\delta", "δ"),
+        ("\\pi", "π"),
+        ("\\infty", "∞"),
+        ("\\sqrt", "√"),
+        ("\\leq", "≤"),
+        ("\\geq", "≥"),
+        ("\\neq", "≠"),
+        ("\\rightarrow", "→"),
+        ("\\Rightarrow", "⇒"),
+        ("\\in", "∈"),
+        ("\\partial", "∂"),
+        ("\\nabla", "∇"),
+        ("\\approx", "≈"),
+        ("\\pm", "±"),
+        ("\\frac", ""),
+        ("\\left", ""),
+        ("\\right", ""),
+        ("{", ""),
+        ("}", ""),
+        ("$$", ""),
     ];
     for (a, b) in PAIRS {
         s = s.replace(a, b);
@@ -334,9 +437,18 @@ pub fn inline_job(
 /// 用显式宽度排版成 galley 再交给 Label。
 /// `Label` 默认按 Ui 的 wrap 模式决定宽度，横向布局（引用/列表）里会退化成
 /// 无限宽导致长段落不换行；这里直接给定宽度，任何布局下都会换行。
-fn wrapped_label(ui: &mut egui::Ui, mut job: LayoutJob, max_w: f32, sense: Sense) -> egui::Response {
+fn wrapped_label(
+    ui: &mut egui::Ui,
+    mut job: LayoutJob,
+    max_w: f32,
+    sense: Sense,
+) -> egui::Response {
     let avail = ui.available_width();
-    let w = if avail.is_finite() { avail.min(max_w) } else { max_w };
+    let w = if avail.is_finite() {
+        avail.min(max_w)
+    } else {
+        max_w
+    };
     job.wrap.max_width = w.max(80.0);
     job.wrap.break_anywhere = true;
     let galley = ui.fonts_mut(|f| f.layout_job(job));
@@ -370,13 +482,19 @@ fn text_response(
     resp
 }
 
-fn image_response(ui: &mut egui::Ui, alt: &str, url: &str, env: &mut RenderEnv<'_>) -> egui::Response {
+fn image_response(
+    ui: &mut egui::Ui,
+    alt: &str,
+    url: &str,
+    env: &mut RenderEnv<'_>,
+) -> egui::Response {
     if let Some(path) = workspace::resolve(env.base_dir, url) {
         if let Some(tex) = env.images.texture(env.ctx, &path) {
             let sz = tex.size_vec2();
             let max_w = ui.available_width().max(80.0);
             let scale = (max_w / sz.x.max(1.0)).min(1.0);
-            let (rect, resp) = ui.allocate_exact_size(Vec2::new(sz.x * scale, sz.y * scale), Sense::click());
+            let (rect, resp) =
+                ui.allocate_exact_size(Vec2::new(sz.x * scale, sz.y * scale), Sense::click());
             ui.painter().image(
                 tex.id(),
                 rect,
@@ -396,13 +514,78 @@ fn image_response(ui: &mut egui::Ui, alt: &str, url: &str, env: &mut RenderEnv<'
 /// 轻量词法着色，覆盖常见语言，不依赖 syntect。
 pub fn code_job(code: &str, lang: &str, theme: &Theme) -> LayoutJob {
     const KW: &[&str] = &[
-        "fn", "let", "mut", "pub", "use", "struct", "enum", "impl", "match", "if", "else", "for",
-        "while", "return", "const", "static", "type", "trait", "mod", "self", "Self", "async",
-        "await", "def", "class", "import", "from", "as", "in", "is", "not", "and", "or", "None",
-        "True", "False", "var", "function", "export", "default", "new", "void", "int", "float",
-        "double", "char", "bool", "string", "public", "private", "package", "interface", "try",
-        "catch", "throw", "func", "defer", "go", "map", "range", "select", "case", "break",
-        "continue", "where", "with", "do", "then", "end", "SELECT", "FROM", "WHERE",
+        "fn",
+        "let",
+        "mut",
+        "pub",
+        "use",
+        "struct",
+        "enum",
+        "impl",
+        "match",
+        "if",
+        "else",
+        "for",
+        "while",
+        "return",
+        "const",
+        "static",
+        "type",
+        "trait",
+        "mod",
+        "self",
+        "Self",
+        "async",
+        "await",
+        "def",
+        "class",
+        "import",
+        "from",
+        "as",
+        "in",
+        "is",
+        "not",
+        "and",
+        "or",
+        "None",
+        "True",
+        "False",
+        "var",
+        "function",
+        "export",
+        "default",
+        "new",
+        "void",
+        "int",
+        "float",
+        "double",
+        "char",
+        "bool",
+        "string",
+        "public",
+        "private",
+        "package",
+        "interface",
+        "try",
+        "catch",
+        "throw",
+        "func",
+        "defer",
+        "go",
+        "map",
+        "range",
+        "select",
+        "case",
+        "break",
+        "continue",
+        "where",
+        "with",
+        "do",
+        "then",
+        "end",
+        "SELECT",
+        "FROM",
+        "WHERE",
     ];
     let hash_comment = matches!(
         lang.to_lowercase().as_str(),
@@ -444,7 +627,11 @@ pub fn code_job(code: &str, lang: &str, theme: &Theme) -> LayoutJob {
                     j += 1;
                 }
                 let tok: String = c[i..j].iter().collect();
-                let is_num = tok.chars().next().map(|x| x.is_ascii_digit()).unwrap_or(false);
+                let is_num = tok
+                    .chars()
+                    .next()
+                    .map(|x| x.is_ascii_digit())
+                    .unwrap_or(false);
                 let is_kw = KW.contains(&tok.as_str());
                 let mut f = theme.mono_fmt();
                 f.color = if is_num {
@@ -569,7 +756,12 @@ fn draw_flow(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui::Response {
     if nodes.is_empty() {
         let r = panel_frame(theme).show(ui, |ui| {
             for line in code.lines() {
-                ui.label(egui::RichText::new(line).monospace().small().color(theme.dim));
+                ui.label(
+                    egui::RichText::new(line)
+                        .monospace()
+                        .small()
+                        .color(theme.dim),
+                );
             }
         });
         return r.response.interact(Sense::click());
@@ -622,7 +814,12 @@ fn draw_flow(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui::Response {
         if let Some(c) = pos.get(id) {
             let r = Rect::from_center_size(*c, Vec2::new(nw, nh));
             p.rect_filled(r, 5.0, theme.code_bg);
-            p.rect_stroke(r, 5.0, Stroke::new(1.2, theme.accent), egui::StrokeKind::Outside);
+            p.rect_stroke(
+                r,
+                5.0,
+                Stroke::new(1.2, theme.accent),
+                egui::StrokeKind::Outside,
+            );
             p.text(
                 r.center(),
                 Align2::CENTER_CENTER,
@@ -651,7 +848,16 @@ pub fn render_block(
         match block {
             Block::Heading { level, content, .. } => {
                 ui.add_space(if *level <= 2 { 12.0 } else { 7.0 });
-                let r = text_response(ui, content, theme, theme.heading_size(*level), theme.heading, true, env, idx);
+                let r = text_response(
+                    ui,
+                    content,
+                    theme,
+                    theme.heading_size(*level),
+                    theme.heading,
+                    true,
+                    env,
+                    idx,
+                );
                 ui.add_space(4.0);
                 r
             }
@@ -688,7 +894,8 @@ pub fn render_block(
                             }
                         }
                         None => {
-                            let marker = if item.marker.ends_with('.') || item.marker.ends_with(')') {
+                            let marker = if item.marker.ends_with('.') || item.marker.ends_with(')')
+                            {
                                 format!("{}  ", item.marker)
                             } else {
                                 "•  ".to_string()
@@ -710,9 +917,13 @@ pub fn render_block(
                 let r = panel_frame(theme).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(if lang.is_empty() { "code" } else { lang.as_str() })
-                                .small()
-                                .color(theme.dim),
+                            egui::RichText::new(if lang.is_empty() {
+                                "code"
+                            } else {
+                                lang.as_str()
+                            })
+                            .small()
+                            .color(theme.dim),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // 右上角：复制 + 语言选择（改的是代码块的 info string）
@@ -732,14 +943,20 @@ pub fn render_block(
                                 })
                                 .width(118.0)
                                 .show_ui(ui, |ui| {
-                                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                                        for l in LANGUAGES {
-                                            let label = if l.is_empty() { "纯文本" } else { *l };
-                                            if ui.selectable_label(picked == *l, label).clicked() {
-                                                picked = l.to_string();
+                                    egui::ScrollArea::vertical()
+                                        .max_height(320.0)
+                                        .show(ui, |ui| {
+                                            for l in LANGUAGES {
+                                                let label =
+                                                    if l.is_empty() { "纯文本" } else { *l };
+                                                if ui
+                                                    .selectable_label(picked == *l, label)
+                                                    .clicked()
+                                                {
+                                                    picked = l.to_string();
+                                                }
                                             }
-                                        }
-                                    });
+                                        });
                                 });
                             if picked != *lang {
                                 new_lang = Some(picked);
@@ -747,11 +964,17 @@ pub fn render_block(
                         });
                     });
                     ui.add_space(3.0);
-                    wrapped_label(ui, code_job(code, lang, theme), env.max_width, Sense::hover())
+                    wrapped_label(
+                        ui,
+                        code_job(code, lang, theme),
+                        env.max_width,
+                        Sense::hover(),
+                    )
                 });
                 if copied {
                     env.ctx.copy_text(code.clone());
-                    env.actions.push(Action::Notify("代码已复制到剪贴板".to_string()));
+                    env.actions
+                        .push(Action::Notify("代码已复制到剪贴板".to_string()));
                 }
                 if let Some(l) = new_lang {
                     env.actions.push(Action::SetLang(idx, l));
@@ -774,32 +997,38 @@ pub fn render_block(
                             .min_col_width(48.0)
                             .max_col_width(max_col)
                             .show(ui, |ui| {
-                            for c in head {
-                                egui::Frame::NONE
-                                    .fill(theme.table_head)
-                                    .inner_margin(3.0)
-                                    .show(ui, |ui| {
+                                for c in head {
+                                    egui::Frame::NONE
+                                        .fill(theme.table_head)
+                                        .inner_margin(3.0)
+                                        .show(ui, |ui| {
+                                            wrapped_label(
+                                                ui,
+                                                build_layout(
+                                                    c,
+                                                    theme,
+                                                    theme.body * 0.95,
+                                                    theme.heading,
+                                                    true,
+                                                ),
+                                                max_col,
+                                                Sense::hover(),
+                                            );
+                                        });
+                                }
+                                ui.end_row();
+                                for row in rows {
+                                    for c in row {
                                         wrapped_label(
                                             ui,
-                                            build_layout(c, theme, theme.body * 0.95, theme.heading, true),
+                                            build_layout(c, theme, theme.body * 0.95, color, false),
                                             max_col,
                                             Sense::hover(),
                                         );
-                                    });
-                            }
-                            ui.end_row();
-                            for row in rows {
-                                for c in row {
-                                    wrapped_label(
-                                        ui,
-                                        build_layout(c, theme, theme.body * 0.95, color, false),
-                                        max_col,
-                                        Sense::hover(),
-                                    );
+                                    }
+                                    ui.end_row();
                                 }
-                                ui.end_row();
-                            }
-                        });
+                            });
                     });
                 r.response.interact(Sense::click())
             }
@@ -807,7 +1036,10 @@ pub fn render_block(
                 let w = ui.available_width();
                 let (r, resp) = ui.allocate_exact_size(Vec2::new(w, 18.0), Sense::click());
                 ui.painter().line_segment(
-                    [Pos2::new(r.min.x, r.center().y), Pos2::new(r.max.x, r.center().y)],
+                    [
+                        Pos2::new(r.min.x, r.center().y),
+                        Pos2::new(r.max.x, r.center().y),
+                    ],
                     Stroke::new(1.0, theme.border),
                 );
                 resp
@@ -827,17 +1059,39 @@ pub fn render_block(
             Block::Diagram { code, .. } => draw_flow(ui, code, theme),
             Block::FrontMatter { yaml, .. } => {
                 let r = panel_frame(theme).show(ui, |ui| {
-                    ui.label(egui::RichText::new("YAML Front Matter").small().color(theme.dim));
+                    ui.label(
+                        egui::RichText::new("YAML Front Matter")
+                            .small()
+                            .color(theme.dim),
+                    );
                     for line in yaml.lines() {
-                        ui.label(egui::RichText::new(line).monospace().small().color(theme.quote));
+                        ui.label(
+                            egui::RichText::new(line)
+                                .monospace()
+                                .small()
+                                .color(theme.quote),
+                        );
                     }
                 });
                 r.response.interact(Sense::click())
             }
             Block::Footnote { id, content, .. } => {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("[^{}]", id)).small().color(theme.accent));
-                    text_response(ui, content, theme, theme.body * 0.9, theme.quote, false, env, idx)
+                    ui.label(
+                        egui::RichText::new(format!("[^{}]", id))
+                            .small()
+                            .color(theme.accent),
+                    );
+                    text_response(
+                        ui,
+                        content,
+                        theme,
+                        theme.body * 0.9,
+                        theme.quote,
+                        false,
+                        env,
+                        idx,
+                    )
                 })
                 .inner
             }
@@ -851,7 +1105,8 @@ pub fn render_block(
                                 ui.add_space(indent);
                                 ui.add(
                                     egui::Label::new(
-                                        egui::RichText::new(format!("• {}", item.title)).color(theme.link),
+                                        egui::RichText::new(format!("• {}", item.title))
+                                            .color(theme.link),
                                     )
                                     .sense(Sense::click()),
                                 )
@@ -865,7 +1120,8 @@ pub fn render_block(
                 r.response.interact(Sense::click())
             }
             Block::Blank { .. } => {
-                let (_, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 9.0), Sense::click());
+                let (_, resp) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 9.0), Sense::click());
                 resp
             }
         }

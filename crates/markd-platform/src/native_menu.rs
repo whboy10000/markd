@@ -25,20 +25,37 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
     let m_about = mk(&mut map, "about", "关于 Markd", Command::About);
     let m_settings = mk(&mut map, "settings", "偏好设置…", Command::Settings);
     let m_quit = mk(&mut map, "quit", "退出 Markd", Command::Quit);
-    let app_menu =
-        Submenu::with_items("Markd", true, &[&m_about, &m_settings, &m_quit]).unwrap();
+    let app_menu = Submenu::with_items("Markd", true, &[&m_about, &m_settings, &m_quit]).unwrap();
 
     let m_new = mk(&mut map, "new", "新建", Command::New);
     let m_open_ws = mk(&mut map, "open_ws", "打开工作区…", Command::OpenWorkspace);
-    let m_open_file = mk(&mut map, "open_file", "打开 MD 文件…", Command::OpenFileDialog);
+    let m_open_file = mk(
+        &mut map,
+        "open_file",
+        "打开 MD 文件…",
+        Command::OpenFileDialog,
+    );
     let m_save = mk(&mut map, "save", "保存", Command::Save);
     let m_save_as = mk(&mut map, "save_as", "另存为…", Command::SaveAs);
     let m_export = mk(&mut map, "export", "导出 HTML", Command::ExportHtml);
-    let m_snapshot = mk(&mut map, "snapshot", "版本快照 · 时间机器", Command::Snapshot);
+    let m_snapshot = mk(
+        &mut map,
+        "snapshot",
+        "版本快照 · 时间机器",
+        Command::Snapshot,
+    );
     let file_menu = Submenu::with_items(
         "文件",
         true,
-        &[&m_new, &m_open_ws, &m_open_file, &m_save, &m_save_as, &m_export, &m_snapshot],
+        &[
+            &m_new,
+            &m_open_ws,
+            &m_open_file,
+            &m_save,
+            &m_save_as,
+            &m_export,
+            &m_snapshot,
+        ],
     )
     .unwrap();
 
@@ -48,35 +65,78 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
     let m_italic = mk(&mut map, "italic", "斜体", Command::Italic);
     let m_link = mk(&mut map, "link", "插入链接", Command::Link);
     let m_code = mk(&mut map, "code", "行内代码", Command::Code);
+    let m_para = mk(&mut map, "para", "段落", Command::Paragraph);
     let m_h1 = mk(&mut map, "h1", "一级标题", Command::H1);
     let m_h2 = mk(&mut map, "h2", "二级标题", Command::H2);
     let m_h3 = mk(&mut map, "h3", "三级标题", Command::H3);
+    let m_h4 = mk(&mut map, "h4", "四级标题", Command::H4);
+    let m_h5 = mk(&mut map, "h5", "五级标题", Command::H5);
+    let m_h6 = mk(&mut map, "h6", "六级标题", Command::H6);
     let m_table = mk(&mut map, "table", "插入表格", Command::Table);
     let m_math = mk(&mut map, "math", "插入数学公式", Command::Math);
     let m_toc = mk(&mut map, "toc", "插入目录 [TOC]", Command::Toc);
     let edit_menu = Submenu::with_items(
         "编辑",
         true,
-        &[&m_undo, &m_redo, &m_bold, &m_italic, &m_link, &m_code, &m_h1, &m_h2, &m_h3, &m_table, &m_math, &m_toc],
+        &[
+            &m_undo, &m_redo, &m_bold, &m_italic, &m_link, &m_code, &m_para, &m_h1, &m_h2, &m_h3,
+            &m_h4, &m_h5, &m_h6, &m_table, &m_math, &m_toc,
+        ],
     )
     .unwrap();
 
     let m_source = mk(&mut map, "source", "源码模式", Command::ToggleSource);
     let m_focus = mk(&mut map, "focus", "专注模式", Command::ToggleFocus);
-    let m_typewriter = mk(&mut map, "typewriter", "打字机模式", Command::ToggleTypewriter);
-    let m_sidebar = mk(&mut map, "sidebar", "显示/隐藏侧边栏", Command::ToggleSidebar);
+    let m_typewriter = mk(
+        &mut map,
+        "typewriter",
+        "打字机模式",
+        Command::ToggleTypewriter,
+    );
+    let m_sidebar = mk(
+        &mut map,
+        "sidebar",
+        "显示/隐藏侧边栏",
+        Command::ToggleSidebar,
+    );
     let m_outline = mk(&mut map, "outline", "显示/隐藏大纲", Command::ToggleOutline);
-    let m_header = mk(&mut map, "header", "显示/隐藏侧栏标签栏", Command::ToggleSidebarHeader);
-    let m_wsbar = mk(&mut map, "wsbar", "显示/隐藏工作区栏", Command::ToggleWorkspaceBar);
+    let m_header = mk(
+        &mut map,
+        "header",
+        "显示/隐藏侧栏标签栏",
+        Command::ToggleSidebarHeader,
+    );
+    let m_wsbar = mk(
+        &mut map,
+        "wsbar",
+        "显示/隐藏工作区栏",
+        Command::ToggleWorkspaceBar,
+    );
     let m_search = mk(&mut map, "search", "工作区全文搜索", Command::Search);
     let m_graph = mk(&mut map, "graph", "双向链接关系图", Command::Graph);
     let m_stats = mk(&mut map, "stats", "写作统计", Command::Stats);
-    let m_terminal = mk(&mut map, "terminal", "切换终端面板", Command::ToggleTerminal);
+    let m_terminal = mk(
+        &mut map,
+        "terminal",
+        "切换终端面板",
+        Command::ToggleTerminal,
+    );
     let view_menu = Submenu::with_items(
         "视图",
         true,
-        &[&m_source, &m_focus, &m_typewriter, &m_sidebar, &m_outline, &m_header, &m_wsbar,
-          &m_terminal, &m_search, &m_graph, &m_stats],
+        &[
+            &m_source,
+            &m_focus,
+            &m_typewriter,
+            &m_sidebar,
+            &m_outline,
+            &m_header,
+            &m_wsbar,
+            &m_terminal,
+            &m_search,
+            &m_graph,
+            &m_stats,
+        ],
     )
     .unwrap();
 
@@ -87,7 +147,12 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
     let help_menu = Submenu::with_items("帮助", true, &[&m_shortcuts]).unwrap();
 
     let menu = Menu::with_items(&[
-        &app_menu, &file_menu, &edit_menu, &view_menu, &theme_menu, &help_menu,
+        &app_menu,
+        &file_menu,
+        &edit_menu,
+        &view_menu,
+        &theme_menu,
+        &help_menu,
     ])
     .unwrap();
     menu.init_for_nsapp();

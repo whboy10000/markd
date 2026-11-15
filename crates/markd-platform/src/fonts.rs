@@ -36,7 +36,9 @@ fn dirs() -> Vec<PathBuf> {
 fn puhuiti_files() -> Vec<PathBuf> {
     let mut hits: Vec<PathBuf> = Vec::new();
     for dir in dirs() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in rd.flatten() {
             let name = entry.file_name().to_string_lossy().to_lowercase();
             let is_font =
@@ -61,7 +63,11 @@ fn find_puhuiti_weight(want: &[&str]) -> Option<Vec<u8>> {
         (if n.contains(want[0]) { 0 } else { 1 }, n)
     });
     for p in hits {
-        let n = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+        let n = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
         if want.iter().any(|w| n.contains(w)) {
             if let Ok(bytes) = std::fs::read(&p) {
                 return Some(bytes);

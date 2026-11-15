@@ -13,7 +13,13 @@ fn esc(s: &str) -> String {
 fn slug(s: &str) -> String {
     s.chars()
         .filter(|c| !c.is_whitespace())
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -27,13 +33,23 @@ fn inline_html(v: &[Inline]) -> String {
             Inline::Strike(x) => s.push_str(&format!("<del>{}</del>", inline_html(x))),
             Inline::Code(t) => s.push_str(&format!("<code>{}</code>", esc(t))),
             Inline::Link { label, url } => {
-                s.push_str(&format!("<a href=\"{}\">{}</a>", esc(url), inline_html(label)));
+                s.push_str(&format!(
+                    "<a href=\"{}\">{}</a>",
+                    esc(url),
+                    inline_html(label)
+                ));
             }
             Inline::Image { alt, url } => {
-                s.push_str(&format!("<img src=\"{}\" alt=\"{}\" />", esc(url), esc(alt)));
+                s.push_str(&format!(
+                    "<img src=\"{}\" alt=\"{}\" />",
+                    esc(url),
+                    esc(alt)
+                ));
             }
             Inline::Math(t) => s.push_str(&format!("<code class=\"math\">\\({}\\)</code>", esc(t))),
-            Inline::Wiki(name) => s.push_str(&format!("<span class=\"wiki\">[[{}]]</span>", esc(name))),
+            Inline::Wiki(name) => {
+                s.push_str(&format!("<span class=\"wiki\">[[{}]]</span>", esc(name)))
+            }
             Inline::Footnote(id) => s.push_str(&format!("<sup class=\"fn\">[{}]</sup>", esc(id))),
             Inline::Break => s.push_str("<br/>"),
         }
@@ -85,7 +101,10 @@ pub fn to_html(title: &str, source: &str, dark: bool) -> String {
                 out.push_str(&format!("<p>{}</p>\n", inline_html(content)));
             }
             Block::Quote { content, .. } => {
-                out.push_str(&format!("<blockquote>{}</blockquote>\n", inline_html(content)));
+                out.push_str(&format!(
+                    "<blockquote>{}</blockquote>\n",
+                    inline_html(content)
+                ));
             }
             Block::ListItem { item, .. } => {
                 let tag = if item.checked.is_some() { "ul" } else { "ul" };
@@ -115,18 +134,28 @@ pub fn to_html(title: &str, source: &str, dark: bool) -> String {
                     esc(code)
                 ));
             }
-            Block::Table { head, rows, align, .. } => {
+            Block::Table {
+                head, rows, align, ..
+            } => {
                 out.push_str("<table><thead><tr>");
                 for (i, c) in head.iter().enumerate() {
                     let a = align.get(i).copied().unwrap_or(Align::Left);
-                    out.push_str(&format!("<th style=\"text-align:{}\">{}</th>", align_attr(a), inline_html(c)));
+                    out.push_str(&format!(
+                        "<th style=\"text-align:{}\">{}</th>",
+                        align_attr(a),
+                        inline_html(c)
+                    ));
                 }
                 out.push_str("</tr></thead><tbody>");
                 for row in rows {
                     out.push_str("<tr>");
                     for (i, c) in row.iter().enumerate() {
                         let a = align.get(i).copied().unwrap_or(Align::Left);
-                        out.push_str(&format!("<td style=\"text-align:{}\">{}</td>", align_attr(a), inline_html(c)));
+                        out.push_str(&format!(
+                            "<td style=\"text-align:{}\">{}</td>",
+                            align_attr(a),
+                            inline_html(c)
+                        ));
                     }
                     out.push_str("</tr>");
                 }
@@ -134,7 +163,10 @@ pub fn to_html(title: &str, source: &str, dark: bool) -> String {
             }
             Block::Rule { .. } => out.push_str("<hr/>\n"),
             Block::Math { tex, .. } => {
-                out.push_str(&format!("<div class=\"math-block\">$${}$$</div>\n", esc(tex)));
+                out.push_str(&format!(
+                    "<div class=\"math-block\">$${}$$</div>\n",
+                    esc(tex)
+                ));
             }
             Block::Diagram { kind, code, .. } => {
                 let cls = match kind {
@@ -144,7 +176,10 @@ pub fn to_html(title: &str, source: &str, dark: bool) -> String {
                 out.push_str(&format!("<pre class=\"{}\">{}</pre>\n", cls, esc(code)));
             }
             Block::FrontMatter { yaml, .. } => {
-                out.push_str(&format!("<pre class=\"front-matter\">---\n{}\n---</pre>\n", esc(yaml)));
+                out.push_str(&format!(
+                    "<pre class=\"front-matter\">---\n{}\n---</pre>\n",
+                    esc(yaml)
+                ));
             }
             Block::Footnote { id, content, .. } => {
                 out.push_str(&format!(
@@ -209,7 +244,12 @@ img{{max-width:100%}} .wiki{{color:#8957e5}}
     )
 }
 
-pub fn export_html(path: Option<&Path>, source: &str, title: &str, dark: bool) -> std::io::Result<PathBuf> {
+pub fn export_html(
+    path: Option<&Path>,
+    source: &str,
+    title: &str,
+    dark: bool,
+) -> std::io::Result<PathBuf> {
     let target = match path {
         Some(p) => p.with_extension("html"),
         None => std::env::current_dir()?.join("untitled.html"),

@@ -10,6 +10,7 @@ pub use markd_platform::native_menu;
 pub mod app;
 pub mod editor;
 pub mod features;
+pub mod find;
 pub mod render;
 pub mod settings;
 pub mod sidebar;

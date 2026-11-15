@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "2026.11.15"
 edition = "2024"
 
 # 开发构建优化：GUI/文本排版大部分耗时在依赖（egui/epaint）里，
@@ -28,6 +28,7 @@ eframe = { version = "0.37.0", default-features = false, features = [
 ] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 muda = "0.21.2"
+regex = "1.12.4"
 rfd = "0.18.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

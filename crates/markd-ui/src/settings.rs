@@ -54,8 +54,10 @@ impl Settings {
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
-            .default_width(760.0)
-            .default_height(540.0)
+            // 700×500 的固定初始尺寸，标题栏可拖动，四边可继续拉伸。
+            .movable(true)
+            .default_width(700.0)
+            .default_height(500.0)
             .show(ctx, |ui| {
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
@@ -74,9 +76,11 @@ impl Settings {
                     ui.separator();
                     ui.vertical(|ui| {
                         ui.set_width(560.0);
-                        egui::ScrollArea::vertical().max_height(430.0).show(ui, |ui| {
-                            changed |= Self::body(ui, tab, cfg, theme);
-                        });
+                        egui::ScrollArea::vertical()
+                            .max_height(430.0)
+                            .show(ui, |ui| {
+                                changed |= Self::body(ui, tab, cfg, theme);
+                            });
                     });
                 });
                 ui.separator();
@@ -103,8 +107,12 @@ impl Settings {
             Tab::General => {
                 ui.label(RichText::new("通用").strong());
                 ui.separator();
-                changed |= ui.checkbox(&mut cfg.restore_last_file, "启动时恢复上次打开的文件").changed();
-                changed |= ui.checkbox(&mut cfg.confirm_on_exit, "退出前确认").changed();
+                changed |= ui
+                    .checkbox(&mut cfg.restore_last_file, "启动时恢复上次打开的文件")
+                    .changed();
+                changed |= ui
+                    .checkbox(&mut cfg.confirm_on_exit, "退出前确认")
+                    .changed();
                 ui.add_space(8.0);
                 ui.label("界面缩放");
                 changed |= ui
@@ -143,8 +151,12 @@ impl Settings {
                     .add(egui::Slider::new(&mut cfg.sidebar_width, 160.0..=520.0).text("pt"))
                     .changed();
                 ui.add_space(6.0);
-                changed |= ui.checkbox(&mut cfg.show_sidebar_header, "显示侧栏标签栏").changed();
-                changed |= ui.checkbox(&mut cfg.show_workspace_bar, "显示工作区栏").changed();
+                changed |= ui
+                    .checkbox(&mut cfg.show_sidebar_header, "显示侧栏标签栏")
+                    .changed();
+                changed |= ui
+                    .checkbox(&mut cfg.show_workspace_bar, "显示工作区栏")
+                    .changed();
             }
             Tab::Editor => {
                 ui.label(RichText::new("编辑器").strong());
@@ -155,13 +167,19 @@ impl Settings {
                         .add(egui::DragValue::new(&mut cfg.tab_size).range(1..=8))
                         .changed();
                 });
-                changed |= ui.checkbox(&mut cfg.auto_pair, "输入括号/引号时自动补全").changed();
+                changed |= ui
+                    .checkbox(&mut cfg.auto_pair, "输入括号/引号时自动补全")
+                    .changed();
                 ui.add_space(6.0);
                 changed |= ui.checkbox(&mut cfg.auto_save, "自动保存").changed();
                 ui.horizontal(|ui| {
                     ui.label("自动保存间隔");
                     changed |= ui
-                        .add(egui::DragValue::new(&mut cfg.auto_save_interval).range(5..=600).suffix(" 秒"))
+                        .add(
+                            egui::DragValue::new(&mut cfg.auto_save_interval)
+                                .range(5..=600)
+                                .suffix(" 秒"),
+                        )
                         .changed();
                 });
                 ui.add_space(8.0);
@@ -177,7 +195,11 @@ impl Settings {
                 ui.label("默认工作区");
                 ui.horizontal(|ui| {
                     if ui.text_edit_singleline(&mut ws).changed() {
-                        cfg.workspace = if ws.trim().is_empty() { None } else { Some(ws.clone()) };
+                        cfg.workspace = if ws.trim().is_empty() {
+                            None
+                        } else {
+                            Some(ws.clone())
+                        };
                         changed = true;
                     }
                     if ui.button("选择…").clicked() {
@@ -189,35 +211,54 @@ impl Settings {
                     }
                 });
                 ui.add_space(6.0);
-                let last = cfg.last_file.clone().unwrap_or_else(|| "（无）".to_string());
+                let last = cfg
+                    .last_file
+                    .clone()
+                    .unwrap_or_else(|| "（无）".to_string());
                 ui.label(format!("上次打开：{last}"));
             }
             Tab::Images => {
                 ui.label(RichText::new("图像").strong());
                 ui.separator();
-                changed |= ui.checkbox(&mut cfg.insert_image_to_assets, "插入图片时复制到资源目录").changed();
+                changed |= ui
+                    .checkbox(&mut cfg.insert_image_to_assets, "插入图片时复制到资源目录")
+                    .changed();
                 ui.horizontal(|ui| {
                     ui.label("资源目录名");
                     changed |= ui.text_edit_singleline(&mut cfg.image_assets_dir).changed();
                 });
-                changed |= ui.checkbox(&mut cfg.image_relative, "使用相对路径引用图片").changed();
+                changed |= ui
+                    .checkbox(&mut cfg.image_relative, "使用相对路径引用图片")
+                    .changed();
             }
             Tab::Markdown => {
                 ui.label(RichText::new("Markdown").strong());
                 ui.separator();
-                changed |= ui.checkbox(&mut cfg.math_enabled, "数学公式 $…$ / $$…$$").changed();
-                changed |= ui.checkbox(&mut cfg.mermaid_enabled, "Mermaid / 流程图").changed();
+                changed |= ui
+                    .checkbox(&mut cfg.math_enabled, "数学公式 $…$ / $$…$$")
+                    .changed();
+                changed |= ui
+                    .checkbox(&mut cfg.mermaid_enabled, "Mermaid / 流程图")
+                    .changed();
                 changed |= ui.checkbox(&mut cfg.toc_enabled, "目录 [TOC]").changed();
                 changed |= ui.checkbox(&mut cfg.footnote_enabled, "脚注").changed();
                 ui.add_space(6.0);
-                changed |= ui.checkbox(&mut cfg.highlight_code, "代码块语法高亮").changed();
-                changed |= ui.checkbox(&mut cfg.auto_number_heading, "标题自动编号（预览）").changed();
+                changed |= ui
+                    .checkbox(&mut cfg.highlight_code, "代码块语法高亮")
+                    .changed();
+                changed |= ui
+                    .checkbox(&mut cfg.auto_number_heading, "标题自动编号（预览）")
+                    .changed();
             }
             Tab::Export => {
                 ui.label(RichText::new("导出").strong());
                 ui.separator();
-                changed |= ui.checkbox(&mut cfg.export_embed_images, "导出 HTML 时内嵌图片").changed();
-                changed |= ui.checkbox(&mut cfg.export_open_after, "导出完成后打开文件").changed();
+                changed |= ui
+                    .checkbox(&mut cfg.export_embed_images, "导出 HTML 时内嵌图片")
+                    .changed();
+                changed |= ui
+                    .checkbox(&mut cfg.export_open_after, "导出完成后打开文件")
+                    .changed();
                 ui.add_space(6.0);
                 ui.label(RichText::new("PDF 由浏览器打印生成：先在 Markd 里导出 HTML，再用浏览器「打印 → 存储为 PDF」。").small());
             }

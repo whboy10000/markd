@@ -7,7 +7,7 @@
 use crate::theme::Theme;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{self, Color32, FontFamily, FontId, RichText, ScrollArea, Sense};
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtyPair, PtySize};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtyPair, PtySize, native_pty_system};
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -26,7 +26,13 @@ struct Cell {
 
 impl Cell {
     fn blank() -> Self {
-        Self { ch: ' ', fg: None, bg: None, bold: false, inverse: false }
+        Self {
+            ch: ' ',
+            fg: None,
+            bg: None,
+            bold: false,
+            inverse: false,
+        }
     }
 }
 
@@ -90,7 +96,13 @@ impl Screen {
     }
 
     fn erase_blank(&self) -> Cell {
-        Cell { ch: ' ', fg: None, bg: self.bg, bold: false, inverse: false }
+        Cell {
+            ch: ' ',
+            fg: None,
+            bg: self.bg,
+            bold: false,
+            inverse: false,
+        }
     }
 
     fn trim_scrollback(&mut self) {
@@ -375,10 +387,22 @@ fn extended_color(v: &[u16], i: usize) -> Option<(Color32, usize)> {
 
 fn ansi_color(i: u8) -> Color32 {
     const BASE: [(u8, u8, u8); 16] = [
-        (40, 42, 46), (220, 80, 80), (90, 190, 110), (220, 190, 90),
-        (95, 150, 225), (195, 120, 205), (90, 195, 205), (215, 218, 222),
-        (110, 112, 118), (250, 110, 110), (120, 220, 140), (245, 215, 115),
-        (130, 180, 245), (225, 150, 235), (120, 225, 235), (245, 246, 248),
+        (40, 42, 46),
+        (220, 80, 80),
+        (90, 190, 110),
+        (220, 190, 90),
+        (95, 150, 225),
+        (195, 120, 205),
+        (90, 195, 205),
+        (215, 218, 222),
+        (110, 112, 118),
+        (250, 110, 110),
+        (120, 220, 140),
+        (245, 215, 115),
+        (130, 180, 245),
+        (225, 150, 235),
+        (120, 225, 235),
+        (245, 246, 248),
     ];
     if i < 16 {
         let (r, g, b) = BASE[i as usize];
@@ -411,8 +435,13 @@ impl vte::Perform for Screen {
         if self.cur_r >= self.grid.len() || self.cur_c >= self.cols {
             return;
         }
-        self.grid[self.cur_r][self.cur_c] =
-            Cell { ch: c, fg: self.fg, bg: self.bg, bold: self.bold, inverse: self.inverse };
+        self.grid[self.cur_r][self.cur_c] = Cell {
+            ch: c,
+            fg: self.fg,
+            bg: self.bg,
+            bold: self.bold,
+            inverse: self.inverse,
+        };
         if self.cur_c + 1 >= self.cols {
             if self.auto_wrap {
                 self.wrap_pending = true;
@@ -442,7 +471,13 @@ impl vte::Perform for Screen {
         }
     }
 
-    fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], _ignore: bool, action: char) {
+    fn csi_dispatch(
+        &mut self,
+        params: &vte::Params,
+        intermediates: &[u8],
+        _ignore: bool,
+        action: char,
+    ) {
         let v = flat_params(params);
         let pos = |i: usize, d: u16| pv(&v, i, d).max(1) as usize - 1;
         let step = |i: usize| pv(&v, i, 1).max(1) as usize;
@@ -542,7 +577,8 @@ impl vte::Perform for Screen {
     }
 
     fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
-    fn hook(&mut self, _params: &vte::Params, _intermediates: &[u8], _ignore: bool, _action: char) {}
+    fn hook(&mut self, _params: &vte::Params, _intermediates: &[u8], _ignore: bool, _action: char) {
+    }
     fn put(&mut self, _byte: u8) {}
     fn unhook(&mut self) {}
 }
@@ -756,11 +792,23 @@ impl Terminal {
         s
     }
 
-    fn cell_format(&self, cell: &Cell, theme: &Theme, font_id: &FontId, line_height: f32) -> TextFormat {
+    fn cell_format(
+        &self,
+        cell: &Cell,
+        theme: &Theme,
+        font_id: &FontId,
+        line_height: f32,
+    ) -> TextFormat {
         let (mut fg, bg) = if cell.inverse {
-            (cell.bg.unwrap_or(theme.panel), cell.fg.unwrap_or(theme.text))
+            (
+                cell.bg.unwrap_or(theme.panel),
+                cell.fg.unwrap_or(theme.text),
+            )
         } else {
-            (cell.fg.unwrap_or(theme.text), cell.bg.unwrap_or(Color32::TRANSPARENT))
+            (
+                cell.fg.unwrap_or(theme.text),
+                cell.bg.unwrap_or(Color32::TRANSPARENT),
+            )
         };
         if cell.bold {
             fg = Color32::from_rgb(
@@ -785,26 +833,54 @@ impl Terminal {
 
         ui.horizontal(|ui| {
             ui.label(RichText::new("终端").strong().color(theme.accent));
-            ui.label(RichText::new(self.cwd.to_string_lossy()).small().color(theme.dim));
+            ui.label(
+                RichText::new(self.cwd.to_string_lossy())
+                    .small()
+                    .color(theme.dim),
+            );
             if self.master.is_some() && !self.focused {
                 ui.label(RichText::new("· 点击下方区域输入").small().color(theme.dim));
             }
             if let Some(e) = &self.error {
-                ui.label(RichText::new(e).small().color(Color32::from_rgb(220, 95, 90)));
+                ui.label(
+                    RichText::new(e)
+                        .small()
+                        .color(Color32::from_rgb(220, 95, 90)),
+                );
             } else if self.exited {
-                ui.label(RichText::new("shell 已退出").small().color(Color32::from_rgb(220, 95, 90)));
+                ui.label(
+                    RichText::new("shell 已退出")
+                        .small()
+                        .color(Color32::from_rgb(220, 95, 90)),
+                );
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("关闭").on_hover_cursor(egui::CursorIcon::Default).clicked() {
+                if ui
+                    .button("关闭")
+                    .on_hover_cursor(egui::CursorIcon::Default)
+                    .clicked()
+                {
                     self.open = false;
                 }
-                if ui.button("重启").on_hover_cursor(egui::CursorIcon::Default).clicked() {
+                if ui
+                    .button("重启")
+                    .on_hover_cursor(egui::CursorIcon::Default)
+                    .clicked()
+                {
                     self.restart(ctx);
                 }
-                if ui.button("复制").on_hover_cursor(egui::CursorIcon::Default).clicked() {
+                if ui
+                    .button("复制")
+                    .on_hover_cursor(egui::CursorIcon::Default)
+                    .clicked()
+                {
                     ctx.copy_text(self.plain_text());
                 }
-                if ui.button("清空").on_hover_cursor(egui::CursorIcon::Default).clicked() {
+                if ui
+                    .button("清空")
+                    .on_hover_cursor(egui::CursorIcon::Default)
+                    .clicked()
+                {
                     self.screen.clear_all();
                 }
             });
@@ -833,7 +909,13 @@ impl Terminal {
             line_height: Some(rh),
             ..Default::default()
         };
-        for (li, row) in self.screen.scrollback.iter().chain(self.screen.grid.iter()).enumerate() {
+        for (li, row) in self
+            .screen
+            .scrollback
+            .iter()
+            .chain(self.screen.grid.iter())
+            .enumerate()
+        {
             if li > 0 {
                 job.append("\n", 0.0, newline_fmt.clone());
             }
@@ -868,10 +950,7 @@ impl Terminal {
                 // 只让文字本身可点的话，短输出时几乎点不中，表现就是「怎么点都没反应」。
                 let galley = ui.fonts_mut(|f| f.layout_job(job));
                 let body_w = (avail.x - 12.0).max(1.0);
-                let size = egui::vec2(
-                    body_w.max(galley.size().x),
-                    avail.y.max(galley.size().y),
-                );
+                let size = egui::vec2(body_w.max(galley.size().x), avail.y.max(galley.size().y));
                 // 用稳定 id，才能可靠地在帧间保持/让出焦点。
                 let id = self.body_id;
                 let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -908,7 +987,12 @@ impl Terminal {
                                 };
                                 out.extend_from_slice(s.as_bytes());
                             }
-                            egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                            egui::Event::Key {
+                                key,
+                                pressed: true,
+                                modifiers,
+                                ..
+                            } => {
                                 if modifiers.command && !modifiers.ctrl && key == egui::Key::C {
                                     ctx.copy_text(self.plain_text());
                                 } else if let Some(bytes) =
@@ -933,12 +1017,29 @@ fn key_bytes(key: egui::Key, m: egui::Modifiers, app_cursor: bool) -> Option<Vec
     use egui::Key;
     if m.ctrl {
         let b = match key {
-            Key::A => 0x01, Key::B => 0x02, Key::C => 0x03, Key::D => 0x04,
-            Key::E => 0x05, Key::F => 0x06, Key::G => 0x07, Key::H => 0x08,
-            Key::J => 0x0a, Key::K => 0x0b, Key::L => 0x0c, Key::M => 0x0d,
-            Key::N => 0x0e, Key::O => 0x0f, Key::P => 0x10, Key::Q => 0x11,
-            Key::R => 0x12, Key::S => 0x13, Key::T => 0x14, Key::U => 0x15,
-            Key::W => 0x17, Key::Y => 0x19, Key::Z => 0x1a,
+            Key::A => 0x01,
+            Key::B => 0x02,
+            Key::C => 0x03,
+            Key::D => 0x04,
+            Key::E => 0x05,
+            Key::F => 0x06,
+            Key::G => 0x07,
+            Key::H => 0x08,
+            Key::J => 0x0a,
+            Key::K => 0x0b,
+            Key::L => 0x0c,
+            Key::M => 0x0d,
+            Key::N => 0x0e,
+            Key::O => 0x0f,
+            Key::P => 0x10,
+            Key::Q => 0x11,
+            Key::R => 0x12,
+            Key::S => 0x13,
+            Key::T => 0x14,
+            Key::U => 0x15,
+            Key::W => 0x17,
+            Key::Y => 0x19,
+            Key::Z => 0x1a,
             Key::OpenBracket => 0x1b,
             _ => return None,
         };
@@ -956,16 +1057,32 @@ fn key_bytes(key: egui::Key, m: egui::Modifiers, app_cursor: bool) -> Option<Vec
         }
         Key::Escape => b"\x1b",
         Key::ArrowUp => {
-            if app_cursor { b"\x1bOA" } else { b"\x1b[A" }
+            if app_cursor {
+                b"\x1bOA"
+            } else {
+                b"\x1b[A"
+            }
         }
         Key::ArrowDown => {
-            if app_cursor { b"\x1bOB" } else { b"\x1b[B" }
+            if app_cursor {
+                b"\x1bOB"
+            } else {
+                b"\x1b[B"
+            }
         }
         Key::ArrowRight => {
-            if app_cursor { b"\x1bOC" } else { b"\x1b[C" }
+            if app_cursor {
+                b"\x1bOC"
+            } else {
+                b"\x1b[C"
+            }
         }
         Key::ArrowLeft => {
-            if app_cursor { b"\x1bOD" } else { b"\x1b[D" }
+            if app_cursor {
+                b"\x1bOD"
+            } else {
+                b"\x1b[D"
+            }
         }
         Key::Home => b"\x1b[H",
         Key::End => b"\x1b[F",
@@ -1067,12 +1184,27 @@ mod tests {
     #[test]
     fn maps_special_keys_to_pty_bytes() {
         let none = egui::Modifiers::NONE;
-        assert_eq!(key_bytes(egui::Key::Enter, none, false).unwrap(), vec![b'\r']);
-        assert_eq!(key_bytes(egui::Key::Backspace, none, false).unwrap(), vec![0x7f]);
+        assert_eq!(
+            key_bytes(egui::Key::Enter, none, false).unwrap(),
+            vec![b'\r']
+        );
+        assert_eq!(
+            key_bytes(egui::Key::Backspace, none, false).unwrap(),
+            vec![0x7f]
+        );
         assert_eq!(key_bytes(egui::Key::Tab, none, false).unwrap(), vec![b'\t']);
-        assert_eq!(key_bytes(egui::Key::ArrowUp, none, false).unwrap(), b"\x1b[A".to_vec());
-        assert_eq!(key_bytes(egui::Key::ArrowUp, none, true).unwrap(), b"\x1bOA".to_vec());
-        let ctrl = egui::Modifiers { ctrl: true, ..Default::default() };
+        assert_eq!(
+            key_bytes(egui::Key::ArrowUp, none, false).unwrap(),
+            b"\x1b[A".to_vec()
+        );
+        assert_eq!(
+            key_bytes(egui::Key::ArrowUp, none, true).unwrap(),
+            b"\x1bOA".to_vec()
+        );
+        let ctrl = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
         assert_eq!(key_bytes(egui::Key::C, ctrl, false).unwrap(), vec![0x03]);
         assert_eq!(key_bytes(egui::Key::D, ctrl, false).unwrap(), vec![0x04]);
         // Ctrl+V 留给粘贴事件，不能被当成控制字符写进 PTY。
@@ -1167,4 +1299,3 @@ mod tests {
         assert!(text.contains("246912"), "PTY 没有回显命令结果：\n{text}");
     }
 }
-
