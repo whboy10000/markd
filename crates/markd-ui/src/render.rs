@@ -1006,19 +1006,24 @@ pub fn render_block(
                     .corner_radius(4.0)
                     .inner_margin(6.0)
                     .show(ui, |ui| {
-                        // 列宽上限跟随可用宽度，表格不会把内容撑出窗口。
+                        // 表格随窗口浮动：列宽平分可用宽度（扣掉内边距与列间距），
+                        // 窗口变宽表就变宽；窄窗口下自动收窄并让单元格内文字换行。
                         let cols = head.len().max(1);
-                        let max_col = (ui.available_width() / cols as f32).max(60.0);
+                        let gap = ui.spacing().item_spacing.x * cols.saturating_sub(1) as f32;
+                        let col_w =
+                            ((ui.available_width() - gap).max(120.0) / cols as f32).max(56.0);
+                        ui.set_min_width(col_w * cols as f32 + gap);
                         egui::Grid::new(("md_table", idx))
                             .striped(true)
-                            .min_col_width(48.0)
-                            .max_col_width(max_col)
+                            .min_col_width(col_w)
+                            .max_col_width(col_w)
                             .show(ui, |ui| {
                                 for c in head {
                                     egui::Frame::NONE
                                         .fill(theme.table_head)
                                         .inner_margin(3.0)
                                         .show(ui, |ui| {
+                                            ui.set_min_width(col_w - 12.0);
                                             wrapped_label(
                                                 ui,
                                                 build_layout(
@@ -1028,7 +1033,7 @@ pub fn render_block(
                                                     theme.heading,
                                                     true,
                                                 ),
-                                                max_col,
+                                                col_w,
                                                 Sense::hover(),
                                             );
                                         });
@@ -1036,10 +1041,11 @@ pub fn render_block(
                                 ui.end_row();
                                 for row in rows {
                                     for c in row {
+                                        ui.set_min_width(col_w - 6.0);
                                         wrapped_label(
                                             ui,
                                             build_layout(c, theme, theme.body * 0.95, color, false),
-                                            max_col,
+                                            col_w,
                                             Sense::hover(),
                                         );
                                     }
@@ -1174,6 +1180,39 @@ mod tests {
         assert!(edit.sections.len() > 1, "应当有多个着色段");
         // 展示态：末尾多补一个换行，当作代码框的底部留白
         assert_eq!(code_job(src, "rust", &theme).text, format!("{src}\n"));
+    }
+
+    /// 表格宽度跟随可用宽度：三列应铺满编辑区，而不是被内容挤成一个小方块。
+    #[test]
+    fn table_resizes_with_available_width() {
+        use crate::ast::Align;
+        let theme = Theme::get(ThemeKind::Dark);
+        let mut images = ImageCache::new();
+        let outline: Vec<OutlineItem> = Vec::new();
+        let mk = |s: &str| vec![Inline::Text(s.to_string())];
+        let block = Block::Table {
+            head: vec![mk("名称"), mk("说明"), mk("状态")],
+            rows: vec![vec![mk("a"), mk("b"), mk("c")]],
+            align: vec![Align::Left, Align::Left, Align::Left],
+            source: String::new(),
+        };
+        egui::__run_test_ui(|ui| {
+            ui.set_width(800.0);
+            let ctx = ui.ctx().clone();
+            let mut actions: Vec<Action> = Vec::new();
+            let mut env = RenderEnv {
+                theme: &theme,
+                ctx: &ctx,
+                images: &mut images,
+                base_dir: None,
+                outline: &outline,
+                actions: &mut actions,
+                max_width: 800.0,
+            };
+            let resp = render_block(ui, 0, &block, &mut env, false);
+            let w = resp.rect.width();
+            assert!(w > 700.0, "表格应铺满可用宽度，实际 {w}");
+        });
     }
 
     #[test]
