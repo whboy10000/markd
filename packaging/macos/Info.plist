@@ -9,6 +9,7 @@
   <key>CFBundleShortVersionString</key><string>__VERSION__</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>markd</string>
+  <key>CFBundleIconFile</key><string>icon.icns</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>LSMinimumSystemVersion</key><string>10.15</string>
   <key>NSHighResolutionCapable</key><true/>

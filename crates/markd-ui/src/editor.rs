@@ -12,6 +12,8 @@ pub struct EditorState {
     pub active: usize,
     pub focus_req: Option<usize>,
     pub scroll_req: Option<usize>,
+    /// true = 把目标块对齐到视口顶部（大纲跳转）；false = 只做最小滚动（新建/换行）。
+    pub scroll_top: bool,
     pub last_cursor: usize,
     pub sel: Option<(usize, usize)>,
     /// 终端持有键盘焦点时置 true：编辑区不渲染可编辑控件，避免把焦点抢回来。
@@ -99,6 +101,7 @@ pub fn insert_template(doc: &mut Document, state: &mut EditorState, template: &s
     state.active = idx + 1;
     state.focus_req = Some(state.active);
     state.scroll_req = Some(state.active);
+    state.scroll_top = false;
     state.last_cursor = template.chars().count();
 }
 
@@ -497,8 +500,15 @@ pub fn show_editor(
             // 之前只写不读，所以点大纲标题完全不会滚动。
             if state.scroll_req.take().is_some() {
                 if let Some(r) = active_rect {
-                    ui.scroll_to_rect(r, Some(egui::Align::TOP));
+                    // 换行/新建块只做「最小滚动」：上面的文字保持不动，只有超出视口才滚。
+                    let align = if state.scroll_top {
+                        Some(egui::Align::TOP)
+                    } else {
+                        None
+                    };
+                    ui.scroll_to_rect(r, align);
                 }
+                state.scroll_top = false;
             }
         });
 
@@ -555,6 +565,7 @@ pub fn show_editor(
         state.active = active + 1;
         state.focus_req = Some(state.active);
         state.scroll_req = Some(state.active);
+        state.scroll_top = false;
         state.last_cursor = marker.chars().count();
         return EditorEvent::Changed;
     }

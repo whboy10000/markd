@@ -1007,6 +1007,7 @@ impl MarkdApp {
                 SideAction::Jump(i) => {
                     self.editor.active = i.min(self.doc.blocks.len().saturating_sub(1));
                     self.editor.scroll_req = Some(self.editor.active);
+                    self.editor.scroll_top = true;
                 }
             }
         }
@@ -1547,6 +1548,7 @@ impl eframe::App for MarkdApp {
                 Action::Jump(i) => {
                     self.editor.active = i.min(self.doc.blocks.len().saturating_sub(1));
                     self.editor.scroll_req = Some(self.editor.active);
+                    self.editor.scroll_top = true;
                 }
                 Action::Notify(msg) => self.status = msg,
                 Action::Caret(i, off) => {

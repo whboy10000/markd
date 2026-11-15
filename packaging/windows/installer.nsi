@@ -15,6 +15,8 @@ OutFile "..\..\Markd-${VERSION}-windows-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\Markd"
 InstallDirRegKey HKCU "Software\Markd" "InstallDir"
 RequestExecutionLevel user
+Icon "..\\..\\assets\\icon.ico"
+UninstallIcon "..\\..\\assets\\icon.ico"
 
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME

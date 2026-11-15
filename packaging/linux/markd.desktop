@@ -2,6 +2,7 @@
 Type=Application
 Name=Markd
 Comment=A Rust + egui Markdown editor
+Icon=markd
 Exec=markd %f
 Terminal=false
 Categories=Office;TextEditor;
