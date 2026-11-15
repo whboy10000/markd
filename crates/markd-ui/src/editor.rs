@@ -16,6 +16,8 @@ pub struct EditorState {
     pub scroll_top: bool,
     pub last_cursor: usize,
     pub sel: Option<(usize, usize)>,
+    /// 表格刚成为活动块时要聚焦的单元格：(行, 列)，用一次就清。
+    pub table_focus: Option<(usize, usize)>,
     /// 最近一次有效选区：(块下标, 起, 止)。点工具条按钮时编辑框已经失焦、`sel` 被清空，
     /// 加粗/斜体/行内代码这些按钮靠它才能作用在刚选中的文字上。
     pub last_sel: Option<(usize, usize, usize)>,
@@ -466,6 +468,8 @@ pub fn show_editor(
                                         );
                                     }
                                     state.table_draft = Some((idx, grid, align.clone()));
+                                    // 首次进入编辑：光标放到第一个单元格，点一下就能打字
+                                    state.table_focus = Some((0, 0));
                                 }
                             }
                             let mut edited = false;
@@ -484,20 +488,39 @@ pub fn show_editor(
                                     let col_w = ((ui.available_width() - gap).max(120.0)
                                         / cols as f32)
                                         .max(56.0);
+                                    let [first_col_bg, stripe_bg] = theme.table_palette();
                                     ui.set_min_width(col_w * cols as f32 + gap);
                                     egui::Grid::new(("table_edit", idx))
-                                        .striped(true)
                                         .min_col_width(col_w)
                                         .max_col_width(col_w)
                                         .show(ui, |ui| {
-                                            for row in grid.iter_mut() {
-                                                for cell in row.iter_mut() {
+                                            for (ri, row) in grid.iter_mut().enumerate() {
+                                                for (ci, cell) in row.iter_mut().enumerate() {
+                                                    // 编辑态与渲染态同一套配色：
+                                                    // 表头最深、首列加深一档、奇数行斑马纹
+                                                    let fill = if ri == 0 {
+                                                        theme.table_head
+                                                    } else if ci == 0 {
+                                                        first_col_bg
+                                                    } else if ri % 2 == 1 {
+                                                        stripe_bg
+                                                    } else {
+                                                        theme.bg
+                                                    };
                                                     ui.set_min_width(col_w - 6.0);
                                                     let r = ui.add(
                                                         egui::TextEdit::singleline(cell)
                                                             .desired_width(col_w - 12.0)
-                                                            .frame(egui::Frame::NONE),
+                                                            .frame(
+                                                                egui::Frame::NONE
+                                                                    .fill(fill)
+                                                                    .inner_margin(3.0),
+                                                            ),
                                                     );
+                                                    if state.table_focus == Some((ri, ci)) {
+                                                        state.table_focus = None;
+                                                        r.request_focus();
+                                                    }
                                                     if r.changed() {
                                                         edited = true;
                                                     }
@@ -513,7 +536,9 @@ pub fn show_editor(
                                 }
                                 changed = true;
                             }
-                            inner.response.interact(egui::Sense::click())
+                            // 编辑态不要给整块再盖一层点击感应：那层会挡住单元格 TextEdit
+                            // 的点击聚焦，表现为「点了没反应」。单元格自己处理点击。
+                            inner.response
                         } else if editing {
                             let id = Id::new(("block_edit", tab_key, idx));
                             // 标题只编辑文字、代码块只编辑代码（不含围栏），像 Typora 一样直接改。

@@ -94,7 +94,7 @@ impl Theme {
                 rgb(0, 0, 0),
                 rgb(0, 106, 177),
                 rgb(106, 115, 125),
-                rgb(246, 248, 250),
+                rgb(231, 231, 231),
                 rgb(173, 214, 255),
             ),
             // 对齐 VS Code 默认深色（Dark+）：editor #1E1E1E、侧栏 #252526、链接 #3794FF、选区 #264F78
@@ -109,7 +109,7 @@ impl Theme {
                 rgb(255, 255, 255),
                 rgb(55, 148, 255),
                 rgb(156, 163, 175),
-                rgb(45, 45, 45),
+                rgb(51, 51, 51),
                 rgb(38, 79, 120),
             ),
             ThemeKind::Github => (
@@ -123,7 +123,7 @@ impl Theme {
                 rgb(27, 31, 36),
                 rgb(9, 105, 218),
                 rgb(89, 99, 110),
-                rgb(246, 248, 250),
+                rgb(232, 237, 241),
                 rgb(181, 213, 255),
             ),
             ThemeKind::Sepia => (
@@ -138,7 +138,7 @@ impl Theme {
                 rgb(155, 82, 44),
                 rgb(133, 112, 85),
                 rgb(238, 229, 208),
-                rgb(222, 197, 160),
+                rgb(210, 190, 152),
             ),
             ThemeKind::Nord => (
                 rgb(46, 52, 64),
@@ -151,7 +151,7 @@ impl Theme {
                 rgb(236, 239, 244),
                 rgb(143, 188, 187),
                 rgb(135, 146, 163),
-                rgb(50, 57, 70),
+                rgb(59, 66, 82),
                 rgb(76, 106, 133),
             ),
             ThemeKind::Solarized => (
@@ -165,7 +165,7 @@ impl Theme {
                 rgb(147, 161, 161),
                 rgb(42, 161, 152),
                 rgb(101, 123, 131),
-                rgb(10, 60, 72),
+                rgb(7, 54, 66),
                 rgb(32, 92, 112),
             ),
         };
@@ -228,6 +228,19 @@ impl Theme {
                 rgb(211, 54, 130),
                 rgb(88, 110, 117),
             ],
+        }
+    }
+
+    /// 表格配色：[首列底色, 斑马纹底色]。表头用 `table_head`（最深一档），
+    /// 普通单元格用 `bg`——表头 / 首列 / 数据三档分明，一眼就能分开。
+    pub fn table_palette(&self) -> [Color32; 2] {
+        match self.kind {
+            ThemeKind::Light => [rgb(240, 240, 242), rgb(249, 249, 251)],
+            ThemeKind::Dark => [rgb(42, 42, 42), rgb(37, 37, 37)],
+            ThemeKind::Github => [rgb(240, 244, 247), rgb(246, 248, 250)],
+            ThemeKind::Sepia => [rgb(222, 204, 172), rgb(233, 221, 196)],
+            ThemeKind::Nord => [rgb(54, 61, 75), rgb(52, 59, 72)],
+            ThemeKind::Solarized => [rgb(10, 58, 70), rgb(6, 48, 59)],
         }
     }
 
