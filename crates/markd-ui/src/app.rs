@@ -862,12 +862,6 @@ impl MarkdApp {
                 if ui.button("搜索").on_hover_cursor(egui::CursorIcon::Default).clicked() {
                     self.search.open = true;
                 }
-                if ui.button("快速打开").on_hover_cursor(egui::CursorIcon::Default).clicked() {
-                    self.open_quick_palette();
-                }
-                if ui.button("命令面板").on_hover_cursor(egui::CursorIcon::Default).clicked() {
-                    self.palette.open_with(PaletteMode::Commands);
-                }
                 // 剩余空白 = 拖动区（双击 = 最大化）
                 let r = ui.available_rect_before_wrap();
                 let drag = ui.allocate_response(
@@ -893,6 +887,14 @@ impl MarkdApp {
         let mut chosen: Option<Command> = None;
         ui.horizontal(|ui| {
             ui.add_space(6.0);
+            // 功能区最左边：命令面板 / 快速打开
+            if ui.button("命令面板").on_hover_cursor(egui::CursorIcon::Default).clicked() {
+                self.palette.open_with(PaletteMode::Commands);
+            }
+            if ui.button("快速打开").on_hover_cursor(egui::CursorIcon::Default).clicked() {
+                self.open_quick_palette();
+            }
+            ui.separator();
             for (label, cmd) in [
                 ("B", Command::Bold),
                 ("I", Command::Italic),
@@ -1478,9 +1480,10 @@ impl eframe::App for MarkdApp {
                 .show(&mut *root_ui, |ui| self.sidebar(ui));
 
             let r = panel.response.rect;
+            // 放在面板外侧，避免和侧栏滚动条抢同一块区域
             let handle = egui::Rect::from_min_max(
-                egui::pos2(r.max.x - 6.0, r.min.y),
-                egui::pos2(r.max.x + 6.0, r.max.y),
+                egui::pos2(r.max.x, r.min.y),
+                egui::pos2(r.max.x + 8.0, r.max.y),
             );
             #[allow(deprecated)]
             let resize_id = egui::Id::new("sidebar_resize");

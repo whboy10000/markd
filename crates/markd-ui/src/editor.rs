@@ -477,8 +477,9 @@ pub fn show_editor(
                     }
                 });
             });
-            // 输入时让活动块始终留在视口内：换行把内容顶下去时视图跟着走。
-            if !state.read_only {
+            // 只在「本帧真的在输入」时跟随滚动。若每帧都检查，用户用滚轮滚开
+            // 会被立刻拉回活动块，表现就是滚轮失效、来回跳。
+            if !state.read_only && changed {
                 if let Some(r) = active_rect {
                     if !ui.clip_rect().contains_rect(r) {
                         ui.scroll_to_rect(r, None);
