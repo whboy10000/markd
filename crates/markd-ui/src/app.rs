@@ -1292,11 +1292,13 @@ impl MarkdApp {
             Command::H4 => editor::apply_prefix(&mut self.doc, &mut self.editor, "#### "),
             Command::H5 => editor::apply_prefix(&mut self.doc, &mut self.editor, "##### "),
             Command::H6 => editor::apply_prefix(&mut self.doc, &mut self.editor, "###### "),
-            Command::Bold => editor::wrap(&mut self.doc, &mut self.editor, "**", "**"),
-            Command::Italic => editor::wrap(&mut self.doc, &mut self.editor, "*", "*"),
-            Command::Strike => editor::wrap(&mut self.doc, &mut self.editor, "~~", "~~"),
-            Command::Code => editor::wrap(&mut self.doc, &mut self.editor, "`", "`"),
-            Command::Link => editor::wrap(&mut self.doc, &mut self.editor, "[", "](https://)"),
+            Command::Bold => editor::wrap(&mut self.doc, &mut self.editor, "**", "**", true),
+            Command::Italic => editor::wrap(&mut self.doc, &mut self.editor, "*", "*", true),
+            Command::Strike => editor::wrap(&mut self.doc, &mut self.editor, "~~", "~~", true),
+            Command::Code => editor::wrap(&mut self.doc, &mut self.editor, "`", "`", true),
+            Command::Link => {
+                editor::wrap(&mut self.doc, &mut self.editor, "[", "](https://)", false)
+            }
             Command::Image => {
                 editor::insert_template(&mut self.doc, &mut self.editor, "![](./image.png)")
             }

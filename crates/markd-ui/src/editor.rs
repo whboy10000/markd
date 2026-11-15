@@ -187,33 +187,82 @@ pub fn make_paragraph(doc: &mut Document, state: &mut EditorState) {
     apply_prefix(doc, state, "");
 }
 
-/// 用标记包裹当前选区（无选区时包裹光标所在位置）。
-pub fn wrap(doc: &mut Document, state: &mut EditorState, open: &str, close: &str) {
+/// 用标记包裹内容（加粗 / 斜体 / 删除线 / 行内代码 / 链接共用）：
+/// - 有选区（含工具条点击时记住的选区）→ 包裹选中的文字；
+/// - 无选区且 `whole_block` → 整个块（光标所在行）加标记；
+/// - 无选区且 !`whole_block` → 在光标处插入一对空标记（链接的用法）。
+/// 选区或整块已经带着同样标记时再点一次 = 取消（WPS 式开关）。
+/// 始终基于「可编辑文本」操作（标题不含 #、代码块不含围栏），再还原成源码写回，
+/// 这样标记的字节偏移和屏幕上的字符位置才能对得上。
+pub fn wrap(
+    doc: &mut Document,
+    state: &mut EditorState,
+    open: &str,
+    close: &str,
+    whole_block: bool,
+) {
     let idx = state.active;
     let Some(b) = doc.blocks.get(idx) else {
         return;
     };
-    let src = b.source().to_string();
-    let len = src.chars().count();
-    let (a, z) = state
-        .sel
-        .or_else(|| {
-            state
-                .last_sel
-                .filter(|(b, _, _)| *b == idx)
-                .map(|(_, a, z)| (a, z))
-        })
-        .unwrap_or_else(|| {
+    let text = block_buffer(b);
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    if len == 0 && whole_block {
+        return; // 空行没有可加粗的内容
+    }
+
+    let open_c = open.chars().count();
+    let close_c = close.chars().count();
+    let sel_opt = state.sel.or_else(|| {
+        state
+            .last_sel
+            .filter(|(b, _, _)| *b == idx)
+            .map(|(_, a, z)| (a, z))
+    });
+    let (a, z) = sel_opt.unwrap_or_else(|| {
+        if whole_block {
+            (0, len)
+        } else {
             let p = state.last_cursor.min(len);
             (p, p)
-        });
+        }
+    });
     let a = a.min(len);
     let z = z.min(len);
-    let mut out = insert_at_char(&src, a, open);
-    out = insert_at_char(&out, z + open.chars().count(), close);
+
+    // 已经带着同样标记 → 这次点击是取消
+    let already = z > a
+        && chars[a..z].starts_with(&open.chars().collect::<Vec<_>>())
+        && chars[a..z].ends_with(&close.chars().collect::<Vec<_>>());
+    let whole_already = a == 0
+        && z == len
+        && chars.starts_with(&open.chars().collect::<Vec<_>>())
+        && chars.ends_with(&close.chars().collect::<Vec<_>>());
+
+    let out = if (sel_opt.is_some() && already) || (sel_opt.is_none() && whole_already) {
+        let mut t: String = chars[..a].iter().collect();
+        t.extend(&chars[a + open_c..z - close_c]);
+        t.extend(&chars[z..]);
+        t
+    } else {
+        let mut t: String = chars[..a].iter().collect();
+        t.push_str(open);
+        t.extend(&chars[a..z]);
+        t.push_str(close);
+        t.extend(&chars[z..]);
+        t
+    };
+    // 标题等块的可编辑文本不含块级标记：还原成源码时由 rebuild_source 补回，
+    // 否则加粗标题会把 # 一起丢掉。
+    let src_out = rebuild_source(b, &out);
+    if out == text {
+        return;
+    }
     doc.record();
-    doc.edit_block(idx, &out);
+    doc.edit_block(idx, &src_out);
     state.last_sel = None;
+    state.last_cursor = (a + open_c).min(out.chars().count());
 }
 
 pub fn toggle_task(doc: &mut Document, idx: usize) {
@@ -1005,9 +1054,40 @@ mod tests {
         let mut st = EditorState::default();
         st.sel = None;
         st.last_sel = Some((0, 0, 2));
-        wrap(&mut doc, &mut st, "`", "`");
+        wrap(&mut doc, &mut st, "`", "`", true);
         assert_eq!(doc.source(), "`选中`这段文字");
         assert!(st.last_sel.is_none(), "用过的选区要清掉，避免重复包裹");
+    }
+
+    /// 加粗（工具条按钮）：没有选区时，整行（光标所在块）整体加粗；
+    /// 再点一次取消——整行已经带着 ** 时，点击就是去掉标记。
+    #[test]
+    fn bold_whole_line_toggles() {
+        let mut doc = Document::new("正文一段", None);
+        let mut st = EditorState::default();
+        wrap(&mut doc, &mut st, "**", "**", true);
+        assert_eq!(doc.source(), "**正文一段**");
+        wrap(&mut doc, &mut st, "**", "**", true);
+        assert_eq!(doc.source(), "正文一段");
+    }
+
+    /// 加粗作用在标题块时，偏移按「去掉 # 的可编辑文本」计算，# 不能被裹进标记里。
+    #[test]
+    fn bold_on_heading_keeps_marker_outside() {
+        let mut doc = Document::new("# 标题内容", None);
+        let mut st = EditorState::default();
+        wrap(&mut doc, &mut st, "**", "**", true);
+        assert_eq!(doc.source(), "# **标题内容**");
+    }
+
+    /// 链接保持旧行为：没有选区时只在光标处插入一对空标记，不裹整行。
+    #[test]
+    fn link_inserts_at_caret_without_selection() {
+        let mut doc = Document::new("正文一段", None);
+        let mut st = EditorState::default();
+        st.last_cursor = 2;
+        wrap(&mut doc, &mut st, "[", "](https://)", false);
+        assert_eq!(doc.source(), "正文[](https://)一段");
     }
 
     /// 删除线（工具条按钮）：选中文字后两侧各补一个 ~~，渲染成一条横线。
@@ -1018,7 +1098,7 @@ mod tests {
             sel: Some((0, 2)),
             ..Default::default()
         };
-        wrap(&mut doc, &mut st, "~~", "~~");
+        wrap(&mut doc, &mut st, "~~", "~~", true);
         assert_eq!(doc.source(), "~~普通~~文字");
         assert!(doc.dirty);
     }
