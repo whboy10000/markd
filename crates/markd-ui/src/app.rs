@@ -82,6 +82,71 @@ fn icon_button(
         .clicked()
 }
 
+/// 撤销 / 恢复图标：一段圆弧 + 箭头（WPS 那种弯曲的回退箭头）。
+/// right = true 时左右镜像，用于「重做」。
+fn painter_undo_redo(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    bg: egui::Color32,
+    fg: egui::Color32,
+    right: bool,
+) {
+    painter.rect_filled(rect, egui::CornerRadius::same(4), bg);
+    let stroke = egui::Stroke::new(1.5, fg);
+    let h = rect.height();
+    let c = rect.center() + egui::vec2(0.0, h * 0.08);
+    let r = h * 0.21;
+    // 圆弧从左下绕到右下（屏幕上就是一条向上的半圆）
+    let a0 = std::f32::consts::PI * 0.92;
+    let a1 = std::f32::consts::PI * 2.18;
+    let mirror = |p: egui::Pos2| {
+        if right {
+            egui::pos2(2.0 * c.x - p.x, p.y)
+        } else {
+            p
+        }
+    };
+    let mut pts: Vec<egui::Pos2> = Vec::new();
+    let steps = 18;
+    for i in 0..=steps {
+        let t = a0 + (a1 - a0) * (i as f32 / steps as f32);
+        pts.push(mirror(egui::pos2(c.x + r * t.cos(), c.y + r * t.sin())));
+    }
+    // 箭头画在 a0 那一端，指向圆弧外侧
+    let tip_dir = {
+        let d = pts[0] - pts[1];
+        d.normalized()
+    };
+    let tip = pts[0] + tip_dir * (r * 0.75);
+    let perp = egui::vec2(-tip_dir.y, tip_dir.x) * (r * 0.55);
+    painter.add(egui::Shape::convex_polygon(
+        vec![tip, pts[0] + perp, pts[0] - perp],
+        fg,
+        egui::Stroke::NONE,
+    ));
+    painter.add(egui::Shape::line(pts, stroke));
+}
+
+/// 撤销图标（向左回退）
+fn painter_undo_icon(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    bg: egui::Color32,
+    fg: egui::Color32,
+) {
+    painter_undo_redo(painter, rect, bg, fg, false);
+}
+
+/// 重做图标（向右回退）
+fn painter_redo_icon(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    bg: egui::Color32,
+    fg: egui::Color32,
+) {
+    painter_undo_redo(painter, rect, bg, fg, true);
+}
+
 /// 把向量按给定角度旋转（屏幕坐标 y 向下）。
 fn rotate(v: egui::Vec2, angle: f32) -> egui::Vec2 {
     let (s, c) = angle.sin_cos();
@@ -1572,6 +1637,13 @@ impl MarkdApp {
                 self.open_quick_palette();
             }
             ui.separator();
+            // 撤销 / 重做放在「标题」左边：改错了能立刻回退一步。
+            if icon_button(ui, "撤销 (Cmd/Ctrl+Z)", painter_undo_icon) {
+                chosen = Some(Command::Undo);
+            }
+            if icon_button(ui, "重做 (Cmd/Ctrl+Shift+Z)", painter_redo_icon) {
+                chosen = Some(Command::Redo);
+            }
             // 标题级别收进一个下拉：先点选目标段落让它成为活动块，再选 H1–H6，
             // 整段会替换掉原有的 #/>/- 前缀变成对应标题（H1→H6 之间也能直接互转）。
             ui.menu_button("标题", |ui| {

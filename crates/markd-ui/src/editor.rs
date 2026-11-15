@@ -476,14 +476,26 @@ pub fn show_editor(
                                 .inner_margin(6.0);
                             let inner = frame.show(ui, |ui| {
                                 if let Some((_, grid, _)) = state.table_draft.as_mut() {
-                                    egui::Grid::new(("table_edit", idx)).striped(true).show(
-                                        ui,
-                                        |ui| {
+                                    // 列宽与渲染态保持一致：平分可用宽度。
+                                    // 以前单元格固定 140px，一点进编辑整张表就缩水成一小块。
+                                    let cols = grid.first().map(|r| r.len()).unwrap_or(1).max(1);
+                                    let gap =
+                                        ui.spacing().item_spacing.x * cols.saturating_sub(1) as f32;
+                                    let col_w = ((ui.available_width() - gap).max(120.0)
+                                        / cols as f32)
+                                        .max(56.0);
+                                    ui.set_min_width(col_w * cols as f32 + gap);
+                                    egui::Grid::new(("table_edit", idx))
+                                        .striped(true)
+                                        .min_col_width(col_w)
+                                        .max_col_width(col_w)
+                                        .show(ui, |ui| {
                                             for row in grid.iter_mut() {
                                                 for cell in row.iter_mut() {
+                                                    ui.set_min_width(col_w - 6.0);
                                                     let r = ui.add(
                                                         egui::TextEdit::singleline(cell)
-                                                            .desired_width(140.0)
+                                                            .desired_width(col_w - 12.0)
                                                             .frame(egui::Frame::NONE),
                                                     );
                                                     if r.changed() {
@@ -492,8 +504,7 @@ pub fn show_editor(
                                                 }
                                                 ui.end_row();
                                             }
-                                        },
-                                    );
+                                        });
                                 }
                             });
                             if edited {

@@ -1120,6 +1120,25 @@ pub fn render_block(
             }
             Block::Toc { .. } => {
                 let r = panel_frame(theme).show(ui, |ui| {
+                    // 盒子宽度 ≈ 最长标题的两倍：目录条目长短不一时，
+                    // 收缩到最宽那条的宽度会让整个框看起来又窄又小。
+                    let longest_w = env
+                        .outline
+                        .iter()
+                        .map(|item| {
+                            ui.fonts_mut(|f| {
+                                f.layout_no_wrap(
+                                    format!("• {}", item.title),
+                                    egui::FontId::proportional(theme.body),
+                                    theme.link,
+                                )
+                                .rect
+                                .width()
+                            })
+                        })
+                        .fold(0.0_f32, f32::max);
+                    let box_w = (longest_w * 2.0).clamp(300.0, env.max_width);
+                    ui.set_min_width(box_w);
                     ui.label(egui::RichText::new("目录").strong().color(theme.heading));
                     for item in env.outline {
                         let indent = ((item.level.saturating_sub(1)) as f32) * 14.0;
