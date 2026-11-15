@@ -69,13 +69,12 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
     let m_search = mk(&mut map, "search", "工作区全文搜索", Command::Search);
     let m_graph = mk(&mut map, "graph", "双向链接关系图", Command::Graph);
     let m_stats = mk(&mut map, "stats", "写作统计", Command::Stats);
-    let m_status_path = mk(&mut map, "status_path", "显示/隐藏状态栏路径", Command::ToggleStatusPath);
     let m_terminal = mk(&mut map, "terminal", "切换终端面板", Command::ToggleTerminal);
     let view_menu = Submenu::with_items(
         "视图",
         true,
         &[&m_source, &m_focus, &m_typewriter, &m_sidebar, &m_outline, &m_header, &m_wsbar,
-          &m_status_path, &m_terminal, &m_search, &m_graph, &m_stats],
+          &m_terminal, &m_search, &m_graph, &m_stats],
     )
     .unwrap();
 

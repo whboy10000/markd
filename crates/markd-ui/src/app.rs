@@ -138,7 +138,7 @@ fn menu_commands(k: MenuKind) -> Vec<Command> {
             Command::ToggleSource, Command::ToggleFocus, Command::ToggleTypewriter,
             Command::ToggleSidebar, Command::ToggleOutline, Command::ToggleAutoSave,
             Command::ToggleSidebarHeader, Command::ToggleWorkspaceBar,
-            Command::ToggleStatusPath, Command::ToggleTerminal, Command::OpenFileDialog,
+            Command::ToggleTerminal, Command::OpenFileDialog,
             Command::Search, Command::Graph, Command::Stats,
         ],
         MenuKind::Theme => vec![Command::ThemeNext],
@@ -178,6 +178,9 @@ pub struct MarkdApp {
     tree: Vec<FileNode>,
     expanded: HashSet<PathBuf>,
     outline: Vec<OutlineItem>,
+    /// 缓存统计结果：Document::stats() 是 O(全文) 的，不能每帧都算。
+    stats_cache: crate::document::Stats,
+    stats_at: std::time::Instant,
     side_tab: SideTab,
     menu: Option<MenuKind>,
     workspace_input: String,
@@ -249,8 +252,11 @@ impl MarkdApp {
             .map(|r| r.to_string_lossy().to_string())
             .unwrap_or_default();
 
+        let stats_cache = doc.stats();
         Self {
             stats: WritingStats::new(&doc),
+            stats_cache,
+            stats_at: std::time::Instant::now(),
             doc,
             config,
             theme,
@@ -288,7 +294,18 @@ impl MarkdApp {
 
     fn on_changed(&mut self) {
         self.outline = self.doc.outline();
-        self.stats.tick(&self.doc);
+        // stats() 要扫全文，连续输入时按 200ms 节流，避免每个按键都全量统计一遍。
+        let now = std::time::Instant::now();
+        if now.duration_since(self.stats_at).as_millis() >= 200 {
+            self.refresh_stats();
+        }
+    }
+
+    /// 立即刷新统计（打开文档时用，不受节流影响）。
+    fn refresh_stats(&mut self) {
+        self.stats_cache = self.doc.stats();
+        self.stats_at = std::time::Instant::now();
+        self.stats.tick(self.stats_cache.words);
     }
 
     fn refresh_tree(&mut self) {
@@ -372,6 +389,7 @@ impl MarkdApp {
                 self.editor.active = 0;
                 self.editor.focus_req = Some(0);
                 self.on_changed();
+                self.refresh_stats();
                 self.refresh_tree();
                 self.status = format!("已打开 {}", path.display());
             }
@@ -511,10 +529,6 @@ impl MarkdApp {
                 self.config.show_workspace_bar = !self.config.show_workspace_bar;
                 self.config.save();
             }
-            Command::ToggleStatusPath => {
-                self.config.show_status_path = !self.config.show_status_path;
-                self.config.save();
-            }
             Command::ToggleTerminal => self.terminal.toggle(),
             Command::OpenFileDialog => {
                 let mut dialog = rfd::FileDialog::new()
@@ -543,6 +557,9 @@ impl MarkdApp {
             Command::Link => editor::wrap(&mut self.doc, &mut self.editor, "[", "](https://)"),
             Command::Image => editor::insert_template(&mut self.doc, &mut self.editor, "![](./image.png)"),
             Command::Quote => editor::apply_prefix(&mut self.doc, &mut self.editor, "> "),
+            Command::CodeBlock => {
+                editor::insert_template(&mut self.doc, &mut self.editor, "```\n\n```")
+            }
             Command::Bullet => editor::apply_prefix(&mut self.doc, &mut self.editor, "- "),
             Command::Ordered => editor::apply_prefix(&mut self.doc, &mut self.editor, "1. "),
             Command::Task => editor::insert_template(&mut self.doc, &mut self.editor, "- [ ] "),
@@ -587,9 +604,33 @@ impl MarkdApp {
         self.on_changed();
     }
 
+    /// 快捷键尽量与 Typora 保持一致，方便无损切换。
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        let (cmd, shift) = ctx.input(|i| (i.modifiers.command, i.modifiers.shift));
+        let mac = cfg!(target_os = "macos");
+        let (cmd, shift, alt, ctrl) = ctx.input(|i| {
+            (i.modifiers.command, i.modifiers.shift, i.modifiers.alt, i.modifiers.ctrl)
+        });
         let key = |k: egui::Key| ctx.input(|i| i.key_pressed(k));
+
+        // ---- 无修饰键：Typora 的 F8 专注 / F9 打字机 / F1 快捷键速查 ----
+        if key(egui::Key::F8) {
+            self.execute(Command::ToggleFocus, ctx);
+            return;
+        }
+        if key(egui::Key::F9) {
+            self.execute(Command::ToggleTypewriter, ctx);
+            return;
+        }
+        if key(egui::Key::F1) {
+            self.shortcuts = true;
+            return;
+        }
+        // Typora: Ctrl+Shift+` 删除线（macOS 上 Ctrl 与 Cmd 是分开的）
+        if mac && ctrl && shift && key(egui::Key::Backtick) {
+            self.execute(Command::Strike, ctx);
+            return;
+        }
+
         if !cmd {
             return;
         }
@@ -602,8 +643,47 @@ impl MarkdApp {
         if self.terminal.has_focus() {
             return;
         }
-        if key(egui::Key::S) && !shift {
+
+        // ---- Typora 的 Command+Option 组合 ----
+        if alt {
+            if key(egui::Key::Q) {
+                self.execute(Command::Quote, ctx);
+            } else if key(egui::Key::C) {
+                self.execute(Command::CodeBlock, ctx);
+            } else if key(egui::Key::B) {
+                self.execute(Command::Math, ctx);
+            } else if key(egui::Key::T) {
+                self.execute(Command::Table, ctx);
+            } else if key(egui::Key::O) {
+                self.execute(Command::Ordered, ctx);
+            } else if key(egui::Key::U) {
+                self.execute(Command::Bullet, ctx);
+            }
+            return;
+        }
+
+        // ---- Typora 的 Command+Control 组合（仅 macOS，其它平台 Cmd==Ctrl） ----
+        if mac && ctrl {
+            if key(egui::Key::I) {
+                self.execute(Command::Image, ctx);
+            } else if key(egui::Key::Num1) {
+                self.config.show_sidebar = true;
+                self.config.show_outline = true;
+                self.side_tab = SideTab::Outline;
+                self.config.save();
+            }
+            return;
+        }
+
+        // ---- 纯 Command 组合 ----
+        if key(egui::Key::S) && shift {
+            self.execute(Command::SaveAs, ctx);
+        } else if key(egui::Key::S) {
             self.execute(Command::Save, ctx);
+        } else if key(egui::Key::O) && shift {
+            self.open_quick_palette();
+        } else if key(egui::Key::O) {
+            self.execute(Command::OpenFileDialog, ctx);
         } else if key(egui::Key::P) && shift {
             self.open_quick_palette();
         } else if key(egui::Key::P) {
@@ -616,18 +696,23 @@ impl MarkdApp {
             self.execute(Command::Italic, ctx);
         } else if key(egui::Key::K) {
             self.execute(Command::Link, ctx);
+        } else if key(egui::Key::Backtick) && shift {
+            self.execute(Command::Code, ctx);
+        } else if key(egui::Key::Slash) {
+            // Typora: Cmd+/ 切换源码模式
+            self.execute(Command::ToggleSource, ctx);
         } else if key(egui::Key::E) && shift {
             self.execute(Command::ExportHtml, ctx);
         } else if key(egui::Key::E) {
             self.execute(Command::ToggleSource, ctx);
         } else if key(egui::Key::F) && shift {
             self.execute(Command::ToggleFocus, ctx);
-        } else if key(egui::Key::T) && shift {
-            self.execute(Command::ToggleTypewriter, ctx);
-        } else if key(egui::Key::H) && shift {
-            self.execute(Command::ToggleSidebarHeader, ctx);
         } else if key(egui::Key::F) {
             self.search.open = true;
+        } else if key(egui::Key::L) && shift {
+            self.execute(Command::ToggleSidebar, ctx);
+        } else if key(egui::Key::H) && shift {
+            self.execute(Command::ToggleSidebarHeader, ctx);
         } else if key(egui::Key::Z) && shift {
             self.execute(Command::Redo, ctx);
         } else if key(egui::Key::Z) {
@@ -638,8 +723,6 @@ impl MarkdApp {
             self.execute(Command::H2, ctx);
         } else if key(egui::Key::Num3) {
             self.execute(Command::H3, ctx);
-        } else if key(egui::Key::Slash) {
-            self.shortcuts = true;
         }
     }
 
@@ -773,30 +856,12 @@ impl MarkdApp {
         ui.style_mut().interaction.selectable_labels = false;
         if self.config.show_sidebar_header {
             ui.horizontal(|ui| {
-                if ui
-                    .selectable_label(self.side_tab == SideTab::Files, "文件")
-                    .on_hover_cursor(egui::CursorIcon::Default)
-                    .clicked()
-                {
-                    let (show, tab, show_outline) =
-                        sidebar_click(self.config.show_sidebar, self.side_tab, SideTab::Files);
-                    self.config.show_sidebar = show;
-                    self.side_tab = tab;
-                    self.config.show_outline = show_outline;
-                    self.config.save();
-                }
-                if ui
-                    .selectable_label(self.side_tab == SideTab::Outline, "大纲")
-                    .on_hover_cursor(egui::CursorIcon::Default)
-                    .clicked()
-                {
-                    let (show, tab, show_outline) =
-                        sidebar_click(self.config.show_sidebar, self.side_tab, SideTab::Outline);
-                    self.config.show_sidebar = show;
-                    self.side_tab = tab;
-                    self.config.show_outline = show_outline;
-                    self.config.save();
-                }
+                // 只保留「刷新」；文件 / 大纲的切换入口在底部状态栏。
+                let name = match self.side_tab {
+                    SideTab::Files => "文件",
+                    SideTab::Outline => "大纲",
+                };
+                ui.label(RichText::new(name).small().color(self.theme.dim));
                 if ui
                     .button("刷新")
                     .on_hover_cursor(egui::CursorIcon::Default)
@@ -873,30 +938,9 @@ impl MarkdApp {
     fn statusbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.style_mut().interaction.selectable_labels = false;
         ui.style_mut().spacing.item_spacing.x = 4.0;
-        let st = self.doc.stats();
+        let st = self.stats_cache.clone();
         let mut chosen: Option<Command> = None;
         ui.horizontal(|ui| {
-            // 文件路径默认不显示；需要时用「显示/隐藏状态栏路径」打开。
-            if self.config.show_status_path {
-                let full_path = self
-                    .doc
-                    .path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string());
-                let name = self
-                    .doc
-                    .path
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "未命名".to_string());
-                let r = ui.label(RichText::new(name).color(self.theme.dim));
-                if let Some(full) = &full_path {
-                    r.on_hover_text(full.as_str());
-                }
-                ui.separator();
-            }
-
             // 状态栏入口：点「文件」显示文件树，点「大纲」显示大纲。
             let files_on = self.config.show_sidebar && self.side_tab == SideTab::Files;
             let files_txt = if files_on {
@@ -1024,7 +1068,7 @@ impl MarkdApp {
             self.on_changed();
             self.status = "已恢复到所选版本".to_string();
         }
-        self.stats.show(ctx, &self.doc, &self.theme);
+        self.stats.show(ctx, &self.stats_cache, &self.theme);
 
         if let Some(kind) = self.menu {
             let title = match kind {
@@ -1110,19 +1154,28 @@ impl MarkdApp {
                 .default_width(420.0)
                 .show(ctx, |ui| {
                     let rows = [
-                        ("Cmd/Ctrl + S", "保存"),
-                        ("Cmd/Ctrl + P", "命令面板"),
-                        ("Cmd/Ctrl + Shift + P", "快速打开文件"),
+                        ("Cmd/Ctrl + S / Shift + S", "保存 / 另存为"),
+                        ("Cmd/Ctrl + O", "打开文件"),
+                        ("Cmd/Ctrl + Shift + O", "快速打开"),
                         ("Cmd/Ctrl + N", "新建文档"),
+                        ("Cmd/Ctrl + P", "命令面板"),
+                        ("Cmd/Ctrl + 1 / 2 / 3", "一级 / 二级 / 三级标题"),
                         ("Cmd/Ctrl + B / I / K", "粗体 / 斜体 / 链接"),
-                        ("Cmd/Ctrl + E", "切换源码模式"),
-                        ("Cmd/Ctrl + Shift + E", "导出 HTML"),
-                        ("Cmd/Ctrl + Shift + F / T", "专注 / 打字机模式"),
-                        ("Cmd/Ctrl + Shift + H", "显示 / 隐藏侧栏标签栏"),
-                        ("Cmd/Ctrl + J", "切换终端面板"),
+                        ("Cmd/Ctrl + Shift + `", "行内代码"),
+                        ("Ctrl + Shift + `", "删除线"),
+                        ("Cmd + Option + C / B", "代码块 / 公式块"),
+                        ("Cmd + Option + T / Q", "表格 / 引用"),
+                        ("Cmd + Option + O / U", "有序 / 无序列表"),
+                        ("Cmd/Ctrl + /", "切换源码模式"),
                         ("Cmd/Ctrl + F", "全文搜索"),
+                        ("Cmd/Ctrl + Shift + L", "显示 / 隐藏侧边栏"),
+                        ("Cmd + Ctrl + 1", "显示大纲"),
+                        ("F8 / F9", "专注 / 打字机模式"),
+                        ("Cmd/Ctrl + J", "切换终端面板"),
                         ("Cmd/Ctrl + Z / Shift + Z", "撤销 / 重做"),
-                        ("Cmd/Ctrl + 1/2/3", "一级 / 二级 / 三级标题"),
+                        ("Cmd/Ctrl + Shift + E", "导出 HTML"),
+                        ("Cmd/Ctrl + Shift + H", "显示 / 隐藏侧栏标签栏"),
+                        ("F1", "快捷键一览"),
                         ("Enter / Shift + Tab", "拆分块 / 减少缩进"),
                         ("Ctrl + 点击链接", "打开链接"),
                     ];

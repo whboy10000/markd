@@ -77,8 +77,20 @@ impl Document {
         self.dirty = true;
     }
 
-    /// 编辑单个块后重新解析全文，保证渲染内容与源码一致。
+    /// 编辑单个块。
+    ///
+    /// 绝大多数输入只改动一个块，因此优先只解析这一块并原地替换，避免每次按键
+    /// 都把整篇文档重新解析一遍（10 万字时全文重解析约 20ms+）。
+    /// 只有当这一块的源码解析出多个块（例如粘贴了空行）时才回退到全文重解析。
     pub fn edit_block(&mut self, idx: usize, new_src: &str) {
+        let mut parsed = ast::parse(new_src);
+        if parsed.len() == 1 {
+            if let Some(b) = self.blocks.get_mut(idx) {
+                *b = parsed.pop().unwrap();
+            }
+            self.dirty = true;
+            return;
+        }
         if let Some(b) = self.blocks.get_mut(idx) {
             *b.source_mut() = new_src.to_string();
         }
@@ -87,14 +99,17 @@ impl Document {
         self.dirty = true;
     }
 
+    /// 在 `idx` 之后插入新块；只解析这段新源码，不重解析全文。
     pub fn insert_block_after(&mut self, idx: usize, source: &str) {
-        if idx < self.blocks.len() {
-            self.blocks.insert(idx + 1, Block::Blank { source: source.to_string() });
+        let at = if idx < self.blocks.len() { idx + 1 } else { self.blocks.len() };
+        let parsed = ast::parse(source);
+        if parsed.is_empty() {
+            self.blocks.insert(at, Block::Blank { source: source.to_string() });
         } else {
-            self.blocks.push(Block::Blank { source: source.to_string() });
+            for (k, b) in parsed.into_iter().enumerate() {
+                self.blocks.insert(at + k, b);
+            }
         }
-        let s = self.source();
-        self.blocks = ast::parse(&s);
         self.dirty = true;
     }
 
@@ -103,8 +118,6 @@ impl Document {
             return;
         }
         self.blocks.remove(idx);
-        let s = self.source();
-        self.blocks = ast::parse(&s);
         self.dirty = true;
     }
 

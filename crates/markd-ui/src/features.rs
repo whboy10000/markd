@@ -457,8 +457,8 @@ impl WritingStats {
         }
     }
 
-    pub fn tick(&mut self, doc: &Document) {
-        let w = doc.stats().words;
+    pub fn tick(&mut self, words: usize) {
+        let w = words;
         if self.history.last().map(|(_, x)| *x) != Some(w) {
             self.history.push((now(), w));
             if self.history.len() > 120 {
@@ -467,11 +467,11 @@ impl WritingStats {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, doc: &Document, theme: &Theme) {
+    pub fn show(&mut self, ctx: &egui::Context, stats: &crate::document::Stats, theme: &Theme) {
         if !self.open {
             return;
         }
-        let st = doc.stats();
+        let st = stats;
         let gained = st.words.saturating_sub(self.start_words);
         let minutes = now().saturating_sub(self.session_start) / 60;
         egui::Window::new("写作统计")

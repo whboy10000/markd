@@ -49,20 +49,27 @@ sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev \
 
 | 快捷键 | 功能 |
 | --- | --- |
-| `Cmd/Ctrl + S` | 保存 |
+| `Cmd/Ctrl + S` / `Shift + S` | 保存 / 另存为 |
+| `Cmd/Ctrl + O` | 打开文件 |
+| `Cmd/Ctrl + Shift + O` | 快速打开 |
 | `Cmd/Ctrl + N` | 新建文档 |
 | `Cmd/Ctrl + P` | 命令面板 |
-| `Cmd/Ctrl + Shift + P` | 快速打开文件 |
-| `Cmd/Ctrl + F` | 工作区全文搜索 |
-| `Cmd/Ctrl + J` | 显示 / 隐藏终端 |
-| `Cmd/Ctrl + E` | 切换源码模式 |
-| `Cmd/Ctrl + Shift + E` | 导出 HTML |
-| `Cmd/Ctrl + B / I / K` | 加粗 / 斜体 / 链接 |
-| `Cmd/Ctrl + Z / Shift + Z` | 撤销 / 重做 |
 | `Cmd/Ctrl + 1 / 2 / 3` | 一级 / 二级 / 三级标题 |
-| `Cmd/Ctrl + Shift + F` | 专注模式 |
-| `Cmd/Ctrl + Shift + T` | 打字机模式 |
-| `Cmd/Ctrl + /` | 快捷键一览 |
+| `Cmd/Ctrl + B / I / K` | 加粗 / 斜体 / 链接 |
+| `Cmd/Ctrl + Shift + `` `` | 行内代码 |
+| `Ctrl + Shift + `` `` | 删除线 |
+| `Cmd + Option + C` / `B` | 代码块 / 公式块 |
+| `Cmd + Option + T` / `Q` | 表格 / 引用 |
+| `Cmd + Option + O` / `U` | 有序 / 无序列表 |
+| `Cmd/Ctrl + /` | 切换源码模式 |
+| `Cmd/Ctrl + F` | 全文搜索 |
+| `Cmd/Ctrl + Shift + L` | 显示 / 隐藏侧边栏 |
+| `Cmd + Ctrl + 1` | 显示大纲 |
+| `F8` / `F9` | 专注 / 打字机模式 |
+| `Cmd/Ctrl + J` | 显示 / 隐藏终端 |
+| `Cmd/Ctrl + Z` / `Shift + Z` | 撤销 / 重做 |
+| `Cmd/Ctrl + Shift + E` | 导出 HTML |
+| `F1` | 快捷键一览 |
 
 > 终端获得焦点时，除 `Cmd/Ctrl + J` 外的应用快捷键都会让位给 shell，避免打断交互式命令。
 

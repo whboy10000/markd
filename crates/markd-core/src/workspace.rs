@@ -18,10 +18,6 @@ fn default_show_workspace_bar() -> bool {
     false
 }
 
-fn default_show_status_path() -> bool {
-    false
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Config {
     pub theme: ThemeKind,
@@ -39,8 +35,6 @@ pub struct Config {
     pub sidebar_width: f32,
     #[serde(default = "default_show_workspace_bar")]
     pub show_workspace_bar: bool,
-    #[serde(default = "default_show_status_path")]
-    pub show_status_path: bool,
 }
 
 impl Default for Config {
@@ -58,7 +52,6 @@ impl Default for Config {
             show_sidebar_header: true,
             sidebar_width: 240.0,
             show_workspace_bar: false,
-            show_status_path: false,
         }
     }
 }
@@ -226,7 +219,6 @@ mod tests {
         assert!(c.show_sidebar_header);
         assert_eq!(c.sidebar_width, 240.0);
         assert!(!c.show_workspace_bar);
-        assert!(!c.show_status_path);
     }
 
     #[test]

@@ -105,14 +105,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete latest --yes --cleanup-tag || true
+          gh release delete latest --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag || true
           cat > notes.md <<EOF
           自动构建 ${GITHUB_SHA:0:7}（${GITHUB_REF_NAME}）
 
           - markd-macos.zip / markd-linux.zip / markd-windows.zip
           - macOS 首次运行若提示「无法验证开发者」，执行： xattr -d com.apple.quarantine ./markd
           EOF
-          gh release create latest dist/*.zip \
+          gh release create latest dist/*.zip --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --title "Latest build" \
             --notes-file notes.md \
@@ -122,7 +122,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ steps.tag.outputs.tag }}" dist/*.zip \
+          gh release create "${{ steps.tag.outputs.tag }}" dist/*.zip --repo "${GITHUB_REPOSITORY}" \
             --title "${{ steps.tag.outputs.tag }}" \
             --generate-notes \
             --verify-tag
