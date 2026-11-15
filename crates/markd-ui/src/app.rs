@@ -1479,6 +1479,24 @@ impl eframe::App for MarkdApp {
                     self.editor.scroll_req = Some(self.editor.active);
                 }
                 Action::Notify(msg) => self.status = msg,
+                Action::SetLang(i, lang) => {
+                    let rebuilt = match self.doc.blocks.get(i) {
+                        Some(crate::ast::Block::Code { code, source, .. }) => {
+                            let fence = if source.starts_with("~~~") { "~~~" } else { "```" };
+                            Some(format!("{}{}\n{}\n{}", fence, lang, code, fence))
+                        }
+                        _ => None,
+                    };
+                    if let Some(src) = rebuilt {
+                        self.doc.record();
+                        self.doc.edit_block(i, &src);
+                        self.on_changed();
+                        self.status = format!(
+                            "代码语言：{}",
+                            if lang.is_empty() { "纯文本" } else { lang.as_str() }
+                        );
+                    }
+                }
             }
         }
 

@@ -14,9 +14,6 @@ pub struct EditorState {
     pub scroll_req: Option<usize>,
     pub last_cursor: usize,
     pub sel: Option<(usize, usize)>,
-    /// 每个块上次实测的高度（0 表示未知），供虚拟滚动复用。
-    pub heights: Vec<f32>,
-    pub measured_width: f32,
 }
 
 pub enum EditorEvent {
@@ -257,11 +254,6 @@ pub fn show_editor(
     let mut selection: Option<(usize, usize)> = None;
     let mut pair_insert: Option<(usize, String)> = None;
 
-    let blocks_len = doc.blocks.len();
-    if state.heights.len() != blocks_len {
-        state.heights.resize(blocks_len, 0.0);
-    }
-
     egui::ScrollArea::vertical()
         .id_salt("editor_scroll")
         .auto_shrink([false, false])
@@ -271,43 +263,15 @@ pub fn show_editor(
             // 所有块都按这个宽度换行，窄窗口下也不会把长段落横向裁掉。
             let outer_w = ui.available_width();
             let page_w = (outer_w * 0.9).max(200.0);
-            if (state.measured_width - page_w).abs() > 1.0 {
-                // 宽度变化后旧高度失效，全部按未知重新测量。
-                for h in &mut state.heights {
-                    *h = 0.0;
-                }
-                state.measured_width = page_w;
-            }
             ui.horizontal_top(|ui| {
                 let pad = ((outer_w - page_w) / 2.0).max(0.0);
                 ui.add_space(pad);
                 ui.vertical(|ui| {
                     ui.set_width(page_w);
-                    // 块间距由下面的 gap 显式控制，关掉隐式 item_spacing 才能精确累加 y。
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    let clip = ui.clip_rect();
-                    let mut y = ui.cursor().top();
-                    let margin = clip.height().max(120.0);
-
-                    for idx in 0..blocks_len {
+                    for idx in 0..blocks.len() {
                         let block = &blocks[idx];
                         let compact = matches!(block, Block::ListItem { .. } | Block::Blank { .. });
-                        let gap = if compact { 9.0 } else { 14.0 };
-
-                        let mut h = state.heights[idx];
-                        if h <= 0.5 {
-                            h = estimate_height(block, page_w, theme.body, theme.mono);
-                            state.heights[idx] = h;
-                        }
-                        // 活动块永远渲染（即使滚出视口），这样大纲跳转总能拿到真实位置。
                         let is_active = idx == active;
-                        let visible =
-                            is_active || (y + h >= clip.top() - margin && y <= clip.bottom() + margin);
-                        if !visible {
-                            ui.add_space(h + gap);
-                            y += h + gap;
-                            continue;
-                        }
 
                         let resp = if is_active {
                             let id = Id::new(("block_edit", idx));
@@ -387,16 +351,13 @@ pub fn show_editor(
                         if is_active {
                             active_rect = Some(resp.rect);
                         }
-                        let hh = resp.rect.height();
-                        if hh > 0.0 {
-                            state.heights[idx] = hh;
-                        }
-                        ui.add_space(gap);
-                        y += hh + gap;
+                        ui.add_space(if compact { 1.0 } else { 6.0 });
                     }
                 });
             });
-            if typewriter {
+            // 打字机模式只在光标移动时居中。以前每帧都强制 scroll_to_rect，
+            // 会把用户用滚轮翻到的位置立刻拉回去，表现就是「滚轮滚不动」。
+            if typewriter && cursor_idx != state.last_cursor {
                 if let Some(r) = active_rect {
                     ui.scroll_to_rect(r, Some(egui::Align::Center));
                 }
@@ -509,26 +470,6 @@ pub fn show_editor(
     EditorEvent::None
 }
 
-
-/// 未渲染过的块的高度估算：第一次滚动到远处时先用它占位，
-/// 真正进入视口后会被实测高度覆盖。
-fn estimate_height(b: &Block, page_w: f32, body: f32, mono: f32) -> f32 {
-    match b {
-        Block::Blank { .. } => 9.0,
-        Block::Rule { .. } => 18.0,
-        Block::Code { code, .. } => (code.lines().count().max(1) as f32) * (mono * 1.45) + 46.0,
-        Block::Table { rows, .. } => ((rows.len() + 1) as f32) * 30.0 + 20.0,
-        Block::Diagram { .. } => 210.0,
-        Block::Math { .. } => 64.0,
-        Block::FrontMatter { yaml, .. } => (yaml.lines().count().max(1) as f32) * 20.0 + 40.0,
-        _ => {
-            let chars = b.source().chars().count().max(1) as f32;
-            let per_line = (page_w / (body * 0.62)).max(8.0);
-            let lines = (chars / per_line).ceil().max(1.0);
-            lines * body * 1.5 + 8.0
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

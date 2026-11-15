@@ -17,7 +17,25 @@ pub enum Action {
     OpenLink(String),
     Jump(usize),
     Notify(String),
+    /// 修改代码块的语言（info string）。
+    SetLang(usize, String),
 }
+
+/// 代码块可选语言，覆盖常见前端/后端/脚本/配置/标记语言。
+const LANGUAGES: &[&str] = &[
+    "",
+    "rust", "c", "cpp", "csharp", "java", "kotlin", "scala", "swift", "go", "dart",
+    "python", "javascript", "typescript", "jsx", "tsx", "vue", "svelte", "php", "ruby",
+    "perl", "lua", "r", "julia", "matlab", "objective-c", "fsharp", "haskell", "ocaml",
+    "clojure", "elixir", "erlang", "groovy", "lisp", "prolog", "fortran", "cobol",
+    "sql", "plsql", "graphql", "prisma",
+    "html", "xml", "css", "scss", "sass", "less", "stylus",
+    "json", "yaml", "toml", "ini", "csv", "properties",
+    "bash", "sh", "zsh", "fish", "powershell", "bat", "awk", "sed", "vim", "makefile",
+    "dockerfile", "cmake", "nginx", "apache", "terraform", "hcl", "protobuf", "thrift",
+    "markdown", "latex", "tex", "mermaid", "plantuml", "diff", "asm", "wasm",
+    "solidity", "verilog", "vhdl", "text", "plaintext",
+];
 
 pub struct ImageCache(pub HashMap<PathBuf, Option<egui::TextureHandle>>);
 
@@ -549,6 +567,7 @@ pub fn render_block(
             }
             Block::Code { lang, code, .. } => {
                 let mut copied = false;
+                let mut new_lang: Option<String> = None;
                 let r = panel_frame(theme).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -556,14 +575,35 @@ pub fn render_block(
                                 .small()
                                 .color(theme.dim),
                         );
-                        // 右上角一键复制按钮
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // 右上角：复制 + 语言选择（改的是代码块的 info string）
                             if ui
                                 .button(egui::RichText::new("复制").small())
                                 .on_hover_cursor(egui::CursorIcon::Default)
                                 .clicked()
                             {
                                 copied = true;
+                            }
+                            let mut picked = lang.clone();
+                            egui::ComboBox::from_id_salt(("code_lang", idx))
+                                .selected_text(if picked.is_empty() {
+                                    "纯文本".to_string()
+                                } else {
+                                    picked.clone()
+                                })
+                                .width(118.0)
+                                .show_ui(ui, |ui| {
+                                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                                        for l in LANGUAGES {
+                                            let label = if l.is_empty() { "纯文本" } else { *l };
+                                            if ui.selectable_label(picked == *l, label).clicked() {
+                                                picked = l.to_string();
+                                            }
+                                        }
+                                    });
+                                });
+                            if picked != *lang {
+                                new_lang = Some(picked);
                             }
                         });
                     });
@@ -573,6 +613,9 @@ pub fn render_block(
                 if copied {
                     env.ctx.copy_text(code.clone());
                     env.actions.push(Action::Notify("代码已复制到剪贴板".to_string()));
+                }
+                if let Some(l) = new_lang {
+                    env.actions.push(Action::SetLang(idx, l));
                 }
                 // 只用代码文本区域做块定位，避免覆盖层挡住右上角的复制按钮。
                 r.inner.interact(Sense::click())
