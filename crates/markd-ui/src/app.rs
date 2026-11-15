@@ -121,6 +121,31 @@ fn sidebar_click(visible: bool, tab: SideTab, target: SideTab) -> (bool, SideTab
     }
 }
 
+/// 生成 rows×cols 的空表格（含表头与分隔行）。
+fn table_template(rows: usize, cols: usize) -> String {
+    let cols = cols.max(1);
+    let rows = rows.max(1);
+    let mut s = String::new();
+    s.push('|');
+    for c in 1..=cols {
+        s.push_str(&format!(" 列{c} |"));
+    }
+    s.push('\n');
+    s.push('|');
+    for _ in 0..cols {
+        s.push_str(" --- |");
+    }
+    s.push('\n');
+    for _ in 0..rows {
+        s.push('|');
+        for _ in 0..cols {
+            s.push_str("  |");
+        }
+        s.push('\n');
+    }
+    s.trim_end().to_string()
+}
+
 fn menu_commands(k: MenuKind) -> Vec<Command> {
     match k {
         MenuKind::File => vec![
@@ -194,8 +219,9 @@ pub struct MarkdApp {
     shortcuts: bool,
     save_dialog: bool,
     save_input: String,
-    new_dialog: bool,
-    new_input: String,
+    table_dialog: bool,
+    table_rows: usize,
+    table_cols: usize,
     link_docs: HashMap<String, Vec<String>>,
     last_autosave: u64,
     theme_dirty: bool,
@@ -278,8 +304,9 @@ impl MarkdApp {
             shortcuts: false,
             save_dialog: false,
             save_input: String::new(),
-            new_dialog: false,
-            new_input: String::new(),
+            table_dialog: false,
+            table_rows: 3,
+            table_cols: 3,
             link_docs,
             last_autosave: now_secs(),
             theme_dirty: false,
@@ -360,6 +387,36 @@ impl MarkdApp {
                 .as_ref()
                 .map(|r| r.to_string_lossy().to_string())
                 .unwrap_or_default();
+        }
+    }
+
+    /// 直接新建文档：有工作区就在工作区里建一个不重名的 md 文件，
+    /// 没有就建内存中的未命名文档（保存时再命名）。
+    fn new_document(&mut self) {
+        if let Some(root) = self.root.clone() {
+            let mut n = 0usize;
+            let path = loop {
+                let name = if n == 0 {
+                    "未命名.md".to_string()
+                } else {
+                    format!("未命名-{n}.md")
+                };
+                let p = root.join(name);
+                if !p.exists() {
+                    break p;
+                }
+                n += 1;
+            };
+            let _ = workspace::write(&path, "");
+            self.open_file(path);
+            self.refresh_tree();
+        } else {
+            self.doc = Document::new("", None);
+            self.editor = EditorState::default();
+            self.editor.focus_req = Some(0);
+            self.outline = self.doc.outline();
+            self.refresh_stats();
+            self.status = "已新建空白文档（保存时可命名）".to_string();
         }
     }
 
@@ -464,10 +521,8 @@ impl MarkdApp {
 
     fn execute(&mut self, cmd: Command, ctx: &egui::Context) {
         match cmd {
-            Command::New => {
-                self.new_dialog = true;
-                self.new_input.clear();
-            }
+            // 直接新建，不弹窗；命名留到保存时
+            Command::New => self.new_document(),
             Command::OpenWorkspace => {
                 self.config.show_sidebar = true;
                 self.side_tab = SideTab::Files;
@@ -564,11 +619,8 @@ impl MarkdApp {
             Command::Ordered => editor::apply_prefix(&mut self.doc, &mut self.editor, "1. "),
             Command::Task => editor::insert_template(&mut self.doc, &mut self.editor, "- [ ] "),
             Command::Rule => editor::insert_template(&mut self.doc, &mut self.editor, "---"),
-            Command::Table => editor::insert_template(
-                &mut self.doc,
-                &mut self.editor,
-                "| 列 A | 列 B |\n| --- | --- |\n|  |  |",
-            ),
+            // 和 Typora 一样：先问几行几列，再插入
+            Command::Table => self.table_dialog = true,
             Command::Math => editor::insert_template(&mut self.doc, &mut self.editor, "$$\nE = mc^2\n$$"),
             Command::Mermaid => editor::insert_template(
                 &mut self.doc,
@@ -800,9 +852,13 @@ impl MarkdApp {
             let r = ui.available_rect_before_wrap();
             let drag = ui.allocate_response(
                 egui::vec2(r.width().max(1.0), r.height().max(1.0)),
-                egui::Sense::drag(),
+                egui::Sense::click_and_drag(),
             );
-            if drag.dragged() {
+            // 双击标题栏空白处 = 最大化 / 还原（和系统标题栏一致）
+            if drag.double_clicked() {
+                let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+            } else if drag.dragged() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
         });
@@ -891,8 +947,7 @@ impl MarkdApp {
                     .on_hover_cursor(egui::CursorIcon::Default)
                     .clicked()
                 {
-                    self.new_dialog = true;
-                    self.new_input.clear();
+                    self.new_document();
                 }
             });
             ui.separator();
@@ -1279,45 +1334,38 @@ impl MarkdApp {
             }
         }
 
-        if self.new_dialog {
-            let mut input = std::mem::take(&mut self.new_input);
-            let mut open = self.new_dialog;
+        if self.table_dialog {
+            let mut open = true;
+            let mut confirm = false;
             let mut cancel = false;
-            let mut chosen = None;
-            egui::Window::new("新建文档")
-                .open(&mut open)
+            egui::Window::new("插入表格")
                 .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
                 .show(ctx, |ui| {
-                    ui.label("文件名（自动补 .md）：");
-                    ui.text_edit_singleline(&mut input);
                     ui.horizontal(|ui| {
-                        if ui.button("创建").clicked() {
-                            chosen = Some(input.clone());
+                        ui.label("行数");
+                        ui.add(egui::DragValue::new(&mut self.table_rows).range(1..=100));
+                        ui.label("列数");
+                        ui.add(egui::DragValue::new(&mut self.table_cols).range(1..=20));
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("插入").clicked() {
+                            confirm = true;
                         }
                         if ui.button("取消").clicked() {
                             cancel = true;
                         }
                     });
                 });
-            if cancel {
-                open = false;
+            if confirm {
+                let src = table_template(self.table_rows, self.table_cols);
+                editor::insert_template(&mut self.doc, &mut self.editor, &src);
+                self.on_changed();
             }
-            self.new_input = input;
-            self.new_dialog = open;
-            if let Some(s) = chosen {
-                let mut name = s.trim().to_string();
-                if !name.to_lowercase().ends_with(".md") {
-                    name.push_str(".md");
-                }
-                if let Some(root) = &self.root {
-                    let p = root.join(name);
-                    if !p.exists() {
-                        let _ = workspace::write(&p, "");
-                    }
-                    self.open_file(p);
-                    self.refresh_tree();
-                }
-                self.new_dialog = false;
+            if confirm || cancel || !open {
+                self.table_dialog = false;
             }
         }
     }
@@ -1421,6 +1469,8 @@ impl eframe::App for MarkdApp {
             }
         }
 
+        // 终端持有焦点时编辑区进入只读，避免它每帧把焦点抢回去。
+        self.editor.read_only = self.terminal.has_focus();
         let (event, actions) = egui::CentralPanel::default()
             .show(&mut *root_ui, |ui| {
                 let mut actions = Vec::new();
@@ -1452,6 +1502,11 @@ impl eframe::App for MarkdApp {
             EditorEvent::Changed => self.on_changed(),
             EditorEvent::None => {}
         }
+        // 用户点回了编辑区：把键盘焦点从终端交还，下一帧编辑区恢复可编辑。
+        if self.editor.clicked && self.terminal.has_focus() {
+            self.terminal.blur(&ctx);
+        }
+        self.editor.clicked = false;
         for a in actions {
             match a {
                 Action::ToggleTask(i) => {

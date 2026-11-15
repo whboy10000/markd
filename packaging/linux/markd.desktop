@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Markd
+Comment=A Rust + egui Markdown editor
+Exec=markd %f
+Terminal=false
+Categories=Office;TextEditor;
+MimeType=text/markdown;
+Keywords=markdown;editor;

@@ -562,6 +562,7 @@ pub struct Terminal {
     error: Option<String>,
     focus_req: bool,
     focused: bool,
+    body_id: egui::Id,
 }
 
 impl Terminal {
@@ -581,6 +582,7 @@ impl Terminal {
             error: None,
             focus_req: false,
             focused: false,
+            body_id: egui::Id::unique("markd_terminal_body"),
         }
     }
 
@@ -598,6 +600,12 @@ impl Terminal {
 
     pub fn has_focus(&self) -> bool {
         self.open && self.focused
+    }
+
+    /// 主动让出键盘焦点（点回编辑区时调用）。
+    pub fn blur(&mut self, ctx: &egui::Context) {
+        ctx.memory_mut(|m| m.surrender_focus(self.body_id));
+        self.focused = false;
     }
 
     fn write_bytes(&mut self, data: &[u8]) {
@@ -864,7 +872,10 @@ impl Terminal {
                     body_w.max(galley.size().x),
                     avail.y.max(galley.size().y),
                 );
-                let response = ui.allocate_response(size, Sense::click() | Sense::FOCUSABLE);
+                // 用稳定 id，才能可靠地在帧间保持/让出焦点。
+                let id = self.body_id;
+                let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                let response = ui.interact(rect, id, Sense::click() | Sense::FOCUSABLE);
                 ui.painter().galley(response.rect.min, galley, theme.text);
                 if response.clicked() {
                     response.request_focus();
@@ -873,7 +884,7 @@ impl Terminal {
                     response.request_focus();
                     self.focus_req = false;
                 }
-                self.focused = response.has_focus();
+                self.focused = ui.memory(|m| m.has_focus(id));
                 if self.focused {
                     ui.painter().rect_stroke(
                         response.rect,
@@ -1067,6 +1078,69 @@ mod tests {
         // Ctrl+V 留给粘贴事件，不能被当成控制字符写进 PTY。
         assert!(key_bytes(egui::Key::V, ctrl, false).is_none());
         assert!(key_bytes(egui::Key::Space, none, false).is_none());
+    }
+
+    fn run_term_frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        term: &mut Terminal,
+        theme: &Theme,
+        screen: egui::Rect,
+    ) {
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let c = ctx.clone();
+        let mut out = ctx.run_ui(input, |root| {
+            egui::CentralPanel::default().show(root, |ui| term.ui(ui, &c, theme));
+        });
+        out.textures_delta.clear();
+    }
+
+    /// 点击终端主体必须把键盘焦点从编辑区抢过来，否则输入仍然进入文档。
+    #[test]
+    fn clicking_body_takes_focus() {
+        let ctx = egui::Context::default();
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 320.0));
+        let mut term = Terminal::new(std::env::temp_dir());
+        term.open = true;
+        term.focus_req = false;
+
+        run_term_frame(&ctx, vec![], &mut term, &theme, screen);
+        assert!(!term.has_focus(), "初始不应有焦点");
+
+        let p = egui::pos2(450.0, 200.0);
+        run_term_frame(
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+            &mut term,
+            &theme,
+            screen,
+        );
+        run_term_frame(
+            &ctx,
+            vec![egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            &mut term,
+            &theme,
+            screen,
+        );
+        assert!(term.has_focus(), "点击终端主体后应获得键盘焦点");
     }
 
     /// 端到端：真的起一个 PTY shell，写入命令，再从解析结果里找输出。

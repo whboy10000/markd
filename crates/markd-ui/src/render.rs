@@ -7,7 +7,7 @@ use crate::document::OutlineItem;
 use crate::theme::Theme;
 use crate::workspace;
 use egui::{self, Align2, Color32, FontId, FontFamily, Pos2, Rect, Sense, Stroke, Vec2};
-use egui::text::LayoutJob;
+use egui::text::{LayoutJob, TextFormat};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -196,6 +196,136 @@ fn first_link(inlines: &[Inline]) -> Option<String> {
         }
     }
     None
+}
+
+/// 编辑态的行内排版：**缓冲区仍然是原始 Markdown**（保证光标/字节偏移正确），
+/// 但把 `**`、`*`、`~~`、`` ` ``、`[label](url)` 这些标记用 0.1px 透明字渲染，
+/// 于是看起来就是渲染后的富文本，而不是源码。
+pub fn inline_job(
+    text: &str,
+    theme: &Theme,
+    size: f32,
+    color: Color32,
+    wrap_width: f32,
+) -> LayoutJob {
+    let line_height = size * 1.45;
+    let marker = TextFormat {
+        font_id: FontId::new(0.1, FontFamily::Proportional),
+        color: Color32::TRANSPARENT,
+        line_height: Some(line_height),
+        ..Default::default()
+    };
+    let bold_family = FontFamily::Name("markd-bold".into());
+
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = wrap_width;
+    job.wrap.break_anywhere = true;
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0usize;
+    let mut bold = false;
+    let mut italic = false;
+    let mut strike = false;
+    let mut code = false;
+
+    fn push(job: &mut LayoutJob, c: char, f: &TextFormat) {
+        let mut buf = [0u8; 4];
+        job.append(c.encode_utf8(&mut buf), 0.0, f.clone());
+    }
+
+    while i < chars.len() {
+        let c = chars[i];
+
+        if c == '`' {
+            push(&mut job, c, &marker);
+            code = !code;
+            i += 1;
+            continue;
+        }
+        if c == '*' {
+            let mut n = 0;
+            while i + n < chars.len() && chars[i + n] == '*' {
+                n += 1;
+            }
+            for _ in 0..n {
+                push(&mut job, '*', &marker);
+            }
+            if n >= 2 {
+                bold = !bold;
+            } else {
+                italic = !italic;
+            }
+            i += n;
+            continue;
+        }
+        if c == '~' && i + 1 < chars.len() && chars[i + 1] == '~' {
+            push(&mut job, '~', &marker);
+            push(&mut job, '~', &marker);
+            strike = !strike;
+            i += 2;
+            continue;
+        }
+        if c == '[' {
+            let close = chars[i..].iter().position(|ch| *ch == ']').map(|k| i + k);
+            if let Some(close) = close {
+                if close + 1 < chars.len() && chars[close + 1] == '(' {
+                    if let Some(rel) = chars[close + 1..].iter().position(|ch| *ch == ')') {
+                        let end = close + 1 + rel;
+                        push(&mut job, '[', &marker);
+                        let link_fmt = TextFormat {
+                            font_id: FontId::new(size, FontFamily::Proportional),
+                            color: theme.link,
+                            underline: Stroke::new(1.0, theme.link),
+                            line_height: Some(line_height),
+                            ..Default::default()
+                        };
+                        for k in i + 1..close {
+                            push(&mut job, chars[k], &link_fmt);
+                        }
+                        for k in close..=end {
+                            push(&mut job, chars[k], &marker);
+                        }
+                        i = end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        let fmt = if code {
+            TextFormat {
+                font_id: FontId::new(size, FontFamily::Monospace),
+                color: theme.quote,
+                background: theme.code_bg,
+                expand_bg: 0.0,
+                line_height: Some(line_height),
+                ..Default::default()
+            }
+        } else {
+            TextFormat {
+                font_id: FontId::new(
+                    size,
+                    if bold {
+                        bold_family.clone()
+                    } else {
+                        FontFamily::Proportional
+                    },
+                ),
+                color,
+                italics: italic,
+                strikethrough: if strike {
+                    Stroke::new(1.0, color)
+                } else {
+                    Stroke::NONE
+                },
+                line_height: Some(line_height),
+                ..Default::default()
+            }
+        };
+        push(&mut job, c, &fmt);
+        i += 1;
+    }
+    job
 }
 
 /// 用显式宽度排版成 galley 再交给 Label。
@@ -741,6 +871,15 @@ mod tests {
 
     /// 渲染一个代码块（含右上角复制按钮），确认控件树可正常构建、
     /// 且未点击时不会产生任何 action（避免误触发复制）。
+    /// 编辑态排版必须保留原始字符，否则光标/字节偏移会和缓冲区错位。
+    #[test]
+    fn inline_job_keeps_raw_text() {
+        let theme = Theme::get(ThemeKind::Light);
+        let src = "**粗** *斜* `码` ~~删~~ [链](https://e.com) 普通文字";
+        let job = inline_job(src, &theme, 16.0, theme.text, 400.0);
+        assert_eq!(job.text, src, "排版后的文本必须与缓冲区完全一致");
+    }
+
     #[test]
     fn code_block_renders_with_copy_button() {
         let theme = Theme::get(ThemeKind::Light);

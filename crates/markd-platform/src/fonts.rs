@@ -32,39 +32,51 @@ fn dirs() -> Vec<PathBuf> {
     out
 }
 
-/// 在字体目录里找阿里巴巴普惠体 3.0，Regular 字重优先。
-fn find_puhuiti() -> Option<Vec<u8>> {
+/// 收集字体目录里所有普惠体文件，按「字重关键词」排序。
+fn puhuiti_files() -> Vec<PathBuf> {
     let mut hits: Vec<PathBuf> = Vec::new();
     for dir in dirs() {
         let Ok(rd) = std::fs::read_dir(&dir) else { continue };
         for entry in rd.flatten() {
             let name = entry.file_name().to_string_lossy().to_lowercase();
-            let is_ttf = name.ends_with(".ttf") || name.ends_with(".otf") || name.ends_with(".ttc");
-            if is_ttf && (name.contains("alibabapuhuiti") || name.contains("puhuiti")) {
+            let is_font =
+                name.ends_with(".ttf") || name.ends_with(".otf") || name.ends_with(".ttc");
+            if is_font && (name.contains("alibabapuhuiti") || name.contains("puhuiti")) {
                 hits.push(entry.path());
             }
         }
     }
-    // Regular 优先，其次按文件名稳定排序
+    hits
+}
+
+/// 找指定字重的普惠体：`want` 里的关键字命中即算（如 "85-bold"）。
+fn find_puhuiti_weight(want: &[&str]) -> Option<Vec<u8>> {
+    let mut hits = puhuiti_files();
     hits.sort_by_key(|p| {
-        let n = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-        let rank = if n.contains("55-regular") || n.contains("regular") {
-            0
-        } else if n.contains("65-medium") || n.contains("85-bold") {
-            1
-        } else {
-            2
-        };
-        (rank, n)
+        let n = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        (if n.contains(want[0]) { 0 } else { 1 }, n)
     });
-    hits.into_iter().find_map(|p| std::fs::read(p).ok())
+    for p in hits {
+        let n = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+        if want.iter().any(|w| n.contains(w)) {
+            if let Ok(bytes) = std::fs::read(&p) {
+                return Some(bytes);
+            }
+        }
+    }
+    None
 }
 
 pub fn install(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
     // 首选：阿里巴巴普惠体 3.0（只影响 Proportional，代码块仍用等宽字体）
-    if let Some(bytes) = find_puhuiti() {
+    let mut regular_loaded = false;
+    if let Some(bytes) = find_puhuiti_weight(&["55-regular", "regular"]) {
         let key = "markd_puhuiti".to_string();
         fonts
             .font_data
@@ -74,7 +86,31 @@ pub fn install(ctx: &egui::Context) {
             .entry(egui::FontFamily::Proportional)
             .or_default()
             .insert(0, key);
+        regular_loaded = true;
     }
+
+    // 粗体：注册一个具名字体族 markd-bold，供内联加粗使用（普惠体是静态字重，
+    // 变量字体的 wght 轴对它无效，所以必须单独加载 Bold 文件）。
+    let bold_family = egui::FontFamily::Name("markd-bold".into());
+    let mut bold_list: Vec<String> = Vec::new();
+    if let Some(bytes) = find_puhuiti_weight(&["85-bold", "75-semibold", "bold"]) {
+        let key = "markd_puhuiti_bold".to_string();
+        fonts
+            .font_data
+            .insert(key.clone(), Arc::new(egui::FontData::from_owned(bytes)));
+        bold_list.push(key);
+    }
+    if regular_loaded {
+        bold_list.push("markd_puhuiti".to_string());
+    }
+    bold_list.extend(
+        fonts
+            .families
+            .get(&egui::FontFamily::Proportional)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    fonts.families.insert(bold_family, bold_list);
 
     // 回退：系统中文字体，保证缺字时不会出现方框
     for p in CJK_FALLBACKS {

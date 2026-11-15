@@ -14,6 +14,12 @@ pub struct EditorState {
     pub scroll_req: Option<usize>,
     pub last_cursor: usize,
     pub sel: Option<(usize, usize)>,
+    /// 终端持有键盘焦点时置 true：编辑区不渲染可编辑控件，避免把焦点抢回来。
+    pub read_only: bool,
+    /// 本帧是否点击了某个块（app 用它把焦点从终端交还给编辑区）。
+    pub clicked: bool,
+    /// 正在原地编辑的表格草稿：(块下标, 单元格文本, 对齐)。
+    pub table_draft: Option<(usize, Vec<Vec<String>>, Vec<crate::ast::Align>)>,
 }
 
 pub enum EditorEvent {
@@ -143,6 +149,39 @@ pub fn toggle_task(doc: &mut Document, idx: usize) {
     }
 }
 
+/// 由单元格内容还原出 Markdown 表格源码。
+fn table_source(grid: &[Vec<String>], align: &[crate::ast::Align]) -> String {
+    use crate::ast::Align;
+    let cols = grid.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut s = String::new();
+    let row = |cells: &Vec<String>| {
+        let mut line = String::from("|");
+        for c in 0..cols {
+            line.push(' ');
+            line.push_str(cells.get(c).map(|x| x.as_str()).unwrap_or(""));
+            line.push_str(" |");
+        }
+        line
+    };
+    if let Some(head) = grid.first() {
+        s.push_str(&row(head));
+        s.push('\n');
+    }
+    s.push('|');
+    for c in 0..cols {
+        s.push_str(match align.get(c).copied().unwrap_or(Align::Left) {
+            Align::Left => " :--- |",
+            Align::Center => " :---: |",
+            Align::Right => " ---: |",
+        });
+    }
+    for r in grid.iter().skip(1) {
+        s.push('\n');
+        s.push_str(&row(r));
+    }
+    s
+}
+
 /// 活动块的「编辑形态」：标题只编辑文字、代码块只编辑代码（不含围栏），
 /// 像 Typora 那样直接在渲染结果上改，而不是切到 Markdown 源码。
 #[derive(Clone)]
@@ -253,6 +292,7 @@ pub fn show_editor(
     let mut cursor_idx = active_buf.chars().count();
     let mut selection: Option<(usize, usize)> = None;
     let mut pair_insert: Option<(usize, String)> = None;
+    let mut table_edit_src: Option<String> = None;
 
     egui::ScrollArea::vertical()
         .id_salt("editor_scroll")
@@ -272,8 +312,56 @@ pub fn show_editor(
                         let block = &blocks[idx];
                         let compact = matches!(block, Block::ListItem { .. } | Block::Blank { .. });
                         let is_active = idx == active;
+                        let editing = is_active && !state.read_only;
 
-                        let resp = if is_active {
+                        let resp = if editing && matches!(block, Block::Table { .. }) {
+                            // 表格：像 Typora 一样直接在表格单元格里编辑，不看管道源码。
+                            if let Block::Table { head, rows, align, .. } = block {
+                                let need = !matches!(&state.table_draft, Some((i, _, _)) if *i == idx);
+                                if need {
+                                    let mut grid: Vec<Vec<String>> = Vec::new();
+                                    grid.push(head.iter().map(|c| crate::ast::inline_plain(c)).collect());
+                                    for r in rows.iter() {
+                                        grid.push(r.iter().map(|c| crate::ast::inline_plain(c)).collect());
+                                    }
+                                    state.table_draft = Some((idx, grid, align.clone()));
+                                }
+                            }
+                            let mut edited = false;
+                            let frame = egui::Frame::NONE
+                                .fill(theme.bg)
+                                .stroke(egui::Stroke::new(1.0, theme.border))
+                                .corner_radius(4.0)
+                                .inner_margin(6.0);
+                            let inner = frame.show(ui, |ui| {
+                                if let Some((_, grid, _)) = state.table_draft.as_mut() {
+                                    egui::Grid::new(("table_edit", idx))
+                                        .striped(true)
+                                        .show(ui, |ui| {
+                                            for row in grid.iter_mut() {
+                                                for cell in row.iter_mut() {
+                                                    let r = ui.add(
+                                                        egui::TextEdit::singleline(cell)
+                                                            .desired_width(140.0)
+                                                            .frame(egui::Frame::NONE),
+                                                    );
+                                                    if r.changed() {
+                                                        edited = true;
+                                                    }
+                                                }
+                                                ui.end_row();
+                                            }
+                                        });
+                                }
+                            });
+                            if edited {
+                                if let Some((_, grid, aligns)) = state.table_draft.as_ref() {
+                                    table_edit_src = Some(table_source(grid, aligns));
+                                }
+                                changed = true;
+                            }
+                            inner.response.interact(egui::Sense::click())
+                        } else if editing {
                             let id = Id::new(("block_edit", idx));
                             // 标题只编辑文字、代码块只编辑代码（不含围栏），像 Typora 一样直接改。
                             let rows = if matches!(edit_kind, EditKind::Code(_)) {
@@ -283,6 +371,19 @@ pub fn show_editor(
                             } else {
                                 1
                             };
+                            // 编辑态行内排版：缓冲区还是原始 Markdown，但标记被隐藏，
+                            // 看起来就是渲染后的富文本，而不是源码。
+                            let mut layouter =
+                                |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+                                    let job = render::inline_job(
+                                        buf.as_str(),
+                                        theme,
+                                        theme.body,
+                                        theme.text,
+                                        wrap,
+                                    );
+                                    ui.fonts_mut(|f| f.layout_job(job))
+                                };
                             let mut te = TextEdit::multiline(&mut active_buf)
                                 .id(id)
                                 .desired_rows(rows)
@@ -306,9 +407,13 @@ pub fn show_editor(
                                             .corner_radius(6.0),
                                     ),
                                 EditKind::Source => te
-                                    .font(egui::TextStyle::Body)
+                                    .font(egui::FontId::new(
+                                        theme.body,
+                                        egui::FontFamily::Proportional,
+                                    ))
                                     .frame(egui::Frame::NONE)
-                                    .return_key(Option::<egui::KeyboardShortcut>::None),
+                                    .return_key(Option::<egui::KeyboardShortcut>::None)
+                                    .layouter(&mut layouter),
                             };
                             let out = te.show(ui);
                             let cr = out.cursor_range;
@@ -347,9 +452,13 @@ pub fn show_editor(
                         };
                         if resp.clicked() {
                             new_active = Some(idx);
+                            state.clicked = true;
                         }
                         if is_active {
                             active_rect = Some(resp.rect);
+                            if !editing {
+                                state.sel = None;
+                            }
                         }
                         ui.add_space(if compact { 1.0 } else { 6.0 });
                     }
@@ -390,7 +499,9 @@ pub fn show_editor(
     // ---------------- 普通输入写回 ----------------
     if changed {
         doc.maybe_record();
-        let src = edit_kind.rebuild(&active_buf);
+        let src = table_edit_src
+            .clone()
+            .unwrap_or_else(|| edit_kind.rebuild(&active_buf));
         doc.edit_block(active, &src);
         return EditorEvent::Changed;
     }

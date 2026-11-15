@@ -18,6 +18,14 @@ Markd 是一个桌面 Markdown 编辑器。Markdown 解析、块级实时渲染�
 - **导出**：自包含 HTML（可用浏览器打印为 PDF）。
 - **macOS 原生菜单栏**，自定义标题栏：系统红绿灯右侧是命令面板 / 快速打开 / 搜索 / 保存 / 终端快捷按钮。
 
+## 安装
+
+从 [Releases](https://github.com/whboy10000/markd/releases/latest) 下载对应安装包：
+
+- **macOS**：`Markd-*-macos.dmg`，打开后把 Markd 拖进 Applications 即可。
+- **Windows**：`Markd-*-windows-setup.exe`，安装向导里可选目录，会自动创建开始菜单与桌面快捷方式。
+- **Linux**：`Markd-*-linux-amd64.deb`（`sudo dpkg -i Markd-*.deb`，会注册应用菜单项），或直接用 `.tar.gz` 里的二进制。
+
 ## 运行
 
 需要 **Rust 1.85+**（workspace 使用 `edition = "2024"`）。

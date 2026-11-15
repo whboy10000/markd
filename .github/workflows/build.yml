@@ -40,13 +40,10 @@ jobs:
         include:
           - os: macos-latest
             artifact: markd-macos
-            bin: target/release/markd
           - os: ubuntu-latest
             artifact: markd-linux
-            bin: target/release/markd
           - os: windows-latest
             artifact: markd-windows
-            bin: target/release/markd.exe
     steps:
       - uses: actions/checkout@v4
       - name: Install Linux dependencies
@@ -62,11 +59,75 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build release binary
         run: cargo build --release -p markd
-      - name: Upload artifact
+
+      # ---------------- macOS: .app + .dmg（拖拽安装） ----------------
+      - name: Package macOS (.app + .dmg)
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          VERSION=$(awk -F'"' '/^version/{print $2; exit}' Cargo.toml)
+          APP="Markd.app"
+          rm -rf dist "$APP"
+          mkdir -p "dist/$APP/Contents/MacOS" "dist/$APP/Contents/Resources"
+          cp target/release/markd "dist/$APP/Contents/MacOS/markd"
+          sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist > "dist/$APP/Contents/Info.plist"
+          chmod +x "dist/$APP/Contents/MacOS/markd"
+          codesign --force --deep --sign - "dist/$APP" || true
+          # DMG 里放 .app + Applications 软链，打开后把图标拖进去即可安装
+          mkdir -p dist/dmg
+          cp -R "dist/$APP" dist/dmg/
+          ln -sfn /Applications dist/dmg/Applications
+          hdiutil create -volname "Markd" -srcfolder dist/dmg -ov -format UDZO \
+            "Markd-$VERSION-macos.dmg"
+          ditto -c -k --keepParent "dist/$APP" "Markd-$VERSION-macos.zip"
+
+      # ---------------- Windows: NSIS 安装程序 ----------------
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (!(Test-Path $makensis)) {
+            choco install nsis -y --no-progress
+            $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          }
+          $src = (Resolve-Path "target\release").Path
+          & $makensis "/DVERSION=$version" "/DSRCDIR=$src" "packaging\windows\installer.nsi"
+
+      # ---------------- Linux: .deb + .tar.gz ----------------
+      - name: Package Linux (.deb + .tar.gz)
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          VERSION=$(awk -F'"' '/^version/{print $2; exit}' Cargo.toml)
+          PKG="dist/deb/markd_${VERSION}_amd64"
+          rm -rf dist
+          mkdir -p "$PKG/usr/bin" "$PKG/usr/share/applications" "$PKG/DEBIAN"
+          install -Dm755 target/release/markd "$PKG/usr/bin/markd"
+          cp packaging/linux/markd.desktop "$PKG/usr/share/applications/"
+          cat > "$PKG/DEBIAN/control" <<EOF
+          Package: markd
+          Version: ${VERSION}
+          Section: editors
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Markd <noreply@example.com>
+          Description: Markd - a Rust + egui Markdown editor
+          EOF
+          dpkg-deb --build --root-owner-group "$PKG" "Markd-${VERSION}-linux-amd64.deb"
+          tar -czf "Markd-${VERSION}-linux-amd64.tar.gz" -C target/release markd
+
+      - name: Upload packages
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.bin }}
+          path: |
+            Markd-*.dmg
+            Markd-*.zip
+            Markd-*-setup.exe
+            Markd-*.deb
+            Markd-*.tar.gz
           if-no-files-found: error
 
   release:
@@ -82,14 +143,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-      - name: Package
+      - name: Collect
         run: |
-          cd dist
-          for d in */; do
-            name="${d%/}"
-            (cd "$name" && zip -r "../$name.zip" .)
-          done
-          ls -lh .
+          mkdir -p out
+          find dist -type f | while read -r f; do cp "$f" out/; done
+          ls -lh out
       - name: Resolve tag
         id: tag
         run: |
@@ -109,10 +167,13 @@ jobs:
           cat > notes.md <<EOF
           自动构建 ${GITHUB_SHA:0:7}（${GITHUB_REF_NAME}）
 
-          - markd-macos.zip / markd-linux.zip / markd-windows.zip
-          - macOS 首次运行若提示「无法验证开发者」，执行： xattr -d com.apple.quarantine ./markd
+          - macOS：Markd-*-macos.dmg（打开后把 Markd 拖到 Applications）
+          - Windows：Markd-*-windows-setup.exe（安装向导）
+          - Linux：Markd-*-linux-amd64.deb / .tar.gz
+
+          macOS 首次运行若提示「无法验证开发者」，执行： xattr -d com.apple.quarantine /Applications/Markd.app
           EOF
-          gh release create latest dist/*.zip --repo "${GITHUB_REPOSITORY}" \
+          gh release create latest out/* --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --title "Latest build" \
             --notes-file notes.md \
@@ -122,7 +183,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ steps.tag.outputs.tag }}" dist/*.zip --repo "${GITHUB_REPOSITORY}" \
+          gh release create "${{ steps.tag.outputs.tag }}" out/* --repo "${GITHUB_REPOSITORY}" \
             --title "${{ steps.tag.outputs.tag }}" \
             --generate-notes \
             --verify-tag
