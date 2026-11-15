@@ -281,6 +281,13 @@ pub fn show_editor(
                     ui.scroll_to_rect(r, Some(egui::Align::Center));
                 }
             }
+            // 大纲 / TOC / 新建块等显式跳转请求。必须 take()：
+            // 之前只写不读，所以点大纲标题完全不会滚动。
+            if state.scroll_req.take().is_some() {
+                if let Some(r) = active_rect {
+                    ui.scroll_to_rect(r, Some(egui::Align::TOP));
+                }
+            }
         });
 
     state.last_cursor = cursor_idx;
@@ -452,6 +459,53 @@ mod tests {
         assert!(edit_size.y > 40.0, "TextEdit 没有换行：size={edit_size:?}");
         assert!(quote_size.y > 40.0, "引用块没有换行：size={quote_size:?}");
         assert!(quote_size.x <= 700.0, "引用块超出窗口：size={quote_size:?}");
+    }
+
+    /// 大纲跳转：点击标题后应把该块设为活动块，并消费滚动请求
+    /// （之前 scroll_req 只写不读，所以点大纲完全不会滚动）。
+    #[test]
+    fn outline_jump_sets_active_block_and_consumes_scroll_request() {
+        let mut text = String::new();
+        for i in 0..40 {
+            text.push_str(&format!("段落 {i}\n\n"));
+        }
+        text.push_str("# 目标标题\n\n结尾段落\n");
+
+        let mut doc = Document::new(&text, None);
+        let outline = doc.outline();
+        let target = outline.last().expect("应有标题").block;
+        assert!(target > 30, "标题应位于文档后部，实际 block={target}");
+
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut state = EditorState::default();
+        state.active = target;
+        state.scroll_req = Some(target);
+
+        frame(800.0, |ui| {
+            let ctx = ui.ctx().clone();
+            let _ = show_editor(
+                ui,
+                &mut doc,
+                &mut state,
+                &theme,
+                &ctx,
+                &mut images,
+                None,
+                &outline,
+                false,
+                false,
+                false,
+                &mut actions,
+            );
+        });
+
+        assert_eq!(state.active, target);
+        assert!(
+            state.scroll_req.is_none(),
+            "滚动请求应被 show_editor 消费，否则点大纲不会滚动"
+        );
     }
 }
 

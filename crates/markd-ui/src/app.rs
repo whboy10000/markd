@@ -864,7 +864,7 @@ impl MarkdApp {
                 }
                 SideAction::Jump(i) => {
                     self.editor.active = i.min(self.doc.blocks.len().saturating_sub(1));
-                    self.editor.scroll_req = Some(i);
+                    self.editor.scroll_req = Some(self.editor.active);
                 }
             }
         }
@@ -1423,7 +1423,7 @@ impl eframe::App for MarkdApp {
                 Action::OpenLink(url) => self.open_link(&url),
                 Action::Jump(i) => {
                     self.editor.active = i.min(self.doc.blocks.len().saturating_sub(1));
-                    self.editor.scroll_req = Some(i);
+                    self.editor.scroll_req = Some(self.editor.active);
                 }
                 Action::Notify(msg) => self.status = msg,
             }

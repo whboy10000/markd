@@ -51,7 +51,8 @@ markd-core → markd-platform → markd-ui → markd (bin)
 - 公式与图表是自绘近似，不是 MathJax/Mermaid 的完整渲染；导出格式为自包含 HTML，PDF 由浏览器打印完成。
 - `App::ui` 中 panel 的声明顺序固定为 `top(menubar) → top(toolbar) → bottom(状态栏) → bottom(终端面板，条件) → left(侧栏) → CentralPanel`。0.37 的 `Panel` 按声明顺序切父 `Ui` 矩形：`bottom` 只收窄 y 轴，`left` 只把 x 起点推到侧栏右缘。若把 `bottom` 放到 `left` 之后，状态栏宽度会被侧栏截断、无法横跨整窗。
 - macOS 使用**自定义标题栏**：`markd-app/src/main.rs` 在 macOS 下设置 `with_fullsize_content_view(true)` + `with_titlebar_shown(false)` + `with_title_shown(false)`，让窗口内容延伸到标题栏下方；`App::ui` 每帧调用 `frame.set_traffic_lights_position()` 把系统红绿灯垂直居中于 menubar 这一行。`menubar` 左侧预留 78pt 给红绿灯，其后依次是 `命令面板 → 快速打开 → 搜索 → 保存 → 终端` 五个按钮，文档标题靠右，最右侧空白区用 `ViewportCommand::StartDrag` 支持拖动窗口。非 macOS 仍在窗口内显示「文件/编辑/视图/主题/帮助」菜单分类。
-- 状态栏左侧有「文件 / 大纲」两个入口，点击会直接切换 `side_tab`、展开侧栏并写回 `Config`（不是显隐切换）。
+- 状态栏左侧有「文件 / 大纲」两个入口，侧栏头部也有同样的标签，统一走 `sidebar_click()` 的状态转移：点当前页签收起侧栏，点另一个则展开并切换。
+- 大纲 / TOC / 新建块的跳转统一用 `EditorState.scroll_req`：由 `show_editor` 在 ScrollArea 内 `take()` 后调用 `ui.scroll_to_rect`。**这个请求必须被消费**——只写不读就会表现成「点大纲标题完全没反应」。
 - 侧栏宽度由 `Config.sidebar_width` 控制：在 `app::ui` 里用 `exact_size(width)` + 右缘自绘的 `Sense::drag()` 窄分隔条实现自由拖动，拖动结束写回配置。**不要改回依赖 `PanelState` / `default_size` + `resizable(true)`**——0.37 的 `PanelState` 不持久化尺寸，每帧 `default_size` 会把拖动结果弹回。
 - 编辑区正文宽度是 `ui.available_width() * 0.9`（`editor.rs`），随窗口浮动。**所有文本块都经 `render.rs::wrapped_label` 用 `RenderEnv.max_width` 显式排版成 galley 再交给 `Label`**——横向布局（引用/列表/脚注）里 `Label` 会退回 `Extend`（无限宽），长段落就永远不换行，所以不要改回直接 `ui.label(job)`。活动块用 `TextEdit::multiline` + `desired_width(page_w)` + `return_key(None)`；表格 `Grid::max_col_width`、流程图 `draw_flow` 每行节点数、代码块与公式也都按可用宽度自适应。
 - 给 `Config`（`crates/markd-core/src/workspace.rs`）新增字段时必须加 `#[serde(default = "...")]`，否则旧的 `~/.markd/config.json` 反序列化失败会回退到全默认配置、丢掉用户已保存的主题与模式设置。状态栏最左侧路径由 `Config.show_status_path` 控制，**默认 false**。
