@@ -602,6 +602,7 @@ fn code_job_impl(code: &str, lang: &str, theme: &Theme, trailing_newline: bool) 
         lang.to_lowercase().as_str(),
         "python" | "py" | "bash" | "sh" | "shell" | "yaml" | "yml" | "toml" | "ruby" | "rb"
     );
+    let [kw_color, str_color, num_color, comment_color] = theme.syntax();
     let mut job = LayoutJob::default();
     // 代码行常没有空格，允许在任意字符处换行以适配窄窗口。
     job.wrap.break_anywhere = true;
@@ -616,7 +617,7 @@ fn code_job_impl(code: &str, lang: &str, theme: &Theme, trailing_newline: bool) 
             if comment {
                 let rest: String = c[i..].iter().collect();
                 let mut f = theme.mono_fmt();
-                f.color = theme.dim;
+                f.color = comment_color;
                 job.append(&rest, 0.0, f);
                 break;
             }
@@ -629,7 +630,7 @@ fn code_job_impl(code: &str, lang: &str, theme: &Theme, trailing_newline: bool) 
                 let end = (j + 1).min(c.len());
                 let s: String = c[i..end].iter().collect();
                 let mut f = theme.mono_fmt();
-                f.color = Color32::from_rgb(122, 168, 108);
+                f.color = str_color;
                 job.append(&s, 0.0, f);
                 i = end;
                 continue;
@@ -648,9 +649,9 @@ fn code_job_impl(code: &str, lang: &str, theme: &Theme, trailing_newline: bool) 
                 let is_kw = KW.contains(&tok.as_str());
                 let mut f = theme.mono_fmt();
                 f.color = if is_num {
-                    Color32::from_rgb(206, 148, 88)
+                    num_color
                 } else if is_kw {
-                    theme.accent
+                    kw_color
                 } else {
                     theme.text
                 };

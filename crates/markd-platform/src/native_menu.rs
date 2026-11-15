@@ -74,13 +74,31 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
     let m_h6 = mk(&mut map, "h6", "六级标题", Command::H6);
     let m_table = mk(&mut map, "table", "插入表格", Command::Table);
     let m_math = mk(&mut map, "math", "插入数学公式", Command::Math);
+    let m_inline_math = mk(&mut map, "inline_math", "行内公式", Command::InlineMath);
+    let m_flowchart = mk(&mut map, "flowchart", "插入流程图", Command::Flowchart);
     let m_toc = mk(&mut map, "toc", "插入目录 [TOC]", Command::Toc);
     let edit_menu = Submenu::with_items(
         "编辑",
         true,
         &[
-            &m_undo, &m_redo, &m_bold, &m_italic, &m_link, &m_code, &m_para, &m_h1, &m_h2, &m_h3,
-            &m_h4, &m_h5, &m_h6, &m_table, &m_math, &m_toc,
+            &m_undo,
+            &m_redo,
+            &m_bold,
+            &m_italic,
+            &m_link,
+            &m_code,
+            &m_para,
+            &m_h1,
+            &m_h2,
+            &m_h3,
+            &m_h4,
+            &m_h5,
+            &m_h6,
+            &m_table,
+            &m_math,
+            &m_inline_math,
+            &m_flowchart,
+            &m_toc,
         ],
     )
     .unwrap();

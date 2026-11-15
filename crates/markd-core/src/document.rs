@@ -91,6 +91,18 @@ impl Document {
     /// 都把整篇文档重新解析一遍（10 万字时全文重解析约 20ms+）。
     /// 只有当这一块的源码解析出多个块（例如粘贴了空行）时才回退到全文重解析。
     pub fn edit_block(&mut self, idx: usize, new_src: &str) {
+        // 内容被删空：保留这个块（换成空块），否则全文重解析会把块直接删掉，
+        // 块下标整体前移，编辑器的 active/光标全部错位，退格也就再也合并不回上一行。
+        if new_src.trim().is_empty() {
+            if let Some(b) = self.blocks.get_mut(idx) {
+                *b = Block::Blank {
+                    source: String::new(),
+                };
+            }
+            self.dirty = true;
+            self.rev += 1;
+            return;
+        }
         let mut parsed = ast::parse(new_src);
         if parsed.len() == 1 {
             if let Some(b) = self.blocks.get_mut(idx) {

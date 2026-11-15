@@ -16,6 +16,9 @@ pub struct EditorState {
     pub scroll_top: bool,
     pub last_cursor: usize,
     pub sel: Option<(usize, usize)>,
+    /// 最近一次有效选区：(块下标, 起, 止)。点工具条按钮时编辑框已经失焦、`sel` 被清空，
+    /// 加粗/斜体/行内代码这些按钮靠它才能作用在刚选中的文字上。
+    pub last_sel: Option<(usize, usize, usize)>,
     /// 终端持有键盘焦点时置 true：编辑区不渲染可编辑控件，避免把焦点抢回来。
     pub read_only: bool,
     /// 本帧是否点击了某个块（app 用它把焦点从终端交还给编辑区）。
@@ -190,16 +193,25 @@ pub fn wrap(doc: &mut Document, state: &mut EditorState, open: &str, close: &str
     };
     let src = b.source().to_string();
     let len = src.chars().count();
-    let (a, z) = state.sel.unwrap_or_else(|| {
-        let p = state.last_cursor.min(len);
-        (p, p)
-    });
+    let (a, z) = state
+        .sel
+        .or_else(|| {
+            state
+                .last_sel
+                .filter(|(b, _, _)| *b == idx)
+                .map(|(_, a, z)| (a, z))
+        })
+        .unwrap_or_else(|| {
+            let p = state.last_cursor.min(len);
+            (p, p)
+        });
     let a = a.min(len);
     let z = z.min(len);
     let mut out = insert_at_char(&src, a, open);
     out = insert_at_char(&out, z + open.chars().count(), close);
     doc.record();
     doc.edit_block(idx, &out);
+    state.last_sel = None;
 }
 
 pub fn toggle_task(doc: &mut Document, idx: usize) {
@@ -296,6 +308,27 @@ impl EditKind {
     }
 }
 
+/// 把当前块并回上一块：内容接在上一块末尾，光标停在拼接处。
+fn merge_into_previous_block(doc: &mut Document, state: &mut EditorState, cur: &str) {
+    let active = state.active;
+    if active == 0 {
+        return;
+    }
+    let mut prev = doc
+        .blocks
+        .get(active - 1)
+        .map(|b| b.source().to_string())
+        .unwrap_or_default();
+    prev.push_str(cur);
+    doc.record();
+    doc.edit_block(active - 1, &prev);
+    doc.remove_block(active);
+    state.active = active - 1;
+    state.focus_req = Some(state.active);
+    state.last_cursor = prev.chars().count().saturating_sub(cur.chars().count());
+    state.sel = None;
+}
+
 /// 块的「可编辑文本」：标题只含文字、代码块只含代码，其余块就是 Markdown 源码。
 /// 查找/替换都基于这份文本，替换后再用 rebuild_source 还原成源码写回。
 pub(crate) fn block_buffer(b: &Block) -> String {
@@ -383,6 +416,9 @@ pub fn show_editor(
         Some(b) => b.source().to_string(),
         None => String::new(),
     };
+    // 空块行首退格要并回上一块：这个判断必须基于「按键之前」的缓冲区，
+    // 否则删掉最后一个字符的那一帧就会被误判成空块。
+    let buf_was_empty = active_buf.is_empty();
     let mut changed = false;
     let mut new_active: Option<usize> = None;
     let mut active_rect: Option<egui::Rect> = None;
@@ -647,6 +683,9 @@ pub fn show_editor(
     if !state.read_only {
         state.last_cursor = cursor_idx;
         state.sel = selection;
+        if let Some((a, z)) = selection {
+            state.last_sel = Some((active, a, z));
+        }
     }
     if std::env::var("MARKD_TRACE_FOCUS").is_ok() {
         eprintln!(
@@ -658,6 +697,14 @@ pub fn show_editor(
         );
     }
     state.focus_req = None;
+
+    // ---------------- 行首退格：并回上一块 ----------------
+    // 放在写回之前：以前这段在 `if changed { return }` 之后，删空那块文本的那一帧
+    // 会直接提前返回，导致「行首退格」永远执行不到。
+    if backspace && active > 0 && state.sel.is_none() && (buf_was_empty || state.last_cursor == 0) {
+        merge_into_previous_block(doc, state, &active_buf);
+        return EditorEvent::Changed;
+    }
 
     // ---------------- 自动配对（括号与引号） ----------------
     if changed && state.auto_pair {
@@ -674,9 +721,15 @@ pub fn show_editor(
     // ---------------- 普通输入写回 ----------------
     if changed {
         doc.maybe_record();
-        let src = table_edit_src
-            .clone()
-            .unwrap_or_else(|| edit_kind.rebuild(&active_buf));
+        let src = table_edit_src.clone().unwrap_or_else(|| {
+            // 删空了就落成空段落：不要把标题的 #、代码块的围栏这些残留标记
+            // 当正文写回去，否则下一次退格只会在标记里删字符，永远合并不回上一行。
+            if active_buf.trim().is_empty() {
+                String::new()
+            } else {
+                edit_kind.rebuild(&active_buf)
+            }
+        });
         doc.edit_block(active, &src);
         return EditorEvent::Changed;
     }
@@ -708,23 +761,6 @@ pub fn show_editor(
         state.scroll_req = Some(state.active);
         state.scroll_top = false;
         state.last_cursor = marker.chars().count();
-        return EditorEvent::Changed;
-    }
-
-    if backspace && state.last_cursor == 0 && active > 0 {
-        let cur = active_buf.clone();
-        let mut prev = doc
-            .blocks
-            .get(active - 1)
-            .map(|b| b.source().to_string())
-            .unwrap_or_default();
-        prev.push_str(&cur);
-        doc.record();
-        doc.edit_block(active - 1, &prev);
-        doc.remove_block(active);
-        state.active = active - 1;
-        state.focus_req = Some(state.active);
-        state.last_cursor = prev.chars().count().saturating_sub(cur.chars().count());
         return EditorEvent::Changed;
     }
 
@@ -930,6 +966,19 @@ mod tests {
         assert!(!clear_format(&mut table, &mut st));
     }
 
+    /// 点工具条按钮时编辑框已经失焦、`sel` 被清空，要用 last_sel 记住的选区
+    /// 才能把行内代码/加粗作用在刚选中的文字上。
+    #[test]
+    fn wrap_uses_last_selection_after_focus_loss() {
+        let mut doc = Document::new("选中这段文字", None);
+        let mut st = EditorState::default();
+        st.sel = None;
+        st.last_sel = Some((0, 0, 2));
+        wrap(&mut doc, &mut st, "`", "`");
+        assert_eq!(doc.source(), "`选中`这段文字");
+        assert!(st.last_sel.is_none(), "用过的选区要清掉，避免重复包裹");
+    }
+
     /// 删除线（工具条按钮）：选中文字后两侧各补一个 ~~，渲染成一条横线。
     #[test]
     fn strike_wraps_selection() {
@@ -945,6 +994,95 @@ mod tests {
 
     /// 大纲跳转：点击标题后应把该块设为活动块，并消费滚动请求
     /// （之前 scroll_req 只写不读，所以点大纲完全不会滚动）。
+    /// 行首按退格要把当前块并回上一块（Typora 行为）：
+    /// 当前块删空后再按一次，应当与上一块合并，而不是毫无反应。
+    #[test]
+    fn backspace_at_block_start_merges_previous_block() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut doc = Document::new("# 标题一\n## 标题二", None);
+        assert_eq!(doc.blocks.len(), 2, "两行标题应解析成两个块");
+
+        let mut state = EditorState::default();
+        state.active = 1;
+        state.focus_req = Some(1);
+
+        let ctx = egui::Context::default();
+        // 第一帧：让第二个块的 TextEdit 拿到焦点，光标落在行首
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()).is_some(),
+            true,
+            "编辑块应当拿到键盘焦点"
+        );
+        // 连续按 4 次退格：3 次删掉「标题二」，第 4 次（此时行已空）应当并回上一块
+        for _ in 0..4 {
+            run_editor_frame(
+                &ctx,
+                &mut doc,
+                &mut state,
+                &theme,
+                &mut images,
+                &mut actions,
+                vec![egui::Event::Key {
+                    key: egui::Key::Backspace,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }],
+            );
+        }
+
+        assert_eq!(
+            doc.blocks.len(),
+            1,
+            "行首退格应把第二块并进第一块，实际仍有 {} 块：{:?}",
+            doc.blocks.len(),
+            doc.source()
+        );
+        assert_eq!(doc.source(), "# 标题一", "空行应被并入上一块");
+    }
+
+    /// 用同一个 Context 跑一帧编辑器（带可注入的输入事件）。
+    fn run_editor_frame(
+        ctx: &egui::Context,
+        doc: &mut Document,
+        state: &mut EditorState,
+        theme: &Theme,
+        images: &mut ImageCache,
+        actions: &mut Vec<crate::render::Action>,
+        events: Vec<egui::Event>,
+    ) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 900.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let outline = doc.outline();
+        let mut out = ctx.run_ui(input, |root| {
+            egui::CentralPanel::default().show(root, |ui| {
+                let _ = show_editor(
+                    ui, doc, state, theme, ctx, images, None, &outline, false, false, false, 1,
+                    actions,
+                );
+            });
+        });
+        out.textures_delta.clear();
+    }
+
     #[test]
     fn outline_jump_sets_active_block_and_consumes_scroll_request() {
         let mut text = String::new();

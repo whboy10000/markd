@@ -1248,6 +1248,14 @@ impl MarkdApp {
             Command::Math => {
                 editor::insert_template(&mut self.doc, &mut self.editor, "$$\nE = mc^2\n$$")
             }
+            Command::InlineMath => {
+                editor::insert_template(&mut self.doc, &mut self.editor, "$E = mc^2$")
+            }
+            Command::Flowchart => editor::insert_template(
+                &mut self.doc,
+                &mut self.editor,
+                "\u{60}\u{60}\u{60}mermaid\nflowchart TD\n  A[开始] --> B{判断}\n  B -->|是| C[结束]\n\u{60}\u{60}\u{60}",
+            ),
             Command::Mermaid => editor::insert_template(
                 &mut self.doc,
                 &mut self.editor,
@@ -1614,25 +1622,33 @@ impl MarkdApp {
                     self.status = "这一块不是文本段落，没有可清除的格式".to_string();
                 }
             }
-            for (label, cmd) in [
-                ("链接", Command::Link),
-                ("代码", Command::Code),
-                ("引用", Command::Quote),
-                ("列表", Command::Bullet),
-                ("任务", Command::Task),
-                ("表格", Command::Table),
-                ("公式", Command::Math),
-                ("图表", Command::Mermaid),
-                ("目录", Command::Toc),
-            ] {
-                if ui
-                    .button(label)
-                    .on_hover_cursor(egui::CursorIcon::Default)
-                    .clicked()
-                {
-                    chosen = Some(cmd.clone());
+            // 插入类动作收进一个下拉：图片、表格、代码、引用、链接、分隔线、公式、图表…
+            // 全塞在工具条上会挤成一排小按钮，下拉更好找。
+            ui.menu_button("插入", |ui| {
+                for (label, cmd) in [
+                    ("图片", Command::Image),
+                    ("表格", Command::Table),
+                    ("代码块", Command::CodeBlock),
+                    ("行内代码", Command::Code),
+                    ("引用", Command::Quote),
+                    ("超链接", Command::Link),
+                    ("无序列表", Command::Bullet),
+                    ("有序列表", Command::Ordered),
+                    ("任务列表", Command::Task),
+                    ("分隔线", Command::Rule),
+                    ("行内公式", Command::InlineMath),
+                    ("公式块", Command::Math),
+                    ("图表", Command::Mermaid),
+                    ("流程图", Command::Flowchart),
+                    ("脚注", Command::Footnote),
+                    ("目录 [TOC]", Command::Toc),
+                ] {
+                    if ui.button(label).clicked() {
+                        chosen = Some(cmd);
+                        ui.close();
+                    }
                 }
-            }
+            });
             ui.separator();
             for (label, cmd) in [
                 ("快照", Command::Snapshot),
