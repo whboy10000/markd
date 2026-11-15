@@ -681,6 +681,69 @@ mod tests {
         );
     }
 
+    /// 10 万字文档的帧率验证：模拟滚动到不同位置，测量每帧耗时。
+    #[test]
+    fn bench_100k_doc_scroll() {
+        use std::time::Instant;
+        let para = "这是一段用于性能测试的正文，包含 **加粗**、*斜体*、`行内代码` 和 [链接](https://example.com) 以及中文标点。".repeat(3);
+        let mut text = String::new();
+        for i in 0..470 {
+            if i % 20 == 0 {
+                text.push_str(&format!("## 标题 {i}\n\n"));
+            }
+            text.push_str(&para);
+            text.push_str("\n\n");
+        }
+        println!("[100k] chars = {}", text.chars().count());
+
+        let mut doc = Document::new(&text, None);
+        let t = Instant::now();
+        let _ = crate::ast::parse(&text);
+        println!("[100k] parse = {:?}", t.elapsed());
+
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut state = EditorState::default();
+        let outline = doc.outline();
+        let total = doc.blocks.len();
+        println!("[100k] blocks = {total}");
+
+        // 模拟滚动：每帧跳到文档的不同位置（会强制渲染一批全新的块）。
+        let mut worst = std::time::Duration::ZERO;
+        let mut sum = std::time::Duration::ZERO;
+        let mut n = 0;
+        for frac in 0..20 {
+            let target = (total.saturating_sub(1) * frac) / 20;
+            state.active = target;
+            state.scroll_req = Some(target);
+            let t = Instant::now();
+            frame(1200.0, |ui| {
+                let ctx = ui.ctx().clone();
+                let _ = show_editor(
+                    ui, &mut doc, &mut state, &theme, &ctx, &mut images, None, &outline,
+                    false, false, false, &mut actions,
+                );
+            });
+            let e = t.elapsed();
+            sum += e;
+            worst = worst.max(e);
+            n += 1;
+            if frac % 5 == 0 {
+                println!("[100k] jump to block {target}/{total} = {e:?}");
+            }
+        }
+        println!("[100k] avg frame = {:?}, worst = {:?}", sum / n, worst);
+
+        // 连续输入：每帧改一个字，测编辑回写耗时
+        let t = Instant::now();
+        for k in 0..20 {
+            let src = format!("连续输入测试 {k}");
+            doc.edit_block(5, &src);
+        }
+        println!("[100k] 20 次 edit_block = {:?}", t.elapsed());
+    }
+
     /// 性能基准（打印耗时）：10 万字级别的文档，看各环节开销。
     #[test]
     fn bench_large_doc() {
