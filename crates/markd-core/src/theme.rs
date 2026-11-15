@@ -231,19 +231,6 @@ impl Theme {
         }
     }
 
-    /// 表格配色：[首列底色, 斑马纹底色]。表头用 `table_head`（最深一档），
-    /// 普通单元格用 `bg`——表头 / 首列 / 数据三档分明，一眼就能分开。
-    pub fn table_palette(&self) -> [Color32; 2] {
-        match self.kind {
-            ThemeKind::Light => [rgb(240, 240, 242), rgb(249, 249, 251)],
-            ThemeKind::Dark => [rgb(42, 42, 42), rgb(37, 37, 37)],
-            ThemeKind::Github => [rgb(240, 244, 247), rgb(246, 248, 250)],
-            ThemeKind::Sepia => [rgb(222, 204, 172), rgb(233, 221, 196)],
-            ThemeKind::Nord => [rgb(54, 61, 75), rgb(52, 59, 72)],
-            ThemeKind::Solarized => [rgb(10, 58, 70), rgb(6, 48, 59)],
-        }
-    }
-
     pub fn heading_size(&self, level: u8) -> f32 {
         let factor = match level {
             1 => 1.9,

@@ -488,22 +488,17 @@ pub fn show_editor(
                                     let col_w = ((ui.available_width() - gap).max(120.0)
                                         / cols as f32)
                                         .max(56.0);
-                                    let [first_col_bg, stripe_bg] = theme.table_palette();
                                     ui.set_min_width(col_w * cols as f32 + gap);
                                     egui::Grid::new(("table_edit", idx))
                                         .min_col_width(col_w)
                                         .max_col_width(col_w)
                                         .show(ui, |ui| {
                                             for (ri, row) in grid.iter_mut().enumerate() {
-                                                for (ci, cell) in row.iter_mut().enumerate() {
-                                                    // 编辑态与渲染态同一套配色：
-                                                    // 表头最深、首列加深一档、奇数行斑马纹
+                                                for cell in row.iter_mut() {
+                                                    // 编辑态与渲染态同一套配色：只有表头行
+                                                    // （第一行）用 table_head，数据行保持正文底色
                                                     let fill = if ri == 0 {
                                                         theme.table_head
-                                                    } else if ci == 0 {
-                                                        first_col_bg
-                                                    } else if ri % 2 == 1 {
-                                                        stripe_bg
                                                     } else {
                                                         theme.bg
                                                     };
@@ -517,7 +512,7 @@ pub fn show_editor(
                                                                     .inner_margin(3.0),
                                                             ),
                                                     );
-                                                    if state.table_focus == Some((ri, ci)) {
+                                                    if state.table_focus == Some((ri, 0)) {
                                                         state.table_focus = None;
                                                         r.request_focus();
                                                     }

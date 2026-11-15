@@ -1013,7 +1013,6 @@ pub fn render_block(
                         let col_w =
                             ((ui.available_width() - gap).max(120.0) / cols as f32).max(56.0);
                         ui.set_min_width(col_w * cols as f32 + gap);
-                        let [first_col_bg, stripe_bg] = theme.table_palette();
                         egui::Grid::new(("md_table", idx))
                             .min_col_width(col_w)
                             .max_col_width(col_w)
@@ -1039,17 +1038,11 @@ pub fn render_block(
                                         });
                                 }
                                 ui.end_row();
-                                for (ri, row) in rows.iter().enumerate() {
-                                    for (ci, c) in row.iter().enumerate() {
-                                        // 首列加深一档，奇数行再铺一层斑马纹，表头最深
-                                        let fill = if ci == 0 {
-                                            first_col_bg
-                                        } else if ri % 2 == 1 {
-                                            stripe_bg
-                                        } else {
-                                            theme.bg
-                                        };
-                                        egui::Frame::NONE.fill(fill).inner_margin(3.0).show(
+                                // 数据行只保留正文底色：表头一档颜色就够分了，
+                                // 首列加深和斑马纹按需求撤掉。
+                                for row in rows {
+                                    for c in row {
+                                        egui::Frame::NONE.fill(theme.bg).inner_margin(3.0).show(
                                             ui,
                                             |ui| {
                                                 ui.set_min_width(col_w - 12.0);
