@@ -63,6 +63,7 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
     let m_redo = mk(&mut map, "redo", "重做", Command::Redo);
     let m_bold = mk(&mut map, "bold", "加粗", Command::Bold);
     let m_italic = mk(&mut map, "italic", "斜体", Command::Italic);
+    let m_underline = mk(&mut map, "underline", "下划线", Command::Underline);
     let m_link = mk(&mut map, "link", "插入链接", Command::Link);
     let m_code = mk(&mut map, "code", "行内代码", Command::Code);
     let m_para = mk(&mut map, "para", "段落", Command::Paragraph);
@@ -85,6 +86,7 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
             &m_redo,
             &m_bold,
             &m_italic,
+            &m_underline,
             &m_link,
             &m_code,
             &m_para,

@@ -154,6 +154,7 @@ pub struct RenderEnv<'a> {
     pub max_width: f32,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_inline(
     job: &mut LayoutJob,
     inl: &Inline,
@@ -163,6 +164,7 @@ fn append_inline(
     bold: bool,
     italic: bool,
     strike: bool,
+    underline: bool,
     linked: bool,
 ) {
     match inl {
@@ -177,24 +179,42 @@ fn append_inline(
             if strike {
                 f.strikethrough = Stroke::new(1.0, f.color);
             }
+            if underline {
+                f.underline = Stroke::new(1.0, f.color);
+            }
             if linked {
                 f.underline = Stroke::new(1.0, theme.link);
             }
             job.append(t, 0.0, f);
         }
         Inline::Strong(v) => {
+            // 加粗用主题单独配的强调色：中文字体只靠字重不够醒目
+            let bc = theme.bold_color();
             for x in v {
-                append_inline(job, x, theme, size, color, true, italic, strike, linked);
+                append_inline(
+                    job, x, theme, size, bc, true, italic, strike, underline, linked,
+                );
+            }
+        }
+        Inline::Underline(v) => {
+            for x in v {
+                append_inline(
+                    job, x, theme, size, color, bold, italic, strike, true, linked,
+                );
             }
         }
         Inline::Emph(v) => {
             for x in v {
-                append_inline(job, x, theme, size, color, bold, true, strike, linked);
+                append_inline(
+                    job, x, theme, size, color, bold, true, strike, underline, linked,
+                );
             }
         }
         Inline::Strike(v) => {
             for x in v {
-                append_inline(job, x, theme, size, color, bold, italic, true, linked);
+                append_inline(
+                    job, x, theme, size, color, bold, italic, true, underline, linked,
+                );
             }
         }
         Inline::Code(t) => {
@@ -205,7 +225,9 @@ fn append_inline(
         }
         Inline::Link { label, .. } => {
             for x in label {
-                append_inline(job, x, theme, size, color, bold, italic, strike, true);
+                append_inline(
+                    job, x, theme, size, color, bold, italic, strike, underline, true,
+                );
             }
         }
         Inline::Image { alt, url } => {
@@ -244,7 +266,9 @@ pub fn build_layout(
     // 长 URL / 无空格的中文也要按宽度折断，避免溢出窗口被裁掉。
     job.wrap.break_anywhere = true;
     for i in inlines {
-        append_inline(&mut job, i, theme, size, color, bold, false, false, false);
+        append_inline(
+            &mut job, i, theme, size, color, bold, false, false, false, false,
+        );
     }
     if inlines.is_empty() {
         job.append(" ", 0.0, theme.fmt(size));
@@ -293,7 +317,7 @@ fn first_link(inlines: &[Inline]) -> Option<String> {
     for i in inlines {
         match i {
             Inline::Link { url, .. } => return Some(url.clone()),
-            Inline::Strong(v) | Inline::Emph(v) | Inline::Strike(v) => {
+            Inline::Strong(v) | Inline::Emph(v) | Inline::Strike(v) | Inline::Underline(v) => {
                 if let Some(u) = first_link(v) {
                     return Some(u);
                 }

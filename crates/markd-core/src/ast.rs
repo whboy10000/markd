@@ -9,6 +9,7 @@ pub enum Inline {
     Strong(Vec<Inline>),
     Emph(Vec<Inline>),
     Strike(Vec<Inline>),
+    Underline(Vec<Inline>),
     Code(String),
     Link { label: Vec<Inline>, url: String },
     Image { alt: String, url: String },
@@ -187,6 +188,7 @@ pub fn inline_plain(inlines: &[Inline]) -> String {
             Inline::Strong(v)
             | Inline::Emph(v)
             | Inline::Strike(v)
+            | Inline::Underline(v)
             | Inline::Link { label: v, .. } => {
                 s.push_str(&inline_plain(v));
             }
@@ -205,6 +207,7 @@ pub fn collect_wiki(inlines: &[Inline], out: &mut Vec<String>) {
             Inline::Strong(v)
             | Inline::Emph(v)
             | Inline::Strike(v)
+            | Inline::Underline(v)
             | Inline::Link { label: v, .. } => {
                 collect_wiki(v, out);
             }
@@ -345,6 +348,15 @@ pub fn parse_inline(s: &str) -> Vec<Inline> {
                 flush!();
                 out.push(Inline::Strong(parse_inline(&inner)));
                 i = end + 2;
+                continue;
+            }
+        }
+        if ch == '<' && i + 2 < c.len() && c[i + 1] == 'u' && c[i + 2] == '>' {
+            if let Some(end) = find_seq(&c, i + 3, &['<', '/', 'u', '>']) {
+                let inner: String = c[i + 3..end].iter().collect();
+                flush!();
+                out.push(Inline::Underline(parse_inline(&inner)));
+                i = end + 4;
                 continue;
             }
         }
@@ -737,6 +749,17 @@ mod tests {
         let b = parse("# 标题\n\n正文一段");
         assert!(matches!(b[0], Block::Heading { level: 1, .. }));
         assert!(b.iter().any(|x| matches!(x, Block::Paragraph { .. })));
+    }
+
+    /// <u>文字</u> 解析为下划线行内样式。
+    #[test]
+    fn inline_underline() {
+        let v = parse_inline("<u>下划线文字</u>");
+        assert!(
+            v.iter().any(|i| matches!(i, Inline::Underline(_))),
+            "应解析出 Underline: {:?}",
+            v
+        );
     }
 
     #[test]

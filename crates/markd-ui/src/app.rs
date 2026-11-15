@@ -485,6 +485,8 @@ pub struct MarkdApp {
     stats_cache: crate::document::Stats,
     stats_at: std::time::Instant,
     side_tab: SideTab,
+    /// 侧栏大纲里被折叠的条目下标（按 outline 顺序）。
+    outline_folded: HashSet<usize>,
     menu: Option<MenuKind>,
     workspace_input: String,
     palette: Palette,
@@ -618,6 +620,7 @@ impl MarkdApp {
             expanded,
             outline,
             side_tab: SideTab::Files,
+            outline_folded: HashSet::new(),
             menu: None,
             workspace_input,
             palette: Palette::default(),
@@ -1116,7 +1119,7 @@ impl MarkdApp {
                 self.config.last_file = Some(path.to_string_lossy().to_string());
                 self.push_recent(&path);
                 self.refresh_tree();
-                self.status = format!("已保存 {}", path.display());
+                self.status = "已保存".to_string();
             }
             Err(e) => self.status = format!("保存失败: {}", e),
         }
@@ -1144,7 +1147,7 @@ impl MarkdApp {
             &self.doc.title(),
             self.theme.kind.is_dark(),
         ) {
-            Ok(p) => self.status = format!("已导出 {}", p.display()),
+            Ok(_) => self.status = "已导出 HTML".to_string(),
             Err(e) => self.status = format!("导出失败: {}", e),
         }
     }
@@ -1295,6 +1298,9 @@ impl MarkdApp {
             Command::Bold => editor::wrap(&mut self.doc, &mut self.editor, "**", "**", true),
             Command::Italic => editor::wrap(&mut self.doc, &mut self.editor, "*", "*", true),
             Command::Strike => editor::wrap(&mut self.doc, &mut self.editor, "~~", "~~", true),
+            Command::Underline => {
+                editor::wrap(&mut self.doc, &mut self.editor, "<u>", "</u>", true)
+            }
             Command::Code => editor::wrap(&mut self.doc, &mut self.editor, "`", "`", true),
             Command::Link => {
                 editor::wrap(&mut self.doc, &mut self.editor, "[", "](https://)", false)
@@ -1665,14 +1671,29 @@ impl MarkdApp {
                     }
                 }
             });
-            for (label, cmd) in [("B", Command::Bold), ("I", Command::Italic)] {
-                if ui
-                    .button(label)
-                    .on_hover_cursor(egui::CursorIcon::Default)
-                    .clicked()
-                {
-                    chosen = Some(cmd);
-                }
+            if ui
+                .add(egui::Button::new(RichText::new("B").strong()))
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .on_hover_text("加粗：作用于选中文字；无选区时作用于整行")
+                .clicked()
+            {
+                chosen = Some(Command::Bold);
+            }
+            if ui
+                .add(egui::Button::new(RichText::new("U").underline()))
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .on_hover_text("下划线")
+                .clicked()
+            {
+                chosen = Some(Command::Underline);
+            }
+            if ui
+                .add(egui::Button::new(RichText::new("I").italics()))
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .on_hover_text("斜体 (Cmd/Ctrl+I)")
+                .clicked()
+            {
+                chosen = Some(Command::Italic);
             }
             // 删除线：图标直接画「ABC 中间一条横线」，比写「删除线」三个字更直观。
             if ui
@@ -1696,6 +1717,20 @@ impl MarkdApp {
                     self.status = "这一块不是文本段落，没有可清除的格式".to_string();
                 }
             }
+            // 三种列表摆在橡皮擦后面，从「插入」下拉里移出来方便高频使用
+            for (label, cmd) in [
+                ("列表", Command::Bullet),
+                ("编号", Command::Ordered),
+                ("任务", Command::Task),
+            ] {
+                if ui
+                    .button(label)
+                    .on_hover_cursor(egui::CursorIcon::Default)
+                    .clicked()
+                {
+                    chosen = Some(cmd);
+                }
+            }
             // 插入类动作收进一个下拉：图片、表格、代码、引用、链接、分隔线、公式、图表…
             // 全塞在工具条上会挤成一排小按钮，下拉更好找。
             ui.menu_button("插入", |ui| {
@@ -1706,9 +1741,6 @@ impl MarkdApp {
                     ("行内代码", Command::Code),
                     ("引用", Command::Quote),
                     ("超链接", Command::Link),
-                    ("无序列表", Command::Bullet),
-                    ("有序列表", Command::Ordered),
-                    ("任务列表", Command::Task),
                     ("分隔线", Command::Rule),
                     ("行内公式", Command::InlineMath),
                     ("公式块", Command::Math),
@@ -1831,7 +1863,28 @@ impl MarkdApp {
                     SideTab::Files => "文件",
                     SideTab::Outline => "大纲",
                 };
-                ui.label(RichText::new(name).strong().color(self.theme.text));
+                ui.label(RichText::new(name).small().strong().color(self.theme.text));
+                // 大纲页签：一键展开 / 折叠全部
+                if self.side_tab == SideTab::Outline {
+                    if ui.small_button("展开").clicked() {
+                        self.outline_folded.clear();
+                    }
+                    if ui
+                        .small_button("折叠")
+                        .on_hover_text("折叠所有含小节的标题")
+                        .clicked()
+                    {
+                        for (i, item) in self.outline.iter().enumerate() {
+                            if self
+                                .outline
+                                .get(i + 1)
+                                .is_some_and(|n| n.level > item.level)
+                            {
+                                self.outline_folded.insert(i);
+                            }
+                        }
+                    }
+                }
             });
             ui.separator();
         }
@@ -1873,7 +1926,20 @@ impl MarkdApp {
             ),
             SideTab::Outline => {
                 if self.config.show_outline {
-                    sidebar::outline_panel(ui, &self.outline, &self.theme, &mut actions);
+                    let mut fold_toggles: Vec<usize> = Vec::new();
+                    sidebar::outline_panel(
+                        ui,
+                        &self.outline,
+                        &self.theme,
+                        &mut actions,
+                        &self.outline_folded,
+                        &mut fold_toggles,
+                    );
+                    for i in fold_toggles {
+                        if !self.outline_folded.insert(i) {
+                            self.outline_folded.remove(&i);
+                        }
+                    }
                 } else {
                     // 隐藏大纲时回退到文件树，避免侧栏出现空白或提示文字。
                     sidebar::file_tree(

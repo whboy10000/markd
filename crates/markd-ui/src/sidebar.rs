@@ -4,6 +4,7 @@ use crate::document::OutlineItem;
 use crate::theme::Theme;
 use crate::workspace::FileNode;
 use egui::{self, RichText, Sense};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 pub enum SideAction {
@@ -75,42 +76,130 @@ pub fn file_tree(
     walk(ui, nodes, current, theme, actions, 0);
 }
 
+/// 计算大纲每个条目的可见性：被折叠标题的所有下级条目（level 更大的连续段）隐藏。
+fn outline_visibility(outline: &[OutlineItem], folded: &HashSet<usize>) -> Vec<bool> {
+    let mut vis = Vec::with_capacity(outline.len());
+    let mut hidden_under: Option<u8> = None;
+    for (i, item) in outline.iter().enumerate() {
+        if let Some(lv) = hidden_under {
+            if item.level > lv {
+                vis.push(false);
+                continue;
+            }
+            hidden_under = None;
+        }
+        vis.push(true);
+        if folded.contains(&i) {
+            hidden_under = Some(item.level);
+        }
+    }
+    vis
+}
+
 pub fn outline_panel(
     ui: &mut egui::Ui,
     outline: &[OutlineItem],
     theme: &Theme,
     actions: &mut Vec<SideAction>,
+    folded: &std::collections::HashSet<usize>,
+    fold_toggles: &mut Vec<usize>,
 ) {
     if outline.is_empty() {
         ui.label(
             RichText::new("（暂无标题）")
-                .size(theme.body + 2.0)
+                .size(theme.body - 1.0)
                 .color(theme.dim),
         );
         return;
     }
     // 大纲和文件树共用侧栏宽度：显式撑满可用宽度，避免条目短时面板看起来更窄。
     let full_w = ui.available_width();
-    for item in outline {
-        let indent = (item.level.saturating_sub(1) as f32) * 13.0;
-        let resp = ui
-            .horizontal(|ui| {
-                ui.set_min_width(full_w.max(60.0));
-                ui.add_space(indent);
+    let vis = outline_visibility(outline, folded);
+    for (i, item) in outline.iter().enumerate() {
+        if !vis[i] {
+            continue;
+        }
+        let has_child = outline
+            .get(i + 1)
+            .map(|n| n.level > item.level)
+            .unwrap_or(false);
+        let is_folded = folded.contains(&i);
+        let indent = ((item.level.saturating_sub(1)) as f32) * 13.0;
+        let mut label_resp: Option<egui::Response> = None;
+        ui.horizontal(|ui| {
+            ui.set_min_width(full_w.max(60.0));
+            ui.add_space(indent);
+            if has_child {
+                let arrow = if is_folded { "▶" } else { "▼" };
+                let a = ui
+                    .add(
+                        egui::Label::new(RichText::new(arrow).small().color(theme.dim))
+                            .sense(Sense::click()),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text(if is_folded {
+                        "展开小节"
+                    } else {
+                        "折叠小节"
+                    });
+                if a.clicked() {
+                    fold_toggles.push(i);
+                }
+            } else {
+                ui.add_space(12.0);
+            }
+            label_resp = Some(
                 ui.add(
                     egui::Label::new(
                         RichText::new(item.title.clone())
-                            .size(theme.body + 2.0)
+                            .size(theme.body - 1.0)
                             .color(theme.text),
                     )
                     .selectable(false)
                     .sense(Sense::click()),
                 )
-                .on_hover_cursor(egui::CursorIcon::Default)
-            })
-            .inner;
-        if resp.clicked() {
-            actions.push(SideAction::Jump(item.block));
+                .on_hover_cursor(egui::CursorIcon::Default),
+            );
+        });
+        if let Some(lr) = label_resp {
+            if lr.clicked() {
+                actions.push(SideAction::Jump(item.block));
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // OutlineItem / HashSet 由 use super::* 带入
+
+    fn item(level: u8, title: &str, block: usize) -> OutlineItem {
+        OutlineItem {
+            level,
+            title: title.to_string(),
+            block,
+        }
+    }
+
+    /// 折叠某个标题后，它的所有下级条目都隐藏，其余条目照常显示。
+    #[test]
+    fn outline_fold_hides_children_only() {
+        let outline = vec![
+            item(1, "一章", 0),
+            item(2, "1.1", 1),
+            item(2, "1.2", 2),
+            item(1, "二章", 3),
+            item(2, "2.1", 4),
+        ];
+        let mut folded = HashSet::new();
+        folded.insert(0);
+        let vis = outline_visibility(&outline, &folded);
+        assert_eq!(vis, vec![true, false, false, true, true]);
+        folded.insert(3);
+        let vis = outline_visibility(&outline, &folded);
+        assert_eq!(vis, vec![true, false, false, true, false]);
+        folded.clear();
+        assert!(outline_visibility(&outline, &folded).iter().all(|v| *v));
     }
 }

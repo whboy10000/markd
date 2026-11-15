@@ -144,6 +144,7 @@ fn strip_block_prefix(src: &str) -> String {
 /// 去掉行内强调标记：反引号全部去掉，成对的星号/下划线/波浪号去掉。
 /// 单个 * 和 _ 保留，免得把 snake_case、2*3 这种正常文字也擦掉。
 fn strip_inline_markers(s: &str) -> String {
+    let s = s.replace("<u>", "").replace("</u>", "");
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {

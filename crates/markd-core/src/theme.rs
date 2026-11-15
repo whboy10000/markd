@@ -188,6 +188,19 @@ impl Theme {
         }
     }
 
+    /// 加粗文字的强调色：中文加粗只靠字重不够醒目，
+    /// 每个主题单独配一个暖色，和链接蓝、标题黑拉开距离。
+    pub fn bold_color(&self) -> Color32 {
+        match self.kind {
+            ThemeKind::Light => rgb(180, 83, 9),
+            ThemeKind::Dark => rgb(255, 198, 109),
+            ThemeKind::Github => rgb(207, 34, 46),
+            ThemeKind::Sepia => rgb(146, 43, 33),
+            ThemeKind::Nord => rgb(235, 203, 139),
+            ThemeKind::Solarized => rgb(181, 137, 0),
+        }
+    }
+
     /// 代码高亮配色：关键字 / 字符串 / 数字 / 注释。
     /// 浅色与深色直接取 VS Code 默认主题的 token 颜色，其它主题按各自色系微调。
     pub fn syntax(&self) -> [Color32; 4] {
