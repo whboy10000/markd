@@ -819,6 +819,13 @@ pub fn show_editor(
     }
     state.focus_req = None;
 
+    // ---------------- 结构性按键（回车 / 退格 / Tab）----------------
+    // 终端持有键盘焦点时（read_only = true），按键全部归终端：
+    // 编辑区不再处理回车/退格/Tab，否则在终端里按回车，编辑区的段落也跟着换行。
+    if state.read_only {
+        return EditorEvent::None;
+    }
+
     // ---------------- 代码块换语言 ----------------
     // 先把本帧可能发生的文本修改按旧语言写回，再整体重建源码换语言，
     // 避免旧的 edit_kind 把新语言覆盖回去。
@@ -1158,6 +1165,52 @@ mod tests {
         wrap(&mut doc, &mut st, "~~", "~~", true);
         assert_eq!(doc.source(), "~~普通~~文字");
         assert!(doc.dirty);
+    }
+
+    /// 终端持有键盘焦点时（read_only），编辑区不得处理回车：
+    /// 否则在终端里按回车，编辑区的段落会跟着换行。
+    #[test]
+    fn enter_is_ignored_when_read_only() {
+        let mut doc = Document::new("第一段\n\n第二段", None);
+        let blocks_before = doc.blocks.len();
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut state = EditorState::default();
+        state.active = doc.blocks.len() - 1;
+        state.read_only = true;
+        state.focus_req = Some(state.active);
+
+        let ctx = egui::Context::default();
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert_eq!(
+            doc.blocks.len(),
+            blocks_before,
+            "read_only 时回车不应拆分块"
+        );
     }
 
     /// 大纲跳转：点击标题后应把该块设为活动块，并消费滚动请求
