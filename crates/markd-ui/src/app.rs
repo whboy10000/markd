@@ -980,21 +980,6 @@ impl MarkdApp {
                 self.config.save();
             }
 
-            // 侧栏标签栏（文件 / 大纲 / 刷新）的显示开关，隐藏后仍可从状态栏恢复。
-            let header_on = self.config.show_sidebar_header;
-            let header_txt = if header_on {
-                RichText::new("侧栏标签").strong().color(self.theme.accent)
-            } else {
-                RichText::new("侧栏标签").color(self.theme.dim)
-            };
-            if ui
-                .selectable_label(header_on, header_txt)
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .clicked()
-            {
-                chosen = Some(Command::ToggleSidebarHeader);
-            }
-
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     RichText::new(format!(
