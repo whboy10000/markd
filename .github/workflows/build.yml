@@ -58,7 +58,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build release binary
+        if: runner.os != 'macOS'
         run: cargo build --release -p markd
+
+      # macOS 产出 Intel + Apple Silicon 的通用二进制，一份 DMG 两种芯片都能跑
+      - name: Build macOS universal binary
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release -p markd --target aarch64-apple-darwin
+          cargo build --release -p markd --target x86_64-apple-darwin
+          mkdir -p target/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/markd \
+            target/x86_64-apple-darwin/release/markd \
+            -output target/release/markd
+          lipo -info target/release/markd
 
       # ---------------- macOS: .app + .dmg（拖拽安装） ----------------
       - name: Package macOS (.app + .dmg)
