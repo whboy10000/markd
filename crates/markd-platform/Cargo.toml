@@ -1,0 +1,12 @@
+[package]
+name = "markd-platform"
+version.workspace = true
+edition.workspace = true
+description = "平台集成：macOS 原生系统菜单栏与系统中文字体"
+
+[dependencies]
+egui.workspace = true
+markd-core.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda.workspace = true

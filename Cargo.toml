@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+egui = "0.37.0"
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "clipboard", "links"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+muda = "0.21.2"
+rfd = "0.18.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+markd-core = { path = "crates/markd-core" }
+markd-platform = { path = "crates/markd-platform" }
+markd-ui = { path = "crates/markd-ui" }

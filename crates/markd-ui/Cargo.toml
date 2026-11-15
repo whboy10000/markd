@@ -1,0 +1,17 @@
+[package]
+name = "markd-ui"
+version.workspace = true
+edition.workspace = true
+description = "egui 界面：渲染、编辑器交互、侧栏、特色功能与应用外壳"
+
+[dependencies]
+egui.workspace = true
+eframe.workspace = true
+image.workspace = true
+rfd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+markd-core.workspace = true
+markd-platform.workspace = true
+portable-pty = "0.9.0"
+vte = "0.15.0"

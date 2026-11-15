@@ -1,0 +1,15 @@
+[package]
+name = "markd"
+version.workspace = true
+edition.workspace = true
+description = "Markd —— 纯 Rust Markdown 编辑器"
+
+[[bin]]
+name = "markd"
+path = "src/main.rs"
+
+[dependencies]
+eframe.workspace = true
+egui.workspace = true
+markd-platform.workspace = true
+markd-ui.workspace = true
