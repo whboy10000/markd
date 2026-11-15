@@ -464,9 +464,17 @@ pub fn show_editor(
                     }
                 });
             });
+            // 输入时让活动块始终留在视口内：换行把内容顶下去时视图跟着走。
+            if !state.read_only {
+                if let Some(r) = active_rect {
+                    if !ui.clip_rect().contains_rect(r) {
+                        ui.scroll_to_rect(r, None);
+                    }
+                }
+            }
             // 打字机模式只在光标移动时居中。以前每帧都强制 scroll_to_rect，
             // 会把用户用滚轮翻到的位置立刻拉回去，表现就是「滚轮滚不动」。
-            if typewriter && cursor_idx != state.last_cursor {
+            if typewriter && !state.read_only && cursor_idx != state.last_cursor {
                 if let Some(r) = active_rect {
                     ui.scroll_to_rect(r, Some(egui::Align::Center));
                 }
@@ -480,8 +488,10 @@ pub fn show_editor(
             }
         });
 
-    state.last_cursor = cursor_idx;
-    state.sel = selection;
+    if !state.read_only {
+        state.last_cursor = cursor_idx;
+        state.sel = selection;
+    }
     state.focus_req = None;
 
     // ---------------- 自动配对（括号与引号） ----------------

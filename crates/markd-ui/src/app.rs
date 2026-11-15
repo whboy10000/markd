@@ -838,28 +838,30 @@ impl MarkdApp {
             if ui.button("保存").on_hover_cursor(egui::CursorIcon::Default).clicked() {
                 chosen = Some(Command::Save);
             }
-            if ui
-                .selectable_label(self.terminal.open, "终端")
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .clicked()
-            {
-                self.terminal.toggle();
-            }
             ui.separator();
             ui.label(RichText::new(self.doc.title()).strong().color(self.theme.dim));
 
-            // 右侧空白处用于拖动窗口（macOS 隐藏原生标题栏后需手动支持）。
+            // 最右侧留给终端图标，其余空白用于拖动窗口（双击 = 最大化）
+            let icon_w = 30.0;
             let r = ui.available_rect_before_wrap();
+            let drag_w = (r.width() - icon_w).max(1.0);
             let drag = ui.allocate_response(
-                egui::vec2(r.width().max(1.0), r.height().max(1.0)),
+                egui::vec2(drag_w, r.height().max(1.0)),
                 egui::Sense::click_and_drag(),
             );
-            // 双击标题栏空白处 = 最大化 / 还原（和系统标题栏一致）
             if drag.double_clicked() {
                 let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
             } else if drag.dragged() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+            // VS Code 风格的终端图标
+            let term = ui
+                .selectable_label(self.terminal.open, RichText::new(">_").monospace().size(13.0))
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .on_hover_text("终端 (Cmd/Ctrl+J)");
+            if term.clicked() {
+                self.terminal.toggle();
             }
         });
         if let Some(c) = chosen {
@@ -1447,6 +1449,13 @@ impl eframe::App for MarkdApp {
             let panel = egui::Panel::left("sidebar")
                 .resizable(false)
                 .show_separator_line(true)
+                // 右边距为 0：滚动条紧贴侧栏分隔线，视觉上和那条线重合
+                .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+                    left: 8,
+                    right: 0,
+                    top: 6,
+                    bottom: 4,
+                }))
                 .exact_size(width)
                 .show(&mut *root_ui, |ui| self.sidebar(ui));
 
