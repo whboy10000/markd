@@ -490,6 +490,19 @@ pub fn show_editor(
                                     );
                                     ui.fonts_mut(|f| f.layout_job(job))
                                 };
+                            // 代码块编辑时也走高亮排版：缓冲区是纯代码，用同一套词法着色，
+                            // 边打字边能看到关键字/字符串的颜色，而不是退化成一片纯文本。
+                            let code_lang = match &edit_kind {
+                                EditKind::Code(l) => l.as_str(),
+                                _ => "",
+                            };
+                            let mut code_layouter =
+                                |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+                                    let mut job =
+                                        render::code_job_edit(buf.as_str(), code_lang, theme);
+                                    job.wrap.max_width = wrap;
+                                    ui.fonts_mut(|f| f.layout_job(job))
+                                };
                             let mut te = TextEdit::multiline(&mut active_buf)
                                 .id(id)
                                 .desired_rows(rows)
@@ -509,6 +522,7 @@ pub fn show_editor(
                                         egui::FontFamily::Monospace,
                                     ))
                                     .text_color(theme.text)
+                                    .layouter(&mut code_layouter)
                                     .frame(
                                         egui::Frame::NONE
                                             .fill(theme.code_bg)

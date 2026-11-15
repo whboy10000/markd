@@ -512,7 +512,18 @@ fn image_response(
 }
 
 /// 轻量词法着色，覆盖常见语言，不依赖 syntect。
+/// 这里给每行末尾都补 `\n`，让区块底部多一行留白、看得更像代码框。
 pub fn code_job(code: &str, lang: &str, theme: &Theme) -> LayoutJob {
+    code_job_impl(code, lang, theme, true)
+}
+
+/// 编辑态用的高亮排版：**文本与缓冲区逐字符一致**（不补行尾换行），
+/// 否则 TextEdit 的光标/选中会按错位的字符下标走。
+pub fn code_job_edit(code: &str, lang: &str, theme: &Theme) -> LayoutJob {
+    code_job_impl(code, lang, theme, false)
+}
+
+fn code_job_impl(code: &str, lang: &str, theme: &Theme, trailing_newline: bool) -> LayoutJob {
     const KW: &[&str] = &[
         "fn",
         "let",
@@ -594,7 +605,9 @@ pub fn code_job(code: &str, lang: &str, theme: &Theme) -> LayoutJob {
     let mut job = LayoutJob::default();
     // 代码行常没有空格，允许在任意字符处换行以适配窄窗口。
     job.wrap.break_anywhere = true;
-    for line in code.split('\n') {
+    let lines: Vec<&str> = code.split('\n').collect();
+    for (n, line) in lines.iter().enumerate() {
+        let line = *line;
         let c: Vec<char> = line.chars().collect();
         let mut i = 0usize;
         while i < c.len() {
@@ -653,9 +666,12 @@ pub fn code_job(code: &str, lang: &str, theme: &Theme) -> LayoutJob {
             job.append(&c[i].to_string(), 0.0, f);
             i += 1;
         }
-        job.append("\n", 0.0, theme.mono_fmt());
+        // 编辑态不补最后一行之后的换行，保证 job.text 与缓冲区完全一致
+        if trailing_newline || n + 1 < lines.len() {
+            job.append("\n", 0.0, theme.mono_fmt());
+        }
     }
-    if code.is_empty() {
+    if code.is_empty() && trailing_newline {
         job.append(" ", 0.0, theme.mono_fmt());
     }
     job
@@ -1143,6 +1159,20 @@ mod tests {
         let src = "**粗** *斜* `码` ~~删~~ [链](https://e.com) 普通文字";
         let job = inline_job(src, &theme, 16.0, theme.text, 400.0);
         assert_eq!(job.text, src, "排版后的文本必须与缓冲区完全一致");
+    }
+
+    /// 代码块在编辑态复用同一套高亮排版：排版文本必须与缓冲区完全一致，
+    /// 否则 TextEdit 的光标/选中会错位；同时应当有多段不同颜色。
+    #[test]
+    fn code_job_keeps_raw_text_and_colors_keywords() {
+        let theme = Theme::get(ThemeKind::Dark);
+        let src = "fn main() {\n    let x = \"s\"; // 注释\n}";
+        // 编辑态：排版文本必须和缓冲区逐字符一致，否则光标/选中会错位
+        let edit = code_job_edit(src, "rust", &theme);
+        assert_eq!(edit.text, src);
+        assert!(edit.sections.len() > 1, "应当有多个着色段");
+        // 展示态：末尾多补一个换行，当作代码框的底部留白
+        assert_eq!(code_job(src, "rust", &theme).text, format!("{src}\n"));
     }
 
     #[test]
