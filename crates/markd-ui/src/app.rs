@@ -550,16 +550,32 @@ impl MarkdApp {
                     self.on_changed();
                 }
             }
+            // 源码 / 专注 / 打字机三种模式互斥：打开一个会关掉另外两个
             Command::ToggleSource => {
-                self.config.source_mode = !self.config.source_mode;
+                let on = !self.config.source_mode;
+                self.config.source_mode = on;
+                if on {
+                    self.config.focus_mode = false;
+                    self.config.typewriter = false;
+                }
                 self.config.save();
             }
             Command::ToggleFocus => {
-                self.config.focus_mode = !self.config.focus_mode;
+                let on = !self.config.focus_mode;
+                self.config.focus_mode = on;
+                if on {
+                    self.config.source_mode = false;
+                    self.config.typewriter = false;
+                }
                 self.config.save();
             }
             Command::ToggleTypewriter => {
-                self.config.typewriter = !self.config.typewriter;
+                let on = !self.config.typewriter;
+                self.config.typewriter = on;
+                if on {
+                    self.config.source_mode = false;
+                    self.config.focus_mode = false;
+                }
                 self.config.save();
             }
             Command::ToggleSidebar => {
@@ -825,44 +841,46 @@ impl MarkdApp {
                 }
                 ui.separator();
             }
-            // 紧跟红绿灯的五个快捷入口，顺序固定为：命令面板 → 快速打开 → 搜索 → 保存 → 终端。
-            if ui.button("命令面板").on_hover_cursor(egui::CursorIcon::Default).clicked() {
-                self.palette.open_with(PaletteMode::Commands);
-            }
-            if ui.button("快速打开").on_hover_cursor(egui::CursorIcon::Default).clicked() {
-                self.open_quick_palette();
-            }
-            if ui.button("搜索").on_hover_cursor(egui::CursorIcon::Default).clicked() {
-                self.search.open = true;
-            }
-            if ui.button("保存").on_hover_cursor(egui::CursorIcon::Default).clicked() {
-                chosen = Some(Command::Save);
-            }
-            ui.separator();
+            // 左侧只放文件名
             ui.label(RichText::new(self.doc.title()).strong().color(self.theme.dim));
 
-            // 最右侧留给终端图标，其余空白用于拖动窗口（双击 = 最大化）
-            let icon_w = 30.0;
-            let r = ui.available_rect_before_wrap();
-            let drag_w = (r.width() - icon_w).max(1.0);
-            let drag = ui.allocate_response(
-                egui::vec2(drag_w, r.height().max(1.0)),
-                egui::Sense::click_and_drag(),
-            );
-            if drag.double_clicked() {
-                let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-            } else if drag.dragged() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-            }
-            // VS Code 风格的终端图标
-            let term = ui
-                .selectable_label(self.terminal.open, RichText::new(">_").monospace().size(13.0))
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .on_hover_text("终端 (Cmd/Ctrl+J)");
-            if term.clicked() {
-                self.terminal.toggle();
-            }
+            // 右侧：命令面板 / 快速打开 / 搜索 / 保存 / 终端图标
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(8.0);
+                if ui
+                    .selectable_label(self.terminal.open, RichText::new(">_").monospace().size(13.0))
+                    .on_hover_cursor(egui::CursorIcon::Default)
+                    .on_hover_text("终端 (Cmd/Ctrl+J)")
+                    .clicked()
+                {
+                    self.terminal.toggle();
+                }
+                ui.add_space(2.0);
+                if ui.button("保存").on_hover_cursor(egui::CursorIcon::Default).clicked() {
+                    chosen = Some(Command::Save);
+                }
+                if ui.button("搜索").on_hover_cursor(egui::CursorIcon::Default).clicked() {
+                    self.search.open = true;
+                }
+                if ui.button("快速打开").on_hover_cursor(egui::CursorIcon::Default).clicked() {
+                    self.open_quick_palette();
+                }
+                if ui.button("命令面板").on_hover_cursor(egui::CursorIcon::Default).clicked() {
+                    self.palette.open_with(PaletteMode::Commands);
+                }
+                // 剩余空白 = 拖动区（双击 = 最大化）
+                let r = ui.available_rect_before_wrap();
+                let drag = ui.allocate_response(
+                    egui::vec2(r.width().max(1.0), r.height().max(1.0)),
+                    egui::Sense::click_and_drag(),
+                );
+                if drag.double_clicked() {
+                    let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                } else if drag.dragged() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+            });
         });
         if let Some(c) = chosen {
             self.execute(c, ctx);
@@ -1528,6 +1546,11 @@ impl eframe::App for MarkdApp {
                     self.editor.scroll_req = Some(self.editor.active);
                 }
                 Action::Notify(msg) => self.status = msg,
+                Action::Caret(i, off) => {
+                    self.editor.active = i;
+                    self.editor.focus_req = Some(i);
+                    self.editor.pending_caret = Some(off);
+                }
                 Action::SetLang(i, lang) => {
                     let rebuilt = match self.doc.blocks.get(i) {
                         Some(crate::ast::Block::Code { code, source, .. }) => {

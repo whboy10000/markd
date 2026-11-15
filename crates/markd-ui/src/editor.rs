@@ -20,6 +20,8 @@ pub struct EditorState {
     pub clicked: bool,
     /// 正在原地编辑的表格草稿：(块下标, 单元格文本, 对齐)。
     pub table_draft: Option<(usize, Vec<Vec<String>>, Vec<crate::ast::Align>)>,
+    /// 点击进入编辑时，光标应落在的位置（相对块左上角）。
+    pub pending_caret: Option<egui::Vec2>,
 }
 
 pub enum EditorEvent {
@@ -416,6 +418,17 @@ pub fn show_editor(
                                     .layouter(&mut layouter),
                             };
                             let out = te.show(ui);
+                            // 点击进入编辑：把光标放到刚才点击的位置，而不是跳到末尾/居中
+                            if let Some(off) = state.pending_caret.take() {
+                                let ccursor = out.galley.cursor_from_pos(off);
+                                let mut ts = out.state.clone();
+                                ts.cursor.set_char_range(Some(
+                                    egui::text::CCursorRange::one(ccursor),
+                                ));
+                                ts.store(ui.ctx(), id);
+                                cursor_idx =
+                                    ccursor.index.0.min(active_buf.chars().count());
+                            }
                             let cr = out.cursor_range;
                             let resp = out.response;
                             if resp.changed() {

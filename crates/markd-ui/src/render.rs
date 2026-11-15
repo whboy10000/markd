@@ -19,18 +19,21 @@ pub enum Action {
     Notify(String),
     /// 修改代码块的语言（info string）。
     SetLang(usize, String),
+    /// 点击了某个块：块下标 + 点击位置（相对块左上角），用于把光标放到点击处。
+    Caret(usize, egui::Vec2),
 }
 
 /// 代码块可选语言，覆盖常见前端/后端/脚本/配置/标记语言。
 const LANGUAGES: &[&str] = &[
     "",
+    "json", "xml", "yaml", "toml", "ini", "csv",
     "rust", "c", "cpp", "csharp", "java", "kotlin", "scala", "swift", "go", "dart",
     "python", "javascript", "typescript", "jsx", "tsx", "vue", "svelte", "php", "ruby",
     "perl", "lua", "r", "julia", "matlab", "objective-c", "fsharp", "haskell", "ocaml",
     "clojure", "elixir", "erlang", "groovy", "lisp", "prolog", "fortran", "cobol",
     "sql", "plsql", "graphql", "prisma",
     "html", "xml", "css", "scss", "sass", "less", "stylus",
-    "json", "yaml", "toml", "ini", "csv", "properties",
+    "properties",
     "bash", "sh", "zsh", "fish", "powershell", "bat", "awk", "sed", "vim", "makefile",
     "dockerfile", "cmake", "nginx", "apache", "terraform", "hcl", "protobuf", "thrift",
     "markdown", "latex", "tex", "mermaid", "plantuml", "diff", "asm", "wasm",
@@ -352,6 +355,12 @@ fn text_response(
 ) -> egui::Response {
     let job = build_layout(inlines, theme, size, color, bold);
     let resp = wrapped_label(ui, job, env.max_width, Sense::click());
+    if resp.clicked() {
+        // 记录点击相对块左上角的位置，激活后据此把光标放到点击处
+        if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+            env.actions.push(Action::Caret(idx, p - resp.rect.min));
+        }
+    }
     if resp.clicked() && ui.input(|i| i.modifiers.ctrl || i.modifiers.command) {
         if let Some(url) = first_link(inlines) {
             env.actions.push(Action::OpenLink(url));
