@@ -138,7 +138,7 @@ jobs:
           tar -czf "Markd-${VERSION}-linux-amd64.tar.gz" -C target/release markd
 
       - name: Upload packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -162,7 +162,7 @@ jobs:
     steps:
       # checkout 会执行 git clean，必须放在下载产物之前，否则会把 out/ 清掉
       - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
       - name: Collect
