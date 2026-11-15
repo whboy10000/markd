@@ -61,6 +61,33 @@ jobs:
         if: runner.os != 'macOS'
         run: cargo build --release -p markd
 
+      # 校验 Windows 产物：GUI 子系统（无黑控制台窗）+ 图标已嵌入 EXE 资源段
+      - name: Verify Windows EXE (GUI subsystem + embedded icon)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = [IO.File]::ReadAllBytes("target\release\markd.exe")
+          # PE 头：e_lfanew(0x3C) → OptionalHeader(+24) → Subsystem(+68，PE32/PE32+ 同)
+          $peOff = [BitConverter]::ToInt32($exe, 0x3C)
+          $subsystem = [BitConverter]::ToUInt16($exe, $peOff + 24 + 68)
+          if ($subsystem -ne 2) { throw "markd.exe subsystem=$subsystem (console), expected 2 (GUI)" }
+          # .ico 里的 PNG 流原样存进 RT_ICON 资源（未压缩），检索字节即可证明图标已嵌入
+          $enc = [Text.Encoding]::GetEncoding(28591)
+          $exeS = $enc.GetString($exe)
+          $icoS = $enc.GetString([IO.File]::ReadAllBytes("assets\icon.ico"))
+          $sig = $enc.GetString([byte[]](0x89,0x50,0x4E,0x47,0x0D,0x0A,0x1A,0x0A))
+          $found = 0
+          $i = $icoS.IndexOf($sig)
+          while ($i -ge 0) {
+            $end = $icoS.IndexOf("IEND", $i)
+            if ($end -lt 0) { break }
+            $png = $icoS.Substring($i, $end + 8 - $i)   # 含 IEND(4) + CRC(4)
+            if ($exeS.Contains($png)) { $found++ }
+            $i = $icoS.IndexOf($sig, $i + 1)
+          }
+          if ($found -eq 0) { throw "no icon PNG resource found in markd.exe" }
+          Write-Host "OK: GUI subsystem, $found icon image(s) embedded"
+
       # macOS 产出 Intel + Apple Silicon 的通用二进制，一份 DMG 两种芯片都能跑
       - name: Build macOS universal binary
         if: runner.os == 'macOS'

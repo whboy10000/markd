@@ -2,6 +2,10 @@
 
 //! Markd —— 纯 Rust Markdown 编辑器入口。
 
+// Windows 发布版声明为 GUI 子系统：不分配控制台，双击/快捷方式启动只有应用窗口，
+// 也不会因为控制台被关掉而杀掉应用。debug 构建仍保留终端，方便看日志。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::path::PathBuf;
 
 /// 把图标编进二进制：Windows / Linux 的任务栏图标直接用它，
