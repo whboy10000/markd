@@ -2,6 +2,7 @@
 name = "markd-ui"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "egui 界面：渲染、编辑器交互、侧栏、特色功能与应用外壳"
 
 [dependencies]

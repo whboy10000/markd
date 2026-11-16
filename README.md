@@ -1,5 +1,7 @@
 # Markd
 
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm_Noncommercial_1.0.0-blue)](./LICENSE)
+
 纯 Rust + egui 从零实现的 Markdown 编辑器，界面与交互对齐主流所见即所得编辑器。
 
 ## 这是什么
@@ -68,8 +70,8 @@ sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev \
 | `Cmd/Ctrl + P` | 命令面板 |
 | `Cmd/Ctrl + 1 / 2 / 3` | 一级 / 二级 / 三级标题 |
 | `Cmd/Ctrl + B / I / K` | 加粗 / 斜体 / 链接（弹窗粘贴地址） |
-| `Cmd/Ctrl + Shift + `` `` | 行内代码 |
-| `Ctrl + Shift + `` `` | 删除线 |
+| ``Cmd/Ctrl + Shift + ` `` | 行内代码 |
+| ``Ctrl + Shift + ` `` | 删除线 |
 | `Cmd + Option + C` / `B` | 代码块 / 公式块 |
 | `Cmd + Option + T` / `Q` | 表格 / 引用 |
 | `Cmd + Option + O` / `U` | 有序 / 无序列表 |
@@ -130,3 +132,9 @@ GitHub Actions 会在 macOS / Windows / Linux 三个平台自动构建（`.githu
 - push 到 `main` / `master` 或提 PR 时执行编译与测试；
 - 编译产物上传为 Actions Artifacts，可直接下载运行；
 - 推送 `v*` / `20*` 标签时自动创建 Release：macOS 产出 Intel / Apple Silicon / 通用三种 DMG（`scripts/package-macos.sh`，本地与 CI 同一份逻辑），Linux 产出 `.deb` / `.rpm` / `.tar.gz`，Windows 产出 NSIS 安装程序。
+
+## 许可
+
+本项目基于 [PolyForm Noncommercial License 1.0.0](LICENSE) 发布：任何**非商业用途**（个人学习、研究、爱好项目、公益/教育/政府机构使用等）均可自由使用、修改与分发；**商业用途需要另行获得作者授权**。完整协议文本见 [`LICENSE`](LICENSE)。
+
+Copyright (c) 2026 aurelianus
