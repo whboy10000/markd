@@ -13,6 +13,8 @@ pub enum SideAction {
     Open(PathBuf),
     ToggleDir(PathBuf),
     Jump(usize),
+    /// 右键某行：请求显示上下文菜单（同时把侧栏切回文件列表页签）。
+    Context(PathBuf),
 }
 
 pub fn file_tree(
@@ -81,6 +83,9 @@ pub fn file_tree(
                 if row.clicked() {
                     actions.push(SideAction::ToggleDir(n.path.clone()));
                 }
+                if row.secondary_clicked() {
+                    actions.push(SideAction::Context(n.path.clone()));
+                }
                 if n.expanded {
                     walk(
                         ui,
@@ -112,6 +117,9 @@ pub fn file_tree(
                     .on_hover_cursor(egui::CursorIcon::Default);
                 if row.clicked() {
                     actions.push(SideAction::Open(n.path.clone()));
+                }
+                if row.secondary_clicked() {
+                    actions.push(SideAction::Context(n.path.clone()));
                 }
             }
         }

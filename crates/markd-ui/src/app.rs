@@ -612,6 +612,16 @@ pub struct MarkdApp {
     /// 标签编号自增器。
     next_uid: u64,
     frame_count: u64,
+    /// 文件树右键菜单：显示位置 + 目标路径。
+    ctx_menu: Option<(PathBuf, egui::Pos2)>,
+    /// 文件剪贴板：(路径, 是否剪切)。剪切在粘贴成功后才会删除源文件。
+    file_clipboard: Option<(PathBuf, bool)>,
+    /// 重命名对话框：(原路径, 名称输入缓冲)。
+    rename_dialog: Option<(PathBuf, String)>,
+    /// 删除确认对话框：待删除路径。
+    delete_confirm: Option<PathBuf>,
+    /// 新建对话框：(父目录, 是否文件夹, 名称输入缓冲)。
+    new_dialog: Option<(PathBuf, bool, String)>,
 }
 
 /// 首页上可点的入口。
@@ -748,11 +758,12 @@ impl MarkdApp {
             untitled_seq: 0,
             next_uid: 1,
             frame_count: 0,
+            ctx_menu: None,
+            file_clipboard: None,
+            rename_dialog: None,
+            delete_confirm: None,
+            new_dialog: None,
         };
-        // TEMP 调试：模拟点击「+」新建文档
-        if std::env::var("MARKD_AUTO_NEW").as_deref() == Ok("1") {
-            app.new_document();
-        }
         app
     }
 
@@ -881,6 +892,196 @@ impl MarkdApp {
         }
         // 链接图按需生成（打开关系图时），这里不再同步扫盘。
         self.link_docs.clear();
+    }
+
+    // ---------------- 文件树右键菜单的文件操作 ----------------
+
+    /// 复制文件路径（绝对或相对工作区根）。
+    fn copy_file_path(&mut self, p: &Path, relative: bool, ctx: &egui::Context) {
+        let text = if relative {
+            self.root
+                .as_ref()
+                .and_then(|r| p.strip_prefix(r).ok())
+                .map(|s| s.display().to_string())
+                .unwrap_or_else(|| p.display().to_string())
+        } else {
+            p.display().to_string()
+        };
+        ctx.copy_text(text.clone());
+        self.notify(ctx, format!("已复制：{text}"));
+    }
+
+    /// 在系统文件管理器中定位文件（Finder / 资源管理器）。
+    fn reveal_in_system(&self, p: &Path) {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("open").arg("-R").arg(p).spawn();
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("explorer")
+                .arg(format!("/select,{}", p.display()))
+                .spawn();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let dir = p.parent().unwrap_or(p);
+            let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+        }
+    }
+
+    /// 关闭所有指向该路径的标签（从后往前，避免下标漂移）。
+    fn close_tabs_with_path(&mut self, p: &Path) {
+        for i in (0..self.tabs.len()).rev() {
+            if self.tabs[i].path.as_deref() == Some(p) {
+                self.close_tab(i);
+            }
+        }
+    }
+
+    fn fs_delete(&mut self, p: &Path) {
+        let result = if p.is_dir() {
+            std::fs::remove_dir_all(p)
+        } else {
+            std::fs::remove_file(p)
+        };
+        match result {
+            Ok(_) => {
+                self.close_tabs_with_path(p);
+                self.file_clipboard = None;
+                self.refresh_tree();
+                self.status = format!("已删除 {}", p.display());
+            }
+            Err(e) => self.status = format!("删除失败：{e}"),
+        }
+    }
+
+    fn fs_rename(&mut self, p: &Path, new_name: &str) {
+        let name = new_name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let Some(parent) = p.parent() else {
+            return;
+        };
+        let target = parent.join(name);
+        if target.exists() {
+            self.status = format!("已存在同名文件：{}", target.display());
+            return;
+        }
+        if std::fs::rename(p, &target).is_err() {
+            self.status = "重命名失败".to_string();
+            return;
+        }
+        // 打开的标签与最近打开列表同步改路径
+        for t in self.tabs.iter_mut() {
+            if t.path.as_deref() == Some(p) {
+                t.path = Some(target.clone());
+            }
+        }
+        if self.doc.path.as_deref() == Some(p) {
+            self.doc.path = Some(target.clone());
+        }
+        let old = p.display().to_string();
+        let new = target.display().to_string();
+        if let Some(r) = self.config.recent.iter_mut().find(|x| x.as_str() == old) {
+            *r = new;
+        }
+        self.config.save();
+        self.refresh_tree();
+        self.status = format!("已重命名为 {}", name);
+    }
+
+    fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dst)?;
+        for e in std::fs::read_dir(src)? {
+            let e = e?;
+            let to = dst.join(e.file_name());
+            if e.file_type()?.is_dir() {
+                Self::copy_dir_recursive(&e.path(), &to)?;
+            } else {
+                std::fs::copy(e.path(), to)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 粘贴剪贴板里的文件/文件夹到目标目录；同名自动追加 (2) (3)…
+    /// 剪切的文件若正被打开，标签路径同步改到新位置（内容不丢）。
+    fn fs_paste(&mut self, dest_dir: &Path) {
+        let Some((src, cut)) = self.file_clipboard.take() else {
+            return;
+        };
+        let Some(name) = src.file_name().map(|n| n.to_os_string()) else {
+            return;
+        };
+        let mut dest = dest_dir.join(name);
+        if dest.exists() {
+            let stem = src
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let ext = src
+                .extension()
+                .map(|s| format!(".{}", s.to_string_lossy()))
+                .unwrap_or_default();
+            let mut n = 2;
+            loop {
+                dest = dest_dir.join(format!("{stem} ({n}){ext}"));
+                if !dest.exists() {
+                    break;
+                }
+                n += 1;
+            }
+        }
+        let result = if src.is_dir() {
+            Self::copy_dir_recursive(&src, &dest)
+        } else {
+            std::fs::copy(&src, &dest).map(|_| ())
+        };
+        match result {
+            Ok(_) => {
+                if cut {
+                    let _ = std::fs::remove_dir_all(&src)
+                        .or_else(|_| std::fs::remove_file(&src));
+                    for t in self.tabs.iter_mut() {
+                        if t.path.as_deref() == Some(src.as_path()) {
+                            t.path = Some(dest.clone());
+                        }
+                    }
+                    if self.doc.path.as_deref() == Some(src.as_path()) {
+                        self.doc.path = Some(dest.clone());
+                    }
+                }
+                self.refresh_tree();
+                self.status = format!("已粘贴到 {}", dest.display());
+            }
+            Err(e) => self.status = format!("粘贴失败：{e}"),
+        }
+    }
+
+    /// 新建文件（并打开）/ 新建文件夹。
+    fn fs_new(&mut self, dir: &Path, is_dir: bool, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let target = dir.join(name);
+        let result = if is_dir {
+            std::fs::create_dir_all(&target)
+        } else {
+            std::fs::File::create(&target).map(|_| ())
+        };
+        match result {
+            Ok(_) => {
+                self.refresh_tree();
+                self.status = format!("已创建 {}", target.display());
+                if !is_dir {
+                    self.open_file(target);
+                }
+            }
+            Err(e) => self.status = format!("创建失败：{e}"),
+        }
     }
 
     /// 后台线程构建双向链接关系图，算完回填并唤醒界面。
@@ -1982,8 +2183,19 @@ impl MarkdApp {
                 if resp.middle_clicked() {
                     close = Some(i);
                 }
-                let x = ui
-                    .add(egui::Button::new(RichText::new("×").color(self.theme.dim)).frame(false));
+                // 关闭按钮：加大字号与点击热区（20×20），悬停时亮色反馈。
+                let x = ui.add(
+                    egui::Button::new(RichText::new("×").size(15.0).color(self.theme.dim))
+                        .min_size(egui::vec2(22.0, 20.0))
+                        .frame(false),
+                );
+                if x.hovered() {
+                    ui.painter().rect_filled(
+                        x.rect,
+                        4.0,
+                        self.theme.dim.gamma_multiply(0.25),
+                    );
+                }
                 if x.on_hover_text("关闭标签").clicked() {
                     close = Some(i);
                 }
@@ -2110,6 +2322,17 @@ impl MarkdApp {
                     self.editor.active = i.min(self.doc.blocks.len().saturating_sub(1));
                     self.editor.scroll_req = Some(self.editor.active);
                     self.editor.scroll_top = true;
+                }
+                SideAction::Context(p) => {
+                    // 右键：确保侧栏处于文件列表状态，并在指针处弹出菜单。
+                    self.side_tab = SideTab::Files;
+                    self.config.show_sidebar = true;
+                    let pos = ui
+                        .ctx()
+                        .input(|i| i.pointer.interact_pos())
+                        .unwrap_or(egui::Pos2::ZERO);
+                    self.ctx_menu = Some((p, pos));
+                    ui.ctx().request_repaint();
                 }
             }
         }
@@ -2388,6 +2611,321 @@ impl MarkdApp {
                         });
                     }
                 });
+        }
+
+        // ---------------- 文件树右键菜单 ----------------
+        if let Some((target, pos)) = self.ctx_menu.clone() {
+            #[derive(PartialEq)]
+            enum FileMenuAction {
+                Open,
+                CopyPath,
+                CopyRelative,
+                CopyFile,
+                CutFile,
+                Paste,
+                Rename,
+                Delete,
+                Reveal,
+                NewFile,
+                NewDir,
+            }
+            let mut chosen: Option<FileMenuAction> = None;
+            let is_dir = target.is_dir();
+            let reveal_label = if cfg!(target_os = "macos") {
+                "在 Finder 中显示"
+            } else {
+                "在文件管理器中显示"
+            };
+            let area = egui::Area::new(egui::Id::new("file_ctx_menu"))
+                .fixed_pos(pos)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::new()
+                        .fill(self.theme.panel)
+                        .stroke(egui::Stroke::new(1.0, self.theme.border))
+                        .corner_radius(6.0)
+                        .inner_margin(6.0)
+                        .show(ui, |ui| {
+                            ui.set_min_width(170.0);
+                            ui.style_mut().interaction.selectable_labels = false;
+                            ui.style_mut().spacing.item_spacing.y = 2.0;
+                            if !is_dir
+                                && ui
+                                    .add(egui::Button::new("打开").frame(false).min_size(
+                                        egui::vec2(158.0, 20.0),
+                                    ))
+                                    .clicked()
+                            {
+                                chosen = Some(FileMenuAction::Open);
+                            }
+                            if ui
+                                .add(egui::Button::new("复制路径").frame(false).min_size(
+                                    egui::vec2(158.0, 20.0),
+                                ))
+                                .clicked()
+                            {
+                                chosen = Some(FileMenuAction::CopyPath);
+                            }
+                            if ui
+                                .add(egui::Button::new("复制相对路径").frame(false).min_size(
+                                    egui::vec2(158.0, 20.0),
+                                ))
+                                .clicked()
+                            {
+                                chosen = Some(FileMenuAction::CopyRelative);
+                            }
+                            ui.separator();
+                            if ui
+                                .add(egui::Button::new("复制").frame(false).min_size(
+                                    egui::vec2(158.0, 20.0),
+                                ))
+                                .clicked()
+                            {
+                                chosen = Some(FileMenuAction::CopyFile);
+                            }
+                            if ui
+                                .add(egui::Button::new("剪切").frame(false).min_size(
+                                    egui::vec2(158.0, 20.0),
+                                ))
+                                .clicked()
+                            {
+                                chosen = Some(FileMenuAction::CutFile);
+                            }
+                            let paste_enabled = self.file_clipboard.is_some();
+                            if ui
+                                .add_enabled(
+                                    paste_enabled,
+                                    egui::Button::new("粘贴").frame(false).min_size(
+                                        egui::vec2(158.0, 20.0),
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                chosen = Some(FileMenuAction::Paste);
+                            }
+                            ui.separator();
+                            if ui
+                                .add(egui::Button::new("重命名").frame(false).min_size(
+                                    egui::vec2(158.0, 20.0),
+                                ))
+                                .clicked()
+                            {
+                                chosen = Some(FileMenuAction::Rename);
+                            }
+                            if ui
+                                .add(egui::Button::new("删除").frame(false).min_size(
+                                    egui::vec2(158.0, 20.0),
+                                ))
+                                .clicked()
+                            {
+                                chosen = Some(FileMenuAction::Delete);
+                            }
+                            ui.separator();
+                            if ui
+                                .add(egui::Button::new("新建文件").frame(false).min_size(
+                                    egui::vec2(158.0, 20.0),
+                                ))
+                                .clicked()
+                            {
+                                chosen = Some(FileMenuAction::NewFile);
+                            }
+                            if ui
+                                .add(egui::Button::new("新建文件夹").frame(false).min_size(
+                                    egui::vec2(158.0, 20.0),
+                                ))
+                                .clicked()
+                            {
+                                chosen = Some(FileMenuAction::NewDir);
+                            }
+                            ui.separator();
+                            if ui
+                                .add(
+                                    egui::Button::new(reveal_label)
+                                        .frame(false)
+                                        .min_size(egui::vec2(158.0, 20.0)),
+                                )
+                                .clicked()
+                            {
+                                chosen = Some(FileMenuAction::Reveal);
+                            }
+                        });
+                });
+            // 点在菜单外面：收起菜单。
+            let clicked_outside = ctx.input(|i| i.pointer.primary_clicked())
+                && !area.response.rect.contains(ctx.input(|i| {
+                    i.pointer.interact_pos().unwrap_or(egui::Pos2::ZERO)
+                }));
+            if chosen.is_some() || clicked_outside {
+                self.ctx_menu = None;
+            }
+            if let Some(act) = chosen {
+                match act {
+                    FileMenuAction::Open => {
+                        if target.is_file() {
+                            self.open_file(target.clone());
+                        }
+                    }
+                    FileMenuAction::CopyPath => self.copy_file_path(&target, false, ctx),
+                    FileMenuAction::CopyRelative => self.copy_file_path(&target, true, ctx),
+                    FileMenuAction::CopyFile => {
+                        self.file_clipboard = Some((target.clone(), false));
+                        self.status = "已复制文件".to_string();
+                    }
+                    FileMenuAction::CutFile => {
+                        self.file_clipboard = Some((target.clone(), true));
+                        self.status = "已剪切文件".to_string();
+                    }
+                    FileMenuAction::Paste => {
+                        let dest = if is_dir {
+                            target.clone()
+                        } else {
+                            target
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_else(|| target.clone())
+                        };
+                        self.fs_paste(&dest);
+                    }
+                    FileMenuAction::Rename => {
+                        let name = target
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        self.rename_dialog = Some((target.clone(), name));
+                    }
+                    FileMenuAction::Delete => {
+                        self.delete_confirm = Some(target.clone());
+                    }
+                    FileMenuAction::Reveal => self.reveal_in_system(&target),
+                    FileMenuAction::NewFile => {
+                        let dir = if is_dir {
+                            target.clone()
+                        } else {
+                            target
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_else(|| target.clone())
+                        };
+                        self.new_dialog = Some((dir, false, String::new()));
+                    }
+                    FileMenuAction::NewDir => {
+                        let dir = if is_dir {
+                            target.clone()
+                        } else {
+                            target
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_else(|| target.clone())
+                        };
+                        self.new_dialog = Some((dir, true, String::new()));
+                    }
+                }
+            }
+        }
+
+        // ---------------- 重命名 / 删除确认 / 新建 对话框 ----------------
+        if let Some((target, _)) = self.rename_dialog.clone() {
+            let mut open = true;
+            let mut confirm = false;
+            let mut cancel = false;
+            let mut input = std::mem::take(&mut self.rename_dialog)
+                .map(|(_, b)| b)
+                .unwrap_or_default();
+            egui::Window::new("重命名")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("原路径：{}", target.display()));
+                    ui.text_edit_singleline(&mut input);
+                    ui.horizontal(|ui| {
+                        if ui.button("确定").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if cancel {
+                open = false;
+            }
+            if confirm {
+                self.fs_rename(&target, &input);
+                self.rename_dialog = None;
+            } else if open {
+                self.rename_dialog = Some((target, input));
+            } else {
+                self.rename_dialog = None;
+            }
+        }
+
+        if let Some(target) = self.delete_confirm.clone() {
+            let mut open = true;
+            let mut confirm = false;
+            let mut cancel = false;
+            egui::Window::new("删除")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("确定要删除 {} 吗？", target.display()));
+                    ui.label(RichText::new("此操作不可撤销。").small().color(self.theme.dim));
+                    ui.horizontal(|ui| {
+                        if ui.button("删除").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if cancel {
+                open = false;
+            }
+            if confirm {
+                self.fs_delete(&target);
+                self.delete_confirm = None;
+            } else if !open {
+                self.delete_confirm = None;
+            }
+        }
+
+        if let Some((dir, is_dir, _)) = self.new_dialog.clone() {
+            let mut open = true;
+            let mut confirm = false;
+            let mut cancel = false;
+            let mut input = std::mem::take(&mut self.new_dialog)
+                .map(|(_, _, b)| b)
+                .unwrap_or_default();
+            let win_title = if is_dir { "新建文件夹" } else { "新建文件" };
+            egui::Window::new(win_title)
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!("位置：{}", dir.display()));
+                    ui.text_edit_singleline(&mut input);
+                    ui.horizontal(|ui| {
+                        if ui.button("确定").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if cancel {
+                open = false;
+            }
+            if confirm {
+                self.fs_new(&dir, is_dir, &input);
+                self.new_dialog = None;
+            } else if open {
+                self.new_dialog = Some((dir, is_dir, input));
+            } else {
+                self.new_dialog = None;
+            }
         }
 
         if self.workspace_dialog {
@@ -3341,6 +3879,11 @@ mod tests {
             untitled_seq: 0,
             next_uid: 1,
             frame_count: 0,
+            ctx_menu: None,
+            file_clipboard: None,
+            rename_dialog: None,
+            delete_confirm: None,
+            new_dialog: None,
         }
     }
 
