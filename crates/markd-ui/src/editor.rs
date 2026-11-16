@@ -400,6 +400,64 @@ pub enum TableOp {
     Delete,
 }
 
+/// 对字符串网格执行表格结构操作，返回是否发生变化。
+/// 行/列下标按「含表头」计：0 = 表头行，数据行从 1 起（grid[0] 即表头）。
+pub(crate) fn table_op_on_grid(
+    grid: &mut Vec<Vec<String>>,
+    align: &mut Vec<crate::ast::Align>,
+    op: TableOp,
+) -> bool {
+    use crate::ast::Align;
+    let cols = grid.first().map(|r| r.len()).into_iter().fold(0usize, usize::max);
+    match op {
+        TableOp::InsertRow(r) => {
+            // 在第 r 行下方插入：r=0（表头）→ 数据区最前；其余插到其后
+            grid.insert((r + 1).min(grid.len()), vec![String::new(); cols.max(1)]);
+            true
+        }
+        TableOp::DeleteRow(r) => {
+            // 表头行不可删
+            if r >= 1 && grid.len() > 1 {
+                grid.remove(r.min(grid.len() - 1));
+                true
+            } else {
+                false
+            }
+        }
+        TableOp::InsertCol(c) => {
+            let at = (c + 1).min(cols.max(1));
+            for row in grid.iter_mut() {
+                row.insert(at.min(row.len()), String::new());
+            }
+            align.insert(at.min(align.len()), Align::Left);
+            true
+        }
+        TableOp::DeleteCol(c) => {
+            if cols > 1 {
+                let at = c.min(cols - 1);
+                for row in grid.iter_mut() {
+                    if at < row.len() {
+                        row.remove(at);
+                    }
+                }
+                if at < align.len() {
+                    align.remove(at);
+                }
+                true
+            } else {
+                false
+            }
+        }
+        TableOp::SetAlign(a) => {
+            for al in align.iter_mut() {
+                *al = a;
+            }
+            true
+        }
+        TableOp::Delete => false,
+    }
+}
+
 /// 对第 idx 块（表格）执行结构操作：解析块、改结构、重建源码写回。
 pub fn apply_table_op(doc: &mut Document, idx: usize, op: TableOp) {
     use crate::ast::{Align, Block};
@@ -414,47 +472,6 @@ pub fn apply_table_op(doc: &mut Document, idx: usize, op: TableOp) {
         doc.edit_block(idx, "");
         return;
     }
-    match op {
-        TableOp::InsertRow(r) => {
-            let cols = head.len().max(1);
-            let at = if r == 0 { 0 } else { r.min(rows.len()) };
-            rows.insert(at, vec![Vec::new(); cols]);
-        }
-        TableOp::DeleteRow(r) => {
-            if r >= 1 && rows.len() > 1 {
-                rows.remove((r - 1).min(rows.len() - 1));
-            }
-        }
-        TableOp::InsertCol(c) => {
-            let at = (c + 1).min(head.len());
-            head.insert(at, Vec::new());
-            align.insert(at.min(align.len()), Align::Left);
-            for row in rows.iter_mut() {
-                row.insert(at.min(row.len()), Vec::new());
-            }
-        }
-        TableOp::DeleteCol(c) => {
-            if head.len() > 1 {
-                let at = c.min(head.len() - 1);
-                head.remove(at);
-                if at < align.len() {
-                    align.remove(at);
-                }
-                for row in rows.iter_mut() {
-                    if at < row.len() {
-                        row.remove(at);
-                    }
-                }
-            }
-        }
-        TableOp::SetAlign(a) => {
-            for al in align.iter_mut() {
-                *al = a;
-            }
-        }
-        TableOp::Delete => unreachable!(),
-    }
-    // 单元格是 Vec<Inline>：写回前转成纯文本，再由 table_source 重建管道源码。
     let mut grid: Vec<Vec<String>> = vec![head
         .iter()
         .map(|c| crate::ast::inline_plain(c))
@@ -464,6 +481,9 @@ pub fn apply_table_op(doc: &mut Document, idx: usize, op: TableOp) {
             .map(|c| crate::ast::inline_plain(c))
             .collect::<Vec<String>>()
     }));
+    if !table_op_on_grid(&mut grid, &mut align, op) {
+        return;
+    }
     doc.record();
     doc.edit_block(idx, &table_source(&grid, &align));
 }
@@ -977,7 +997,79 @@ pub fn show_editor(
                                 .corner_radius(4.0)
                                 .inner_margin(6.0);
                             let inner = frame.show(ui, |ui| {
-                                if let Some((_, grid, _)) = state.table_draft.as_mut() {
+                                let mut deleted = false;
+                                if let Some((_, grid, aligns)) = state.table_draft.as_mut() {
+                                    // ---------------- 工具行（编辑态常驻） ----------------
+                                    // 行/列操作以最后聚焦的单元格为基准。
+                                    let cell_key = Id::new(("table_cell_ref", idx));
+                                    let (hr, hc) = ui
+                                        .ctx()
+                                        .memory(|m| {
+                                            m.data
+                                                .get_temp::<(usize, usize)>(cell_key)
+                                        })
+                                        .unwrap_or((
+                                            grid.len().saturating_sub(1),
+                                            grid.first().map(|r| r.len()).unwrap_or(1)
+                                                .saturating_sub(1),
+                                        ));
+                                    let mut op: Option<TableOp> = None;
+                                    ui.horizontal(|ui| {
+                                        ui.style_mut().spacing.item_spacing.x = 4.0;
+                                        let btn = |ui: &mut egui::Ui,
+                                                  label: &str,
+                                                  active: bool| {
+                                            let txt = egui::RichText::new(label).small();
+                                            let txt = if active {
+                                                txt.color(theme.accent)
+                                            } else {
+                                                txt
+                                            };
+                                            ui.button(txt).clicked()
+                                        };
+                                        let all = |a: crate::ast::Align| {
+                                            aligns.iter().all(|x| *x == a)
+                                        };
+                                        use crate::ast::Align;
+                                        if btn(ui, "+ 行", false) {
+                                            op = Some(TableOp::InsertRow(hr));
+                                        }
+                                        if btn(ui, "− 行", false) {
+                                            op = Some(TableOp::DeleteRow(hr));
+                                        }
+                                        if btn(ui, "+ 列", false) {
+                                            op = Some(TableOp::InsertCol(hc));
+                                        }
+                                        if btn(ui, "− 列", false) {
+                                            op = Some(TableOp::DeleteCol(hc));
+                                        }
+                                        ui.separator();
+                                        if btn(ui, "左对齐", all(Align::Left)) {
+                                            op = Some(TableOp::SetAlign(Align::Left));
+                                        }
+                                        if btn(ui, "居中", all(Align::Center)) {
+                                            op = Some(TableOp::SetAlign(Align::Center));
+                                        }
+                                        if btn(ui, "右对齐", all(Align::Right)) {
+                                            op = Some(TableOp::SetAlign(Align::Right));
+                                        }
+                                        ui.separator();
+                                        if btn(ui, "删除表格", false) {
+                                            op = Some(TableOp::Delete);
+                                        }
+                                        if let Some(op) = op {
+                                            match op {
+                                                TableOp::Delete => deleted = true,
+                                                other => {
+                                                    if table_op_on_grid(grid, aligns, other)
+                                                    {
+                                                        edited = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
+                                    ui.add_space(2.0);
                                     // 列宽与渲染态保持一致：平分可用宽度。
                                     // 以前单元格固定 140px，一点进编辑整张表就缩水成一小块。
                                     let cols = grid.first().map(|r| r.len()).unwrap_or(1).max(1);
@@ -1074,6 +1166,12 @@ pub fn show_editor(
                                             }
                                         }
                                     }
+                                }
+                                // 删除表格：清空草稿并把写回源码置空（整块变空段落）
+                                if deleted {
+                                    state.table_draft = None;
+                                    table_edit_src = Some(String::new());
+                                    changed = true;
                                 }
                             });
                             if edited {
@@ -1882,6 +1980,32 @@ mod tests {
         st.last_cursor = 2;
         wrap(&mut doc, &mut st, "[", "](https://)", false);
         assert_eq!(doc.source(), "正文[](https://)一段");
+    }
+
+    /// 表格结构操作：插删行列、对齐、表头保护。
+    #[test]
+    fn table_op_grid() {
+        use crate::ast::Align;
+        let mut grid = vec![
+            vec!["A".to_string(), "B".to_string()],
+            vec!["1".to_string(), "2".to_string()],
+        ];
+        let mut align = vec![Align::Left, Align::Left];
+        assert!(table_op_on_grid(&mut grid, &mut align, TableOp::InsertRow(0)));
+        assert_eq!(grid.len(), 3, "表头下插入空行");
+        assert_eq!(grid[1], vec![String::new(), String::new()]);
+        assert!(table_op_on_grid(&mut grid, &mut align, TableOp::DeleteRow(1)));
+        assert_eq!(grid.len(), 2);
+        assert!(table_op_on_grid(&mut grid, &mut align, TableOp::InsertCol(0)));
+        assert_eq!(grid[0].len(), 3, "第一列右侧插入空列");
+        assert!(table_op_on_grid(&mut grid, &mut align, TableOp::DeleteCol(0)));
+        assert_eq!(grid[0].len(), 2);
+        assert!(table_op_on_grid(&mut grid, &mut align, TableOp::SetAlign(Align::Center)));
+        assert_eq!(align, vec![Align::Center, Align::Center]);
+        // 表头行不可删；最后一列不可删
+        assert!(!table_op_on_grid(&mut grid, &mut align, TableOp::DeleteRow(0)));
+        assert!(!table_op_on_grid(&mut grid, &mut align, TableOp::DeleteCol(1)));
+        assert_eq!(grid.len(), 2);
     }
 
     /// 列表项的所见即所得编辑：编辑缓冲只含正文（不含 "- [ ]" 等行首标记），

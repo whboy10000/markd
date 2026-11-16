@@ -3586,11 +3586,22 @@ impl eframe::App for MarkdApp {
                     self.editor.focus_req = Some(i);
                     self.editor.pending_caret = Some(off);
                 }
-                Action::TableCellClick(ri, ci, end) => {
+                Action::TableCellClick(bi, ri, ci, end) => {
                     // 渲染态点了表格某个单元格：进入编辑态时直接聚焦那一格，
                     // 光标按点击位置落到文字开头或末尾。
                     self.editor.table_focus = Some((ri, ci));
                     self.editor.table_caret_end = end;
+                    // 记录最后命中的单元格：表格工具栏的行/列操作以此为基准。
+                    ctx.memory_mut(|m| {
+                        m.data.insert_temp(
+                            egui::Id::new(("table_cell_ref", bi)),
+                            (ri, ci),
+                        );
+                    });
+                }
+                Action::TableOp(i, op) => {
+                    editor::apply_table_op(&mut self.doc, i, op);
+                    self.on_changed();
                 }
                 Action::SetLang(i, lang) => {
                     let rebuilt = match self.doc.blocks.get(i) {

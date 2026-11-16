@@ -23,9 +23,11 @@ pub enum Action {
     SetLang(usize, String),
     /// 点击了某个块：块下标 + 点击位置（相对块左上角），用于把光标放到点击处。
     Caret(usize, egui::Vec2),
-    /// 点击了表格单元格：(行, 列, 光标是否在文字末尾)。
+    /// 点击了表格单元格：(块下标, 行, 列, 光标是否在文字末尾)。
     /// 进入编辑态时聚焦该单元格，光标落在点击位置附近而不是固定跳到第一格。
-    TableCellClick(usize, usize, bool),
+    TableCellClick(usize, usize, usize, bool),
+    /// 表格工具栏的结构操作：(块下标, 操作)。
+    TableOp(usize, crate::editor::TableOp),
 }
 
 /// 代码块可选语言，覆盖常见前端/后端/脚本/配置/标记语言。
@@ -1700,6 +1702,18 @@ fn transform_state_to_flow(code: &str) -> String {
     out
 }
 
+/// 指针命中哪一行哪一列的单元格（表格工具栏的行列基准）。
+fn hit_cell(row_rects: &[Vec<Rect>], p: Pos2) -> Option<(usize, usize)> {
+    for (ri, row) in row_rects.iter().enumerate() {
+        for (ci, r) in row.iter().enumerate() {
+            if r.contains(p) {
+                return Some((ri, ci));
+            }
+        }
+    }
+    None
+}
+
 // ---------------- 图表主题配色与通用「盒子+连线」布局 ----------------
 
 /// 图表节点配色：浅色主题柔和马卡龙系、深色主题低饱和系，节点按序循环取色。
@@ -2787,7 +2801,7 @@ pub fn render_block(
                 // 只用代码文本区域做块定位，避免覆盖层挡住右上角的复制按钮。
                 r.inner.interact(Sense::click())
             }
-            Block::Table { head, rows, .. } => {
+            Block::Table { head, rows, align, .. } => {
                 // 表格随窗口浮动：列宽平分可用宽度（扣除内边距与列间距），
                 // 窗口变宽表就变宽；窄窗口下自动收窄并让单元格内文字换行。
                 // 列宽公式与编辑态（editor.rs 表格编辑分支）完全一致，
@@ -2939,9 +2953,94 @@ pub fn render_block(
                     for (ri, rects) in row_rects.iter().enumerate() {
                         if let Some(ci) = rects.iter().position(|x| x.contains(p)) {
                             let end = p.x > rects[ci].center().x;
-                            env.actions.push(Action::TableCellClick(ri, ci, end));
+                            env.actions.push(Action::TableCellClick(idx, ri, ci, end));
                             break;
                         }
+                    }
+                }
+                // ---------------- 悬停工具栏 ----------------
+                // 指针落在表格（含上方工具栏区域）时显示，离开即隐藏。
+                let tb_h = 30.0;
+                let pointer = ui.input(|i| i.pointer.hover_pos());
+                let hover_zone = Rect::from_min_max(
+                    Pos2::new(r.response.rect.left(), r.response.rect.top() - tb_h - 8.0),
+                    r.response.rect.max,
+                );
+                let show_tb = pointer.is_some_and(|p| hover_zone.contains(p));
+                if show_tb {
+                    // 记录最后悬停的单元格：工具栏的行/列操作以此为基准
+                    let cell_key = egui::Id::new(("table_cell_ref", idx));
+                    if let Some(hp) = pointer
+                        && let Some((hr, hc)) = hit_cell(&row_rects, hp)
+                    {
+                        ui.ctx()
+                            .memory_mut(|m| m.data.insert_temp(cell_key, (hr, hc)));
+                    }
+                    let (hr, hc) = ui
+                        .ctx()
+                        .memory(|m| m.data.get_temp::<(usize, usize)>(cell_key))
+                        .unwrap_or((0, 0));
+                    let mut op: Option<crate::editor::TableOp> = None;
+                    let tb_pos =
+                        Pos2::new(r.response.rect.left(), r.response.rect.top() - tb_h - 4.0);
+                    egui::Area::new(egui::Id::new(("table_toolbar", idx)))
+                        .fixed_pos(tb_pos)
+                        .order(egui::Order::Foreground)
+                        .show(ui.ctx(), |ui| {
+                            egui::Frame::new()
+                                .fill(theme.panel)
+                                .stroke(Stroke::new(1.0, theme.border))
+                                .corner_radius(6.0)
+                                .inner_margin(4.0)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.style_mut().spacing.item_spacing.x = 4.0;
+                                        let btn =
+                                            |ui: &mut egui::Ui, label: &str, active: bool| {
+                                                let txt = egui::RichText::new(label).small();
+                                                let txt = if active {
+                                                    txt.color(theme.accent)
+                                                } else {
+                                                    txt
+                                                };
+                                                ui.button(txt).clicked()
+                                            };
+                                        let all = |a: crate::ast::Align| {
+                                            align.iter().all(|x| *x == a)
+                                        };
+                                        use crate::ast::Align;
+                                        use crate::editor::TableOp;
+                                        if btn(ui, "+ 行", false) {
+                                            op = Some(TableOp::InsertRow(hr));
+                                        }
+                                        if btn(ui, "− 行", false) {
+                                            op = Some(TableOp::DeleteRow(hr));
+                                        }
+                                        if btn(ui, "+ 列", false) {
+                                            op = Some(TableOp::InsertCol(hc));
+                                        }
+                                        if btn(ui, "− 列", false) {
+                                            op = Some(TableOp::DeleteCol(hc));
+                                        }
+                                        ui.separator();
+                                        if btn(ui, "左对齐", all(Align::Left)) {
+                                            op = Some(TableOp::SetAlign(Align::Left));
+                                        }
+                                        if btn(ui, "居中", all(Align::Center)) {
+                                            op = Some(TableOp::SetAlign(Align::Center));
+                                        }
+                                        if btn(ui, "右对齐", all(Align::Right)) {
+                                            op = Some(TableOp::SetAlign(Align::Right));
+                                        }
+                                        ui.separator();
+                                        if btn(ui, "删除表格", false) {
+                                            op = Some(TableOp::Delete);
+                                        }
+                                    });
+                                });
+                        });
+                    if let Some(op) = op {
+                        env.actions.push(Action::TableOp(idx, op));
                     }
                 }
                 r.response.interact(Sense::click())
