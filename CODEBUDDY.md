@@ -14,7 +14,7 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 - 运行单个测试：`cargo test -p markd-core ast::tests::source_roundtrip`
 - 只构建/测试某个 crate：`cargo build -p markd-core`、`cargo test -p markd-ui`
 - 格式化 / 静态检查 / 仅类型检查：`cargo fmt --all`、`cargo clippy --workspace`、`cargo check --workspace`
-- macOS 打包：`./scripts/package-macos.sh`——release 构建 + 组装 `dist/Markd.app`（Info.plist + AppIcon.icns + ad-hoc 签名）+ 产出 `Markd-<version>-macos.dmg`。Dock 图标只能来自 .app 包，直接跑 `target/release/markd` 是裸可执行文件。三平台打包素材在 `packaging/`（macOS `Info.plist`、Windows `installer.nsi`、Linux `markd.desktop`）。
+- macOS 打包：`./scripts/package-macos.sh`——交叉编译 aarch64 + x86_64 两个 release（脚本自动 `rustup target add`）+ lipo 合成通用二进制 + 组装 .app（Info.plist + AppIcon.icns + ad-hoc 签名），产出**三种 DMG**：`Markd-<version>-macos-intel.dmg` / `-apple-silicon.dmg` / `-universal.dmg`；`dist/Markd.app` 保留通用二进制供本机直接运行。CI 的 macOS job 直接调用同一脚本，与本地逻辑一致。Dock 图标只能来自 .app 包，直接跑 `target/release/markd` 是裸可执行文件。三平台打包素材在 `packaging/`（macOS `Info.plist`、Windows `installer.nsi`、Linux `markd.desktop`）。Linux 的 `.deb` / `.rpm` / `.tar.gz` 由 CI（`.github/workflows/build.yml`）在 ubuntu runner 上产出，RPM 用 `apt install rpm` 后 rpmbuild 打包（staged root + `AutoReqProv: no`）。
 - Linux 构建依赖：`sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxrandr-dev libxi-dev libgl1-mesa-dev libegl1-mesa-dev libwayland-dev libgtk-3-dev`
 - CI（`.github/workflows/build.yml`）：push main/master 或 PR 时三平台（macOS/Windows/Linux）编译 + 测试，产物传 Actions Artifacts；推 `v*` 标签自动创建 Release 并附三平台安装包。
 
