@@ -362,6 +362,31 @@ pub fn parse_inline(s: &str) -> Vec<Inline> {
                 continue;
             }
         }
+        // 内联 HTML：<em>正文</em> 视为斜体（斜体按钮用的就是这套标记）
+        if ch == '<' && i + 4 <= c.len() && c[i + 1..i + 4].iter().collect::<String>() == "em>" {
+            if let Some(end) = find_seq(&c, i + 4, &['<', '/', 'e', 'm', '>']) {
+                let inner: String = c[i + 4..end].iter().collect();
+                flush!();
+                out.push(Inline::Emph(parse_inline(&inner)));
+                i = end + 5;
+                continue;
+            }
+        }
+        // 内联 HTML：<strong>正文</strong> 视为加粗（加粗按钮用的就是这套标记）
+        if ch == '<' && i + 8 <= c.len() && c[i + 1..i + 8].iter().collect::<String>() == "strong>"
+        {
+            if let Some(end) = find_seq(
+                &c,
+                i + 8,
+                &['<', '/', 's', 't', 'r', 'o', 'n', 'g', '>'],
+            ) {
+                let inner: String = c[i + 8..end].iter().collect();
+                flush!();
+                out.push(Inline::Strong(parse_inline(&inner)));
+                i = end + 9;
+                continue;
+            }
+        }
         if ch == '~' && i + 1 < c.len() && c[i + 1] == '~' {
             if let Some(end) = find_seq(&c, i + 2, &['~', '~']) {
                 let inner: String = c[i + 2..end].iter().collect();
@@ -760,6 +785,42 @@ mod tests {
         assert!(
             v.iter().any(|i| matches!(i, Inline::Underline(_))),
             "应解析出 Underline: {:?}",
+            v
+        );
+    }
+
+    /// <strong>文字</strong>（加粗按钮的标记）解析为加粗行内样式。
+    #[test]
+    fn inline_strong_html() {
+        let v = parse_inline("前缀<strong>加粗文字</strong>后缀");
+        assert!(
+            v.iter().any(|i| matches!(i, Inline::Strong(_))),
+            "应解析出 Strong: {:?}",
+            v
+        );
+        // 配不上对的孤立标签按普通文字处理，不能吞掉正文
+        let v = parse_inline("<strong>只有开头");
+        assert!(
+            !v.iter().any(|i| matches!(i, Inline::Strong(_))),
+            "孤立的开标签不应产生加粗: {:?}",
+            v
+        );
+    }
+
+    /// <em>文字</em>（斜体按钮的标记）解析为斜体行内样式。
+    #[test]
+    fn inline_em_html() {
+        let v = parse_inline("前缀<em>斜体文字</em>后缀");
+        assert!(
+            v.iter().any(|i| matches!(i, Inline::Emph(_))),
+            "应解析出 Emph: {:?}",
+            v
+        );
+        // 配不上对的孤立标签按普通文字处理，不能吞掉正文
+        let v = parse_inline("<em>只有开头");
+        assert!(
+            !v.iter().any(|i| matches!(i, Inline::Emph(_))),
+            "孤立的开标签不应产生斜体: {:?}",
             v
         );
     }
