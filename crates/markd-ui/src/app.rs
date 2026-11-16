@@ -376,39 +376,39 @@ fn table_template(rows: usize, cols: usize) -> String {
 static MERMAID_TEMPLATES: &[(&str, &str)] = &[
     (
         "流程图",
-        "```mermaid\nflowchart TD\n  A[开始] --> B{判断}\n  B -->|是| C[结束]\n  B -->|否| D[重试]\n```",
+        "```mermaid\nflowchart TD\n  A([开始]) --> B[填写表单]\n  B --> C{校验通过?}\n  C -->|是| D[提交订单]\n  C -->|否| B\n  D --> E([结束])\n```",
     ),
     (
         "时序图",
-        "```mermaid\nsequenceDiagram\n  participant C as 客户端\n  participant S as 服务端\n  C->>S: 请求\n  S-->>C: 响应\n  Note over C,S: 一次往返\n```",
+        "```mermaid\nsequenceDiagram\n  title 下单流程\n  participant U as 用户\n  participant S as 服务端\n  participant D as 数据库\n  U->>S: 提交订单\n  S->>D: 写入订单\n  D-->>S: 写入成功\n  S-->>U: 返回结果\n  Note over S,D: 事务保证\n```",
     ),
     (
         "饼图",
-        "```mermaid\npie title 示例图表\n  \"分类一\" : 42\n  \"分类二\" : 31\n  \"分类三\" : 27\n```",
+        "```mermaid\npie title 时间分配\n  \"写代码\" : 45\n  \"开会\" : 20\n  \"看文档\" : 15\n  \"休息\" : 20\n```",
     ),
     (
         "类图",
-        "```mermaid\nclassDiagram\n  class Animal {\n    +String name\n    +eat()\n  }\n  Animal <|-- Dog\n```",
+        "```mermaid\nclassDiagram\n  class Animal {\n    +String name\n    +eat()\n  }\n  class Dog {\n    +bark()\n  }\n  Animal <|-- Dog\n  Animal : +Owner owner\n  Owner ..> Animal : 喂养\n```",
     ),
     (
         "状态图",
-        "```mermaid\nstateDiagram-v2\n  [*] --> 空闲\n  空闲 --> 运行中: 开始\n  运行中 --> [*]: 停止\n```",
+        "```mermaid\nstateDiagram-v2\n  [*] --> 空闲\n  空闲 --> 运行中: 开始任务\n  运行中 --> 暂停: 暂停\n  暂停 --> 运行中: 恢复\n  运行中 --> [*]: 完成\n```",
     ),
     (
         "ER 图",
-        "```mermaid\nerDiagram\n  USER ||--o{ ORDER : 拥有\n  USER {\n    string name\n  }\n```",
+        "```mermaid\nerDiagram\n  USER {\n    string name\n    string email\n  }\n  ORDER {\n    int amount\n    string status\n  }\n  USER ||--o{ ORDER : 下单\n```",
     ),
     (
         "甘特图",
-        "```mermaid\ngantt\n  title 项目计划\n  section 一阶段\n  设计 :a1, 2026-01-01, 30d\n  开发 :after a1, 20d\n```",
+        "```mermaid\ngantt\n  title 项目排期\n  section 设计\n  需求评审 :a1, 2026-01-01, 7d\n  原型设计 :a2, after a1, 10d\n  section 开发\n  编码 :a3, after a2, 21d\n  联调测试 :after a3, 14d\n```",
     ),
     (
         "旅程图",
-        "```mermaid\njourney\n  title 用户旅程\n  section 使用\n  打开文档: 5: 用户\n  编辑保存: 3: 用户\n```",
+        "```mermaid\njourney\n  title 一次开心的写作\n  section 准备\n  打开 Markd: 5: 我\n  建好大纲: 4: 我\n  section 写作\n  沉浸输出: 5: 我\n  一键导出: 4: 我, 读者\n```",
     ),
     (
         "Git 图",
-        "```mermaid\ngitGraph\n  commit\n  branch dev\n  commit\n  checkout main\n  merge dev\n```",
+        "```mermaid\ngitGraph\n  commit\n  commit\n  branch dev\n  checkout dev\n  commit\n  commit\n  checkout main\n  merge dev\n  commit\n```",
     ),
 ];
 
@@ -3063,6 +3063,14 @@ impl eframe::App for MarkdApp {
                                 "```"
                             };
                             Some(format!("{}{}\n{}\n{}", fence, lang, code, fence))
+                        }
+                        // 图表块：选 mermaid 保持不变，选其它语言即转为普通代码块
+                        Some(crate::ast::Block::Diagram { code, .. }) => {
+                            if lang == "mermaid" {
+                                None
+                            } else {
+                                Some(format!("```{}\n{}\n```", lang, code))
+                            }
                         }
                         _ => None,
                     };

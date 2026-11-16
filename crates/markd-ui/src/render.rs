@@ -1181,9 +1181,14 @@ fn draw_flow(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui::Response {
             }
         }
     }
+    let node_i = |id: &str| -> usize {
+        nodes.iter().position(|n| &n.0 == id).unwrap_or(0)
+    };
     for (id, label, shape) in &nodes {
         if let Some(c) = pos.get(id) {
             let r = Rect::from_center_size(*c, Vec2::new(nw, nh));
+            let fill = palette_color(theme, node_i(id));
+            let stroke_c = Stroke::new(1.2, theme.border);
             match shape {
                 // {判断} —— 决策节点画菱形
                 2 => {
@@ -1193,31 +1198,17 @@ fn draw_flow(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui::Response {
                         Pos2::new(c.x, r.bottom()),
                         Pos2::new(r.left(), c.y),
                     ];
-                    p.add(egui::Shape::convex_polygon(
-                        pts,
-                        theme.code_bg,
-                        Stroke::new(1.2, theme.accent),
-                    ));
+                    p.add(egui::Shape::convex_polygon(pts, fill, stroke_c));
                 }
                 // (圆角节点) 画胶囊
                 1 => {
-                    p.rect_filled(r, nh / 2.0, theme.code_bg);
-                    p.rect_stroke(
-                        r,
-                        nh / 2.0,
-                        Stroke::new(1.2, theme.accent),
-                        egui::StrokeKind::Outside,
-                    );
+                    p.rect_filled(r, nh / 2.0, fill);
+                    p.rect_stroke(r, nh / 2.0, stroke_c, egui::StrokeKind::Outside);
                 }
                 // [普通节点] 画矩形
                 _ => {
-                    p.rect_filled(r, 5.0, theme.code_bg);
-                    p.rect_stroke(
-                        r,
-                        5.0,
-                        Stroke::new(1.2, theme.accent),
-                        egui::StrokeKind::Outside,
-                    );
+                    p.rect_filled(r, 5.0, fill);
+                    p.rect_stroke(r, 5.0, stroke_c, egui::StrokeKind::Outside);
                 }
             }
             p.text(
@@ -1673,6 +1664,948 @@ fn draw_sequence(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui::Response
     resp
 }
 
+/// 状态图 → 流程图语法转换：stateDiagram 的 `A --> B: 标签` 改写成
+/// flowchart 的 `A -->|标签| B`；`[*]` 起止标记换成圆角节点（起点/终点），
+/// 否则 first_id 取不到标识符、含 [*] 的边会被整条丢弃。note/state 声明跳过。
+fn transform_state_to_flow(code: &str) -> String {
+    let mut out = String::from("flowchart TD\n");
+    for raw in code.lines() {
+        let l = raw.trim();
+        let lower = l.to_lowercase();
+        if l.is_empty()
+            || lower.starts_with("statediagram")
+            || lower.starts_with("note ")
+            || lower.starts_with("state ")
+        {
+            continue;
+        }
+        // [*] 必须换成带方括号标签的普通节点：裸 id 会被 first_id
+        // （只取字母数字）判成空串，整条边连带节点一起被丢弃。
+        let l2 = l
+            .replace("[*] -->", "ST0[●开始] -->")
+            .replace("--> [*]", "--> ST9[●结束]");
+        let l: &str = &l2;
+        // `A --> B: 标签` → `A -->|标签| B`
+        if let Some(ci) = l.find(':').filter(|_| l.contains("-->")) {
+            let left = &l[..ci];
+            let label = l[ci + 1..].trim();
+            if !label.is_empty() && !left.contains('|') {
+                out.push_str(&format!("{left}|{label}|\n"));
+                continue;
+            }
+        }
+        out.push_str(l);
+        out.push('\n');
+    }
+    out
+}
+
+// ---------------- 图表主题配色与通用「盒子+连线」布局 ----------------
+
+/// 图表节点配色：浅色主题柔和马卡龙系、深色主题低饱和系，节点按序循环取色。
+fn diagram_palette(theme: &Theme) -> Vec<Color32> {
+    if theme.kind.is_dark() {
+        vec![
+            Color32::from_rgb(56, 89, 132),
+            Color32::from_rgb(72, 110, 82),
+            Color32::from_rgb(116, 84, 130),
+            Color32::from_rgb(140, 104, 66),
+            Color32::from_rgb(66, 116, 124),
+        ]
+    } else {
+        vec![
+            Color32::from_rgb(219, 234, 254),
+            Color32::from_rgb(220, 245, 218),
+            Color32::from_rgb(243, 226, 250),
+            Color32::from_rgb(255, 237, 213),
+            Color32::from_rgb(213, 245, 244),
+        ]
+    }
+}
+
+fn palette_color(theme: &Theme, i: usize) -> Color32 {
+    let pal = diagram_palette(theme);
+    pal[i % pal.len()]
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum EdgeStyle {
+    Solid,
+    Dashed,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ArrowHead {
+    None,
+    Triangle,
+    HollowTriangle,
+    FilledDiamond,
+    HollowDiamond,
+}
+
+struct BoxNode {
+    id: String,
+    label: String,
+    members: Vec<String>,
+}
+
+struct BoxEdge {
+    a: String,
+    b: String,
+    label: String,
+    style: EdgeStyle,
+    head_a: ArrowHead,
+    head_b: ArrowHead,
+}
+
+/// 通用「盒子 + 连线」渲染：类图 / ER 图 / 状态图共用。
+/// 盒子按网格均布，连线画在盒子下层、从边缘到边缘，装饰端点按样式绘制。
+fn draw_boxes_edges(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    nodes: &[BoxNode],
+    edges: &[BoxEdge],
+) -> egui::Response {
+    let empty = Vec::new();
+    let nodes = if nodes.is_empty() { &empty } else { nodes };
+    let n = nodes.len();
+    if n == 0 {
+        let r = panel_frame(theme).show(ui, |ui| {
+            ui.label(egui::RichText::new("（没有可绘制的内容）").small().color(theme.dim));
+        });
+        return r.response.interact(Sense::click());
+    }
+    // 盒子尺寸：按各自文字内容算，网格取最大值。
+    let measure = |s: &str, size: f32| -> f32 { s.chars().count() as f32 * size };
+    let mut node_sizes: Vec<Vec2> = nodes
+        .iter()
+        .map(|nd| {
+            let inner_w = measure(&nd.label, 12.5)
+                .max(nd.members.iter().map(|m| measure(m, 11.0)).fold(0.0, f32::max));
+            Vec2::new(
+                (inner_w + 28.0).min(220.0),
+                30.0 + nd.members.len() as f32 * 16.0,
+            )
+        })
+        .collect();
+    let cols = ((n as f32).sqrt().ceil() as usize).max(1);
+    let rows = n.div_ceil(cols);
+    let mut cell = Vec2::ZERO;
+    for r in 0..rows {
+        for c in 0..cols {
+            let i = r * cols + c;
+            if i < n {
+                cell = Vec2::new(cell.x.max(node_sizes[i].x), cell.y.max(node_sizes[i].y));
+            }
+        }
+    }
+    cell += Vec2::new(30.0, 30.0);
+    let w = (cell.x * cols as f32).max(240.0);
+    let h = (cell.y * rows as f32).max(120.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
+    let p = ui.painter();
+
+    // 节点位置：网格均布（格子内居中）。
+    let mut centers: HashMap<String, Pos2> = HashMap::new();
+    let mut sizes: HashMap<String, Vec2> = HashMap::new();
+    for (i, nd) in nodes.iter().enumerate() {
+        let (r, c) = (i / cols, i % cols);
+        let cx = rect.min.x + cell.x * c as f32 + cell.x / 2.0;
+        let cy = rect.min.y + cell.y * r as f32 + cell.y / 2.0;
+        centers.insert(nd.id.clone(), Pos2::new(cx, cy));
+        sizes.insert(nd.id.clone(), node_sizes[i]);
+    }
+
+    // 连线先画（垫在盒子下层），装饰箭头/菱形画在端点。
+    for e in edges {
+        let (Some(pa), Some(pb)) = (centers.get(&e.a), centers.get(&e.b)) else {
+            continue;
+        };
+        let size_a = sizes.get(&e.a).copied().unwrap_or(Vec2::splat(80.0));
+        let size_b = sizes.get(&e.b).copied().unwrap_or(Vec2::splat(80.0));
+        let dx = pb.x - pa.x;
+        let dy = pb.y - pa.y;
+        let dist = (dx * dx + dy * dy).sqrt().max(1.0);
+        let (ux, uy) = (dx / dist, dy / dist);
+        let trim = |hw: f32, hh: f32, dx: f32, dy: f32| -> f32 {
+            let tx = if dx.abs() > 1e-4 { hw / dx.abs() } else { f32::INFINITY };
+            let ty = if dy.abs() > 1e-4 { hh / dy.abs() } else { f32::INFINITY };
+            tx.min(ty)
+        };
+        let t0 = trim(size_a.x / 2.0, size_a.y / 2.0, ux, uy);
+        let t1 = dist - trim(size_b.x / 2.0, size_b.y / 2.0, -ux, -uy);
+        if t1 <= t0 + 4.0 {
+            continue;
+        }
+        let s = Pos2::new(pa.x + ux * t0, pa.y + uy * t0);
+        let epos = Pos2::new(pa.x + ux * t1, pa.y + uy * t1);
+        let stroke = Stroke::new(
+            1.3,
+            if e.style == EdgeStyle::Dashed {
+                theme.dim
+            } else {
+                theme.text.gamma_multiply(0.8)
+            },
+        );
+        if e.style == EdgeStyle::Dashed {
+            paint_dashed_line(p, s, epos, stroke.color, stroke.width);
+        } else {
+            p.line_segment([s, epos], stroke);
+        }
+        paint_arrow_head(p, epos, (ux, uy), stroke.color, e.head_b);
+        paint_arrow_head(p, s, (-ux, -uy), stroke.color, e.head_a);
+        if !e.label.is_empty() {
+            let mid = Pos2::new((s.x + epos.x) / 2.0, (s.y + epos.y) / 2.0);
+            p.text(
+                mid,
+                Align2::CENTER_CENTER,
+                &e.label,
+                FontId::proportional(11.0),
+                theme.dim,
+            );
+        }
+    }
+
+    // 盒子后画（盖住连线端点），填充色按调色板循环。
+    for (i, nd) in nodes.iter().enumerate() {
+        let c = centers[&nd.id];
+        let sz = node_sizes[i];
+        let r = Rect::from_center_size(c, sz);
+        let fill = palette_color(theme, i);
+        p.rect_filled(r, 6.0, fill);
+        p.rect_stroke(r, 6.0, Stroke::new(1.2, theme.border), egui::StrokeKind::Outside);
+        p.text(
+            Pos2::new(r.center().x, r.top() + 4.0),
+            Align2::CENTER_TOP,
+            &nd.label,
+            FontId::proportional(12.5),
+            theme.heading,
+        );
+        for (mi, m) in nd.members.iter().enumerate() {
+            p.text(
+                Pos2::new(r.left() + 12.0, r.top() + 24.0 + mi as f32 * 16.0),
+                Align2::LEFT_CENTER,
+                m,
+                FontId::monospace(11.0),
+                theme.text.gamma_multiply(0.85),
+            );
+        }
+    }
+    resp
+}
+
+fn paint_arrow_head(p: &egui::Painter, tip: Pos2, dir: (f32, f32), color: Color32, head: ArrowHead) {
+    if head == ArrowHead::None {
+        return;
+    }
+    let (ux, uy) = dir;
+    let ang = uy.atan2(ux);
+    let stroke = Stroke::new(1.3, color);
+    match head {
+        ArrowHead::None => {}
+        ArrowHead::Triangle => {
+            for da in [-0.5_f32, 0.5] {
+                let a = ang + std::f32::consts::PI + da;
+                p.line_segment(
+                    [tip, Pos2::new(tip.x + a.cos() * 8.0, tip.y + a.sin() * 8.0)],
+                    stroke,
+                );
+            }
+        }
+        ArrowHead::HollowTriangle => {
+            let back = ang + std::f32::consts::PI;
+            let pts = vec![
+                tip,
+                Pos2::new(
+                    tip.x + (back + 0.45).cos() * 11.0,
+                    tip.y + (back + 0.45).sin() * 11.0,
+                ),
+                Pos2::new(
+                    tip.x + (back - 0.45).cos() * 11.0,
+                    tip.y + (back - 0.45).sin() * 11.0,
+                ),
+            ];
+            let fill = if head == ArrowHead::HollowTriangle {
+                Color32::TRANSPARENT
+            } else {
+                color
+            };
+            let _ = fill;
+            p.add(egui::Shape::convex_polygon(pts, fill, stroke));
+        }
+        ArrowHead::FilledDiamond | ArrowHead::HollowDiamond => {
+            let back = ang + std::f32::consts::PI;
+            let mid = Pos2::new(tip.x + ux * 7.0, tip.y + uy * 7.0);
+            let pts = vec![
+                tip,
+                Pos2::new(
+                    mid.x + (back + 0.6).cos() * 7.0,
+                    mid.y + (back + 0.6).sin() * 7.0,
+                ),
+                Pos2::new(tip.x + ux * 14.0, tip.y + uy * 14.0),
+                Pos2::new(
+                    mid.x + (back - 0.6).cos() * 7.0,
+                    mid.y + (back - 0.6).sin() * 7.0,
+                ),
+            ];
+            let fill = if head == ArrowHead::FilledDiamond {
+                color
+            } else {
+                Color32::TRANSPARENT
+            };
+            p.add(egui::Shape::convex_polygon(pts, fill, stroke));
+        }
+    }
+}
+
+/// 解析 mermaid 类图：`class X { 成员 }` 与 `A <|-- B : 标签` 关系。
+fn parse_class(code: &str) -> (Vec<BoxNode>, Vec<BoxEdge>) {
+    let mut nodes: Vec<BoxNode> = Vec::new();
+    let mut edges: Vec<BoxEdge> = Vec::new();
+    let mut cur_members: Option<(String, Vec<String>)> = None;
+    let ensure = |nodes: &mut Vec<BoxNode>, id: &str| -> usize {
+        if let Some(i) = nodes.iter().position(|n| n.id == id) {
+            return i;
+        }
+        nodes.push(BoxNode {
+            id: id.to_string(),
+            label: id.to_string(),
+            members: Vec::new(),
+        });
+        nodes.len() - 1
+    };
+    for raw in code.lines() {
+        let l = raw.trim();
+        if l.is_empty()
+            || l.starts_with("%%")
+            || l.starts_with("classDiagram")
+            || l.starts_with("note ")
+        {
+            continue;
+        }
+        if l == "}" {
+            if let Some((id, members)) = cur_members.take() {
+                if let Some(i) = nodes.iter().position(|n| n.id == id) {
+                    nodes[i].members = members;
+                }
+            }
+            continue;
+        }
+        if let Some(rest) = l.strip_prefix("class ")
+            .or_else(|| l.strip_prefix("interface "))
+        {
+            // `class X` 或 `class X { ... }`（单行成员用 ~ 分隔的少见，忽略）
+            let name = rest.trim().trim_end_matches('{').trim();
+            if name.is_empty() {
+                continue;
+            }
+            ensure(&mut nodes, name);
+            if rest.contains('{') {
+                cur_members = Some((name.to_string(), Vec::new()));
+            }
+            continue;
+        }
+        if l.contains('{') {
+            let name = l.trim_end_matches('{').trim();
+            if !name.is_empty() {
+                ensure(&mut nodes, name);
+                cur_members = Some((name.to_string(), Vec::new()));
+            }
+            continue;
+        }
+        if cur_members.is_some() {
+            if let Some((_, members)) = cur_members.as_mut() {
+                members.push(l.to_string());
+            }
+            continue;
+        }
+        // 关系行：A <|-- B / A *-- B / A o-- B / A ..> B / A --> B
+        const RELS: [(&str, ArrowHead, ArrowHead, EdgeStyle); 6] = [
+            ("<|--", ArrowHead::HollowTriangle, ArrowHead::None, EdgeStyle::Solid),
+            ("*--", ArrowHead::FilledDiamond, ArrowHead::None, EdgeStyle::Solid),
+            ("o--", ArrowHead::HollowDiamond, ArrowHead::None, EdgeStyle::Solid),
+            ("..>", ArrowHead::None, ArrowHead::Triangle, EdgeStyle::Dashed),
+            ("<..", ArrowHead::Triangle, ArrowHead::None, EdgeStyle::Dashed),
+            ("-->", ArrowHead::None, ArrowHead::Triangle, EdgeStyle::Solid),
+        ];
+        let mut matched = false;
+        for (sym, ha, hb, st) in RELS {
+            if let Some(i) = l.find(sym) {
+                let a = l[..i].trim();
+                let mut b = l[i + sym.len()..].trim();
+                let mut label = String::new();
+                if let Some(ci) = b.find(':') {
+                    label = b[ci + 1..].trim().to_string();
+                    b = b[..ci].trim();
+                }
+                if a.is_empty() || b.is_empty() {
+                    break;
+                }
+                ensure(&mut nodes, a);
+                ensure(&mut nodes, b);
+                edges.push(BoxEdge {
+                    a: a.to_string(),
+                    b: b.to_string(),
+                    label,
+                    style: st,
+                    head_a: ha,
+                    head_b: hb,
+                });
+                matched = true;
+                break;
+            }
+        }
+        let _ = matched;
+    }
+    (nodes, edges)
+}
+
+/// 解析 mermaid ER 图：`USER ||--o{ ORDER : 拥有` 与实体属性块。
+fn parse_er(code: &str) -> (Vec<BoxNode>, Vec<BoxEdge>) {
+    let mut nodes: Vec<BoxNode> = Vec::new();
+    let mut edges: Vec<BoxEdge> = Vec::new();
+    let mut cur_members: Option<(String, Vec<String>)> = None;
+    let mut ensure = |nodes: &mut Vec<BoxNode>, id: &str| -> usize {
+        if let Some(i) = nodes.iter().position(|n| n.id == id) {
+            return i;
+        }
+        nodes.push(BoxNode {
+            id: id.to_string(),
+            label: id.to_string(),
+            members: Vec::new(),
+        });
+        nodes.len() - 1
+    };
+    for raw in code.lines() {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with("%%") || l.starts_with("erDiagram") {
+            continue;
+        }
+        if l == "}" {
+            if let Some((id, members)) = cur_members.take() {
+                if let Some(i) = nodes.iter().position(|n| n.id == id) {
+                    nodes[i].members = members;
+                }
+            }
+            continue;
+        }
+        // 关系行必须先于实体块判断：`USER ||--o{ ORDER : 下单` 里也有 '{'，
+        // 会被误当成实体块的开始，整行变成一个节点。
+        if l.contains("--") {
+            parse_er_relation(l, &mut nodes, &mut edges, &mut ensure);
+            continue;
+        }
+        if l.contains('{') {
+            let name = l.trim_end_matches('{').trim();
+            if !name.is_empty() {
+                ensure(&mut nodes, name);
+                cur_members = Some((name.to_string(), Vec::new()));
+            }
+            continue;
+        }
+        if cur_members.is_some() {
+            if let Some((_, members)) = cur_members.as_mut() {
+                members.push(l.to_string());
+            }
+            continue;
+        }
+        // （关系解析已上移到 parse_er_relation）
+    }
+    (nodes, edges)
+}
+
+/// ER 关系行：`A ||--o{ B : 标签`。实体名 = "--" 两侧剥掉基数记号
+/// （记号字符只有 | o } { 这几种）之后的单词。
+fn parse_er_relation(
+    l: &str,
+    nodes: &mut Vec<BoxNode>,
+    edges: &mut Vec<BoxEdge>,
+    ensure: &mut dyn FnMut(&mut Vec<BoxNode>, &str) -> usize,
+) {
+    let Some(i) = l.find("--") else { return };
+    let a_part = l[..i].trim();
+    let after = &l[i..];
+    if after.len() < 6 {
+        return;
+    }
+    let dash_pos = after.find("--").unwrap_or(0);
+    let left_mark = &after[..dash_pos];
+    let right_raw = &after[dash_pos + 2..];
+    let (b, label) = match right_raw.find(':') {
+        Some(ci) => (right_raw[..ci].trim(), right_raw[ci + 1..].trim().to_string()),
+        None => (right_raw.trim(), String::new()),
+    };
+    let strip_mark = |s: &str| -> String {
+        s.trim()
+            .trim_start_matches(|c: char| " |o}{".contains(c))
+            .trim_end_matches(|c: char| " |o}{".contains(c))
+            .to_string()
+    };
+    let a = strip_mark(a_part);
+    let b = strip_mark(b);
+    if a.is_empty() || b.is_empty() {
+        return;
+    }
+    ensure(nodes, &a);
+    ensure(nodes, &b);
+    let many = left_mark.contains('o') || left_mark.contains('{');
+    edges.push(BoxEdge {
+        a,
+        b,
+        label: if label.is_empty() {
+            String::new()
+        } else {
+            format!("{label} (1 : N)")
+        },
+        style: EdgeStyle::Solid,
+        head_a: ArrowHead::None,
+        head_b: ArrowHead::None,
+    });
+    let _ = many;
+}
+
+/// 解析 mermaid 甘特图：section 分组 + 任务（日期/after 链 + 时长）。
+/// 返回 (标题, [(分组或任务, 起始天, 时长天, 是否分组头, 颜色序号)])。
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    (y + if m <= 2 { 1 } else { 0 }, m, d)
+}
+
+fn draw_gantt(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui::Response {
+    let mut title = String::new();
+    enum Row {
+        Section(String),
+        Task { name: String, start: i64, dur: i64 },
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    let mut section = String::new();
+    let mut task_ids: std::collections::HashMap<String, i64> = Default::default();
+    let mut section_no = 0usize;
+    let mut parse_date = |s: &str| -> Option<i64> {
+        let p: Vec<i64> = s
+            .split('-')
+            .filter_map(|x| x.trim().parse::<i64>().ok())
+            .collect();
+        if p.len() == 3 {
+            Some(days_from_civil(p[0], p[1], p[2]))
+        } else {
+            None
+        }
+    };
+    for raw in code.lines() {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with("%%") {
+            continue;
+        }
+        let lower = l.to_lowercase();
+        if lower == "gantt" {
+            continue;
+        }
+        if let Some(t) = l.strip_prefix("title") {
+            if lower.starts_with("title") {
+                title = t.trim().to_string();
+                continue;
+            }
+        }
+        if let Some(sec) = l.strip_prefix("section") {
+            if lower.starts_with("section") {
+                section = sec.trim().to_string();
+                section_no += 1;
+                rows.push(Row::Section(section.clone()));
+                continue;
+            }
+        }
+        // 任务行：`名称 :规格`，规格逗号分隔：id / done|active|crit / 日期 / after id / 时长
+        if let Some(ci) = l.find(':') {
+            let name = l[..ci].trim().to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let spec = l[ci + 1..].trim();
+            let mut start: Option<i64> = None;
+            let mut dur: i64 = 1;
+            let mut id: Option<String> = None;
+            for part in spec.split(',') {
+                let p = part.trim();
+                if p.is_empty() {
+                    continue;
+                }
+                let pl = p.to_lowercase();
+                if let Some(d) = parse_date(p) {
+                    start = Some(d);
+                } else if let Some(rest) = pl.strip_prefix("after ") {
+                    start = task_ids.get(rest.trim()).copied();
+                } else if let Some(num) = pl.strip_suffix('d') {
+                    if let Ok(n) = num.trim().parse::<i64>() {
+                        dur = n.max(1);
+                    }
+                } else if let Some(num) = pl.strip_suffix('w') {
+                    if let Ok(n) = num.trim().parse::<i64>() {
+                        dur = n.max(1) * 7;
+                    }
+                } else if id.is_none() && !matches!(pl.as_str(), "done" | "active" | "crit" | "milestone") {
+                    id = Some(p.to_string());
+                }
+            }
+            let start = start.unwrap_or_else(|| {
+                // 没有 after 也没有日期：接在时间线最右端
+                rows.iter().filter_map(|r| match r {
+                    Row::Task { start, dur, .. } => Some(start + dur),
+                    _ => None,
+                }).fold(i64::MAX, i64::min).min(i64::MAX - 1)
+            });
+            let start = if start == i64::MAX { 0 } else { start };
+            if let Some(id) = id {
+                task_ids.insert(id, start);
+            }
+            rows.push(Row::Task { name, start, dur });
+        }
+    }
+    let tasks: Vec<(i64, i64)> = rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Task { start, dur, .. } => Some((*start, *dur)),
+            _ => None,
+        })
+        .collect();
+    if tasks.is_empty() {
+        let r = panel_frame(theme).show(ui, |ui| {
+            for line in code.lines() {
+                ui.label(egui::RichText::new(line).monospace().small().color(theme.dim));
+            }
+        });
+        return r.response.interact(Sense::click());
+    }
+    let t_min = tasks.iter().map(|t| t.0).min().unwrap_or(0);
+    let t_max = tasks.iter().map(|t| t.0 + t.1).max().unwrap_or(1);
+    let span = (t_max - t_min).max(1);
+    let name_w = 110.0_f32;
+    let row_h = 26.0;
+    let title_h = if title.is_empty() { 0.0 } else { 22.0 };
+    let axis_h = 22.0;
+    let w = (ui.available_width().max(320.0)).min(900.0);
+    let h = title_h + axis_h + rows.len() as f32 * row_h + 14.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
+    let p = ui.painter();
+    if !title.is_empty() {
+        p.text(
+            Pos2::new(rect.center().x, rect.min.y + 2.0),
+            Align2::CENTER_TOP,
+            &title,
+            FontId::proportional(13.0),
+            theme.heading,
+        );
+    }
+    let tl_x = rect.min.x + name_w;
+    let tl_w = rect.max.x - tl_x - 12.0;
+    let x_of = |day: i64| tl_x + (day - t_min) as f32 / span as f32 * tl_w;
+    let axis_y = rect.min.y + title_h;
+    // 时间轴刻度：按总跨度取 4~6 个刻度
+    let step = ((span + 4) / 5).max(1);
+    let mut d = t_min;
+    while d <= t_max {
+        let x = x_of(d);
+        p.line_segment(
+            [Pos2::new(x, axis_y), Pos2::new(x, rect.max.y - 6.0)],
+            Stroke::new(1.0, theme.border),
+        );
+        let (y, m, dd) = civil_from_days(d);
+        p.text(
+            Pos2::new(x + 2.0, axis_y + 2.0),
+            Align2::LEFT_TOP,
+            &format!("{m}/{dd}"),
+            FontId::proportional(9.5),
+            theme.dim,
+        );
+        d += step;
+    }
+    let mut y = axis_y + axis_h;
+    let mut color_i = section_no.saturating_sub(1);
+    let mut cur_section_seen = false;
+    for row in &rows {
+        match row {
+            Row::Section(s) => {
+                color_i = section_no.saturating_sub(1);
+                cur_section_seen = true;
+                let _ = cur_section_seen;
+                p.text(
+                    Pos2::new(rect.min.x + 6.0, y + row_h / 2.0),
+                    Align2::LEFT_CENTER,
+                    s,
+                    FontId::proportional(11.5),
+                    theme.accent,
+                );
+            }
+            Row::Task { name, start, dur } => {
+                p.text(
+                    Pos2::new(rect.min.x + 6.0, y + row_h / 2.0),
+                    Align2::LEFT_CENTER,
+                    name,
+                    FontId::proportional(11.0),
+                    theme.text,
+                );
+                let bx0 = x_of(*start);
+                let bx1 = x_of(*start + *dur);
+                let bar = Rect::from_min_max(
+                    Pos2::new(bx0, y + 4.0),
+                    Pos2::new(bx1.max(bx0 + 6.0), y + row_h - 4.0),
+                );
+                p.rect_filled(bar, 4.0, palette_color(theme, color_i));
+                p.rect_stroke(bar, 4.0, Stroke::new(1.0, theme.border), egui::StrokeKind::Outside);
+            }
+        }
+        y += row_h;
+    }
+    let _ = color_i;
+    resp
+}
+
+/// 解析 mermaid 旅程图：section 分组 + `任务: 分数: 演员`。
+fn draw_journey(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui::Response {
+    let mut title = String::new();
+    struct JSection {
+        name: String,
+        tasks: Vec<(String, i64, String)>,
+    }
+    let mut sections: Vec<JSection> = Vec::new();
+    for raw in code.lines() {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with("%%") {
+            continue;
+        }
+        let lower = l.to_lowercase();
+        if lower == "journey" {
+            continue;
+        }
+        if let Some(t) = l.strip_prefix("title") {
+            if lower.starts_with("title") {
+                title = t.trim().to_string();
+                continue;
+            }
+        }
+        if let Some(sec) = l.strip_prefix("section") {
+            if lower.starts_with("section") {
+                sections.push(JSection {
+                    name: sec.trim().to_string(),
+                    tasks: Vec::new(),
+                });
+                continue;
+            }
+        }
+        let parts: Vec<&str> = l.split(':').map(|s| s.trim()).collect();
+        if parts.len() >= 2 && !parts[0].is_empty() {
+            let score = parts.get(1).and_then(|s| s.parse::<i64>().ok()).unwrap_or(3);
+            let actors = parts.get(2).unwrap_or(&"").to_string();
+            if let Some(sec) = sections.last_mut() {
+                sec.tasks.push((parts[0].to_string(), score.clamp(1, 5), actors));
+            }
+        }
+    }
+    let total_tasks: usize = sections.iter().map(|s| s.tasks.len()).sum();
+    if total_tasks == 0 {
+        let r = panel_frame(theme).show(ui, |ui| {
+            for line in code.lines() {
+                ui.label(egui::RichText::new(line).monospace().small().color(theme.dim));
+            }
+        });
+        return r.response.interact(Sense::click());
+    }
+    let title_h = if title.is_empty() { 0.0 } else { 22.0 };
+    let sec_h = 96.0;
+    let w = ui.available_width().max(320.0).min(900.0);
+    let h = title_h + sections.len() as f32 * sec_h + 10.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
+    let p = ui.painter();
+    if !title.is_empty() {
+        p.text(
+            Pos2::new(rect.center().x, rect.min.y + 2.0),
+            Align2::CENTER_TOP,
+            &title,
+            FontId::proportional(13.0),
+            theme.heading,
+        );
+    }
+    let mut y = rect.min.y + title_h + 4.0;
+    for (si, sec) in sections.iter().enumerate() {
+        p.text(
+            Pos2::new(rect.min.x + 12.0, y + 8.0),
+            Align2::LEFT_CENTER,
+            &sec.name,
+            FontId::proportional(12.0),
+            theme.accent,
+        );
+        let n = sec.tasks.len().max(1);
+        let seg = (w - 40.0) / n as f32;
+        let line_y = y + 34.0;
+        if sec.tasks.len() > 1 {
+            p.line_segment(
+                [
+                    Pos2::new(rect.min.x + 20.0 + seg / 2.0, line_y),
+                    Pos2::new(rect.min.x + 20.0 + seg * (n as f32 - 0.5), line_y),
+                ],
+                Stroke::new(1.5, theme.border),
+            );
+        }
+        for (ti, (name, score, actors)) in sec.tasks.iter().enumerate() {
+            let cx = rect.min.x + 20.0 + seg * (ti as f32 + 0.5);
+            let radius = 7.0 + *score as f32 * 1.2;
+            let fill = palette_color(theme, si + ti);
+            p.circle_filled(Pos2::new(cx, line_y), radius, fill);
+            p.circle_stroke(Pos2::new(cx, line_y), radius, Stroke::new(1.2, theme.border));
+            p.text(
+                Pos2::new(cx, line_y),
+                Align2::CENTER_CENTER,
+                &score.to_string(),
+                FontId::proportional(10.0),
+                theme.text,
+            );
+            p.text(
+                Pos2::new(cx, line_y + radius + 6.0),
+                Align2::CENTER_TOP,
+                name,
+                FontId::proportional(11.0),
+                theme.text,
+            );
+            if !actors.is_empty() {
+                p.text(
+                    Pos2::new(cx, line_y + radius + 22.0),
+                    Align2::CENTER_TOP,
+                    actors,
+                    FontId::proportional(10.0),
+                    theme.dim,
+                );
+            }
+        }
+        y += sec_h;
+    }
+    resp
+}
+
+/// 解析并绘制 mermaid gitGraph：commit/branch/checkout/merge 状态机。
+fn draw_git(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui::Response {
+    struct Lane {
+        name: String,
+        dots: Vec<(usize, usize)>, // (序号, 合并来源 lane 下标；usize::MAX = 普通提交)
+    }
+    let mut lanes: Vec<Lane> = vec![Lane {
+        name: "main".to_string(),
+        dots: Vec::new(),
+    }];
+    let mut cur = 0usize;
+    let mut seq = 0usize;
+    for raw in code.lines() {
+        let l = raw.trim();
+        let lower = l.to_lowercase();
+        if l.is_empty() || lower == "gitgraph" || l.starts_with("%%") {
+            continue;
+        }
+        if let Some(rest) = lower.strip_prefix("branch ") {
+            let name = rest.trim();
+            if !lanes.iter().any(|ln| ln.name == name) {
+                lanes.push(Lane {
+                    name: name.to_string(),
+                    dots: Vec::new(),
+                });
+                cur = lanes.len() - 1;
+            } else if let Some(i) = lanes.iter().position(|ln| ln.name == name) {
+                cur = i;
+            }
+            continue;
+        }
+        if let Some(rest) = lower.strip_prefix("checkout ") {
+            if let Some(i) = lanes.iter().position(|ln| ln.name == rest.trim()) {
+                cur = i;
+            }
+            continue;
+        }
+        if lower.starts_with("merge ") {
+            let src = lower[6..].trim();
+            if let Some(i) = lanes.iter().position(|ln| ln.name == src) {
+                seq += 1;
+                lanes[cur].dots.push((seq, i));
+            }
+            continue;
+        }
+        if lower.starts_with("commit") {
+            seq += 1;
+            lanes[cur].dots.push((seq, usize::MAX));
+        }
+    }
+    let total = seq;
+    if total == 0 {
+        let r = panel_frame(theme).show(ui, |ui| {
+            for line in code.lines() {
+                ui.label(egui::RichText::new(line).monospace().small().color(theme.dim));
+            }
+        });
+        return r.response.interact(Sense::click());
+    }
+    let lane_h = 44.0;
+    let pad_l = 64.0;
+    let w = ui.available_width().max(320.0).min(900.0);
+    let h = lanes.len() as f32 * lane_h + 30.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
+    let p = ui.painter();
+    let seg = (w - pad_l - 20.0) / (total as f32 + 0.5);
+    let x_of = |s: usize| rect.min.x + pad_l + s as f32 * seg;
+    let y_of = |i: usize| rect.min.y + 22.0 + i as f32 * lane_h;
+    // 分支名标签
+    for (i, lane) in lanes.iter().enumerate() {
+        p.text(
+            Pos2::new(rect.min.x + 8.0, y_of(i)),
+            Align2::LEFT_CENTER,
+            &lane.name,
+            FontId::monospace(11.0),
+            palette_color(theme, i),
+        );
+    }
+    // 车道横线 + 提交点
+    for (i, lane) in lanes.iter().enumerate() {
+        if let (Some(first), Some(last)) = (lane.dots.first(), lane.dots.last()) {
+            p.line_segment(
+                [
+                    Pos2::new(x_of(first.0), y_of(i)),
+                    Pos2::new(x_of(last.0), y_of(i)),
+                ],
+                Stroke::new(2.0, palette_color(theme, i).gamma_multiply(0.9)),
+            );
+        }
+        for (s, merge_from) in &lane.dots {
+            let c = Pos2::new(x_of(*s), y_of(i));
+            if *merge_from != usize::MAX {
+                // 合并提交：从来源车道画一条折线过来
+                let src_y = y_of(*merge_from);
+                p.line_segment(
+                    [Pos2::new(x_of(*s), src_y), Pos2::new(c.x, c.y)],
+                    Stroke::new(1.5, theme.dim),
+                );
+                p.circle_filled(c, 6.0, palette_color(theme, *merge_from));
+            } else {
+                p.circle_filled(c, 6.0, palette_color(theme, i));
+            }
+            p.circle_stroke(c, 6.0, Stroke::new(1.4, theme.text));
+        }
+    }
+    resp
+}
+
 fn draw_pie(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui::Response {
     let (title, data) = parse_pie(code);
     if data.is_empty() {
@@ -2038,21 +2971,58 @@ pub fn render_block(
                 r.response.interact(Sense::click())
             }
             Block::Diagram { code, .. } => {
-                // 按图类型分发。渲染器支持流程图/时序图/饼图；其余 mermaid 类型
-                // （甘特图/类图/状态图/ER 图等）按代码块保真显示，绝不乱画。
+                let mut copied = false;
+                let mut new_lang: Option<String> = None;
+                // 图类型：按首行关键字分发到对应的自绘渲染器。
                 let kind = code
                     .lines()
                     .find(|l| !l.trim().is_empty())
                     .map(|l| l.trim().to_lowercase())
                     .unwrap_or_default();
-                if kind.starts_with("pie") {
-                    draw_pie(ui, code, theme)
-                } else if kind.starts_with("sequencediagram") {
-                    draw_sequence(ui, code, theme)
-                } else if kind.starts_with("flowchart") || kind.starts_with("graph") {
-                    draw_flow(ui, code, theme)
-                } else {
-                    let r = panel_frame(theme).show(ui, |ui| {
+                let r = panel_frame(theme).show(ui, |ui| {
+                    // 与普通代码块一致的工具行：复制 + 语言下拉（默认 mermaid，
+                    // 选其它语言即转为普通代码块）。
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .button(egui::RichText::new("复制").small())
+                                .on_hover_cursor(egui::CursorIcon::Default)
+                                .clicked()
+                            {
+                                copied = true;
+                            }
+                            if let Some(l) =
+                                language_combo(ui, ("diagram_lang", idx), "mermaid")
+                            {
+                                new_lang = Some(l);
+                            }
+                        });
+                    });
+                    ui.add_space(3.0);
+                    // 渲染器支持流程图/时序图/饼图等；其余类型按代码保真显示，
+                    // 绝不乱画。
+                    if kind.starts_with("pie") {
+                        draw_pie(ui, code, theme);
+                    } else if kind.starts_with("sequencediagram") {
+                        draw_sequence(ui, code, theme);
+                    } else if kind.starts_with("flowchart") || kind.starts_with("graph") {
+                        draw_flow(ui, code, theme);
+                    } else if kind.starts_with("statediagram") {
+                        // 状态图结构与流程图同构：边直接复用流程图布局绘制
+                        draw_flow(ui, &transform_state_to_flow(code), theme);
+                    } else if kind.starts_with("classdiagram") {
+                        let (nodes, edges) = parse_class(code);
+                        draw_boxes_edges(ui, theme, &nodes, &edges);
+                    } else if kind.starts_with("erdiagram") {
+                        let (nodes, edges) = parse_er(code);
+                        draw_boxes_edges(ui, theme, &nodes, &edges);
+                    } else if kind.starts_with("gantt") {
+                        draw_gantt(ui, code, theme);
+                    } else if kind.starts_with("journey") {
+                        draw_journey(ui, code, theme);
+                    } else if kind.starts_with("gitgraph") {
+                        draw_git(ui, code, theme);
+                    } else {
                         ui.set_min_width(env.max_width - 24.0);
                         for line in code.lines() {
                             ui.label(
@@ -2062,9 +3032,17 @@ pub fn render_block(
                                     .color(theme.dim),
                             );
                         }
-                    });
-                    r.response.interact(Sense::click())
+                    }
+                });
+                if copied {
+                    env.ctx.copy_text(code.clone());
+                    env.actions
+                        .push(Action::Notify("复制成功".to_string()));
                 }
+                if let Some(l) = new_lang {
+                    env.actions.push(Action::SetLang(idx, l));
+                }
+                r.response.interact(Sense::click())
             }
             Block::FrontMatter { yaml, .. } => {
                 let r = panel_frame(theme).show(ui, |ui| {
