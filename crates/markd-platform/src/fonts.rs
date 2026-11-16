@@ -20,10 +20,16 @@ const CJK_FALLBACKS: [&str; 6] = [
 
 fn dirs() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Ok(home) = std::env::var("HOME") {
-        let home = PathBuf::from(home);
+    // Windows 没有 HOME 环境变量，用户目录是 USERPROFILE
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(PathBuf::from);
+    if let Some(home) = home {
         out.push(home.join(".markd").join("fonts"));
-        out.push(home.join("Library").join("Fonts"));
+        if cfg!(target_os = "macos") {
+            out.push(home.join("Library").join("Fonts"));
+        }
     }
     out.push(PathBuf::from("/Library/Fonts"));
     out.push(PathBuf::from("/usr/share/fonts"));
@@ -120,20 +126,39 @@ pub fn install(ctx: &egui::Context) {
     );
     fonts.families.insert(bold_family, bold_list);
 
-    // 回退：系统中文字体，保证缺字时不会出现方框
+    // 回退：系统中文字体，保证缺字时不会出现方框。
+    // 必须同时加进 markd-bold：加粗走的是独立字族，若只加 Proportional/Monospace，
+    // 没装普惠体的机器（如 Windows）上中文一加粗就落进默认拉丁字体，显示成乱码。
     for p in CJK_FALLBACKS {
         if let Ok(bytes) = std::fs::read(p) {
             let key = "cjk_fallback".to_string();
             fonts
                 .font_data
                 .insert(key.clone(), Arc::new(egui::FontData::from_owned(bytes)));
-            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            for family in [
+                egui::FontFamily::Proportional,
+                egui::FontFamily::Monospace,
+                egui::FontFamily::Name("markd-bold".into()),
+            ] {
                 let list = fonts.families.entry(family).or_default();
                 if !list.iter().any(|f| f == &key) {
                     list.push(key.clone());
                 }
             }
             break;
+        }
+    }
+
+    // Windows 系统粗体（微软雅黑 Bold）：没装普惠体时让加粗文字真的有字重
+    if cfg!(target_os = "windows")
+        && let Ok(bytes) = std::fs::read("C:\\Windows\\Fonts\\msyhbd.ttc")
+    {
+        let key = "cjk_fallback_bold".to_string();
+        fonts
+            .font_data
+            .insert(key.clone(), Arc::new(egui::FontData::from_owned(bytes)));
+        if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Name("markd-bold".into())) {
+            list.insert(0, key);
         }
     }
 
