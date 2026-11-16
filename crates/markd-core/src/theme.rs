@@ -60,21 +60,33 @@ fn rgb(r: u8, g: u8, b: u8) -> Color32 {
 
 /// 语法高亮的语言分组：决定用哪套 token 配色，让不同语言有区分度。
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum LangFamily {
+pub enum LangFamily {
     Rust,
     Python,
     JavaScript,
+    CLike,  // C / C++ / Java / Go
+    Markup, // HTML / XML / Vue template
+    Css,
+    Data,  // YAML / YML / JSON / TOML
+    Shell, // Bash / ZSH / sh
     Sql,
     Generic,
 }
 
-fn lang_family(lang: &str) -> LangFamily {
-    match lang.to_lowercase().as_str() {
+/// 把语言标识（含别名、大小写）映射到配色族。
+pub fn lang_family(lang: &str) -> LangFamily {
+    match lang.trim().to_ascii_lowercase().as_str() {
         "rust" | "rs" => LangFamily::Rust,
         "python" | "py" => LangFamily::Python,
-        "javascript" | "js" | "typescript" | "ts" | "jsx" | "tsx" | "vue" | "svelte" => {
+        "javascript" | "js" | "typescript" | "ts" | "jsx" | "tsx" | "svelte" => {
             LangFamily::JavaScript
         }
+        "c" | "cpp" | "c++" | "cc" | "cxx" | "h" | "hpp" | "java" | "go" | "golang" | "csharp"
+        | "cs" => LangFamily::CLike,
+        "html" | "xml" | "xhtml" | "svg" | "vue" => LangFamily::Markup,
+        "css" | "scss" | "less" => LangFamily::Css,
+        "yaml" | "yml" | "json" | "toml" => LangFamily::Data,
+        "bash" | "sh" | "shell" | "zsh" | "zshell" => LangFamily::Shell,
         "sql" => LangFamily::Sql,
         _ => LangFamily::Generic,
     }
@@ -167,75 +179,176 @@ impl Theme {
         }
     }
 
-    /// 代码高亮配色：关键字 / 字符串 / 数字 / 注释。
-    /// 按语言分组返回不同配色，让不同语言有区分度；浅色与深色各一套。
-    pub fn syntax(&self, lang: &str) -> [Color32; 4] {
+    /// 代码高亮配色：[关键字, 字符串, 数字, 注释, 函数名, 类型/标签/属性名]。
+    /// 按语言族返回不同配色，浅色对齐 VS Code Light+、深色对齐 Dark+，
+    /// 保证每种语言在代码块背景上清晰协调、彼此有区分度。
+    pub fn syntax(&self, lang: &str) -> [Color32; 6] {
         let family = lang_family(lang);
-        // 参考 VS Code（Light+/Dark+）与 GitHub 配色，保证在代码块背景上清晰协调。
-        match (self.kind, family) {
+        let (kw, st, num, com, fun, typ) = match (self.kind, family) {
             // ---- 浅色 ----
-            (ThemeKind::Light, LangFamily::Rust) => [
-                rgb(111, 66, 193),  // 关键字：紫
-                rgb(3, 47, 98),     // 字符串：深蓝
-                rgb(227, 98, 9),    // 数字：橙
-                rgb(106, 115, 125), // 注释：灰
-            ],
-            (ThemeKind::Light, LangFamily::Python) => [
-                rgb(0, 0, 255),     // 关键字：蓝
-                rgb(34, 134, 58),   // 字符串：绿
-                rgb(176, 0, 32),    // 数字：红
-                rgb(112, 128, 144), // 注释：灰蓝
-            ],
-            (ThemeKind::Light, LangFamily::JavaScript) => [
-                rgb(130, 80, 223),  // 关键字：紫
-                rgb(10, 48, 105),   // 字符串：深蓝
-                rgb(5, 80, 174),    // 数字：蓝
-                rgb(106, 115, 125), // 注释：灰
-            ],
-            (ThemeKind::Light, LangFamily::Sql) => [
-                rgb(5, 80, 174),    // 关键字：蓝
-                rgb(163, 21, 21),   // 字符串：红
-                rgb(0, 128, 128),   // 数字：青
-                rgb(106, 115, 125), // 注释：灰
-            ],
-            (ThemeKind::Light, LangFamily::Generic) => [
-                rgb(0, 0, 255),     // 关键字：蓝
-                rgb(163, 21, 21),   // 字符串：红棕
-                rgb(9, 134, 88),    // 数字：绿
-                rgb(106, 115, 125), // 注释：灰
-            ],
+            (ThemeKind::Light, LangFamily::Rust) => (
+                rgb(111, 66, 193),
+                rgb(3, 47, 98),
+                rgb(227, 98, 9),
+                rgb(106, 115, 125),
+                rgb(0, 102, 204),
+                rgb(0, 128, 128),
+            ),
+            (ThemeKind::Light, LangFamily::Python) => (
+                rgb(0, 0, 255),
+                rgb(34, 134, 58),
+                rgb(176, 0, 32),
+                rgb(112, 128, 144),
+                rgb(0, 102, 204),
+                rgb(128, 0, 128),
+            ),
+            (ThemeKind::Light, LangFamily::JavaScript) => (
+                rgb(130, 80, 223),
+                rgb(10, 48, 105),
+                rgb(5, 80, 174),
+                rgb(106, 115, 125),
+                rgb(0, 102, 204),
+                rgb(0, 128, 128),
+            ),
+            (ThemeKind::Light, LangFamily::CLike) => (
+                rgb(0, 0, 255),
+                rgb(163, 21, 21),
+                rgb(9, 134, 88),
+                rgb(106, 115, 125),
+                rgb(0, 102, 204),
+                rgb(43, 145, 175),
+            ),
+            (ThemeKind::Light, LangFamily::Markup) => (
+                rgb(163, 21, 21),
+                rgb(163, 21, 21),
+                rgb(227, 98, 9),
+                rgb(106, 115, 125),
+                rgb(0, 102, 204),
+                rgb(163, 21, 21),
+            ),
+            (ThemeKind::Light, LangFamily::Css) => (
+                rgb(111, 66, 193),
+                rgb(163, 21, 21),
+                rgb(227, 98, 9),
+                rgb(106, 115, 125),
+                rgb(0, 102, 204),
+                rgb(0, 128, 128),
+            ),
+            (ThemeKind::Light, LangFamily::Data) => (
+                rgb(0, 0, 255),
+                rgb(34, 134, 58),
+                rgb(227, 98, 9),
+                rgb(106, 115, 125),
+                rgb(0, 102, 204),
+                rgb(128, 0, 128),
+            ),
+            (ThemeKind::Light, LangFamily::Shell) => (
+                rgb(111, 66, 193),
+                rgb(34, 134, 58),
+                rgb(227, 98, 9),
+                rgb(106, 115, 125),
+                rgb(0, 102, 204),
+                rgb(43, 145, 175),
+            ),
+            (ThemeKind::Light, LangFamily::Sql) => (
+                rgb(5, 80, 174),
+                rgb(163, 21, 21),
+                rgb(0, 128, 128),
+                rgb(106, 115, 125),
+                rgb(111, 66, 193),
+                rgb(0, 128, 128),
+            ),
+            (ThemeKind::Light, LangFamily::Generic) => (
+                rgb(0, 0, 255),
+                rgb(163, 21, 21),
+                rgb(9, 134, 88),
+                rgb(106, 115, 125),
+                rgb(0, 102, 204),
+                rgb(43, 145, 175),
+            ),
             // ---- 深色 ----
-            (ThemeKind::Dark, LangFamily::Rust) => [
-                rgb(197, 134, 192), // 关键字：紫
-                rgb(206, 145, 120), // 字符串：橙
-                rgb(215, 186, 125), // 数字：黄
-                rgb(106, 153, 85),  // 注释：灰绿
-            ],
-            (ThemeKind::Dark, LangFamily::Python) => [
-                rgb(197, 134, 192), // 关键字：紫
-                rgb(152, 195, 121), // 字符串：绿
-                rgb(86, 182, 194),  // 数字：青
-                rgb(92, 99, 112),   // 注释：灰
-            ],
-            (ThemeKind::Dark, LangFamily::JavaScript) => [
-                rgb(86, 156, 214),  // 关键字：蓝
-                rgb(206, 145, 120), // 字符串：橙
-                rgb(181, 206, 168), // 数字：绿
-                rgb(106, 153, 85),  // 注释：灰绿
-            ],
-            (ThemeKind::Dark, LangFamily::Sql) => [
-                rgb(86, 156, 214),  // 关键字：蓝
-                rgb(206, 145, 120), // 字符串：橙
-                rgb(78, 201, 176),  // 数字：青
-                rgb(106, 153, 85),  // 注释：灰绿
-            ],
-            (ThemeKind::Dark, LangFamily::Generic) => [
-                rgb(86, 156, 214),  // 关键字：蓝
-                rgb(206, 145, 120), // 字符串：橙
-                rgb(181, 206, 168), // 数字：绿
-                rgb(106, 153, 85),  // 注释：灰绿
-            ],
-        }
+            (ThemeKind::Dark, LangFamily::Rust) => (
+                rgb(197, 134, 192),
+                rgb(206, 145, 120),
+                rgb(215, 186, 125),
+                rgb(106, 153, 85),
+                rgb(86, 156, 214),
+                rgb(78, 201, 176),
+            ),
+            (ThemeKind::Dark, LangFamily::Python) => (
+                rgb(197, 134, 192),
+                rgb(152, 195, 121),
+                rgb(86, 182, 194),
+                rgb(92, 99, 112),
+                rgb(86, 156, 214),
+                rgb(78, 201, 176),
+            ),
+            (ThemeKind::Dark, LangFamily::JavaScript) => (
+                rgb(86, 156, 214),
+                rgb(206, 145, 120),
+                rgb(181, 206, 168),
+                rgb(106, 153, 85),
+                rgb(220, 220, 170),
+                rgb(78, 201, 176),
+            ),
+            (ThemeKind::Dark, LangFamily::CLike) => (
+                rgb(86, 156, 214),
+                rgb(206, 145, 120),
+                rgb(181, 206, 168),
+                rgb(106, 153, 85),
+                rgb(220, 220, 170),
+                rgb(78, 201, 176),
+            ),
+            (ThemeKind::Dark, LangFamily::Markup) => (
+                rgb(206, 145, 120),
+                rgb(206, 145, 120),
+                rgb(215, 186, 125),
+                rgb(106, 153, 85),
+                rgb(156, 220, 254),
+                rgb(206, 145, 120),
+            ),
+            (ThemeKind::Dark, LangFamily::Css) => (
+                rgb(220, 220, 170),
+                rgb(206, 145, 120),
+                rgb(181, 206, 168),
+                rgb(106, 153, 85),
+                rgb(86, 156, 214),
+                rgb(78, 201, 176),
+            ),
+            (ThemeKind::Dark, LangFamily::Data) => (
+                rgb(86, 156, 214),
+                rgb(152, 195, 121),
+                rgb(86, 182, 194),
+                rgb(106, 153, 85),
+                rgb(220, 220, 170),
+                rgb(197, 134, 192),
+            ),
+            (ThemeKind::Dark, LangFamily::Shell) => (
+                rgb(197, 134, 192),
+                rgb(152, 195, 121),
+                rgb(215, 186, 125),
+                rgb(106, 153, 85),
+                rgb(86, 156, 214),
+                rgb(78, 201, 176),
+            ),
+            (ThemeKind::Dark, LangFamily::Sql) => (
+                rgb(86, 156, 214),
+                rgb(206, 145, 120),
+                rgb(78, 201, 176),
+                rgb(106, 153, 85),
+                rgb(197, 134, 192),
+                rgb(78, 201, 176),
+            ),
+            (ThemeKind::Dark, LangFamily::Generic) => (
+                rgb(86, 156, 214),
+                rgb(206, 145, 120),
+                rgb(181, 206, 168),
+                rgb(106, 153, 85),
+                rgb(220, 220, 170),
+                rgb(78, 201, 176),
+            ),
+        };
+        [kw, st, num, com, fun, typ]
     }
 
     pub fn heading_size(&self, level: u8) -> f32 {
@@ -268,9 +381,11 @@ impl Theme {
 
     pub fn bold_fmt(&self, size: f32, color: Color32) -> egui::text::TextFormat {
         egui::text::TextFormat {
-            font_id: FontId::new(size, FontFamily::Proportional),
+            // 用专门注册的 markd-bold 字族（真粗体字重），与编辑态 inline_job 一致。
+            // 不能用 Proportional + wght variation：中文字体多为静态字重，不生效，
+            // 表现就是「加粗时是粗的、鼠标离开后变细」。
+            font_id: FontId::new(size, FontFamily::Name("markd-bold".into())),
             color,
-            coords: egui::epaint::text::VariationCoords::new([(b"wght", 700.0)]),
             ..Default::default()
         }
     }

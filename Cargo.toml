@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "2026.11.16"
+version = "2026.11.17"
 edition = "2024"
 authors = ["aurelianus <aurelianus@126.com>"]
 license = "PolyForm-Noncommercial-1.0.0"

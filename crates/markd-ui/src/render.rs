@@ -6,7 +6,7 @@
 
 use crate::ast::*;
 use crate::document::OutlineItem;
-use crate::theme::Theme;
+use crate::theme::{LangFamily, Theme, lang_family};
 use crate::workspace;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{self, Align2, Color32, FontFamily, FontId, Pos2, Rect, Sense, Stroke, Vec2};
@@ -35,6 +35,12 @@ pub enum Action {
     /// 跨块拖选进展：(块下标, 字符下标, 是否拖动开始)。
     /// 拖动开始时锚定选区起点，之后每次移动更新选区终点。
     CrossDrag(usize, usize, bool),
+    /// 双击选词：块下标 + 词的字符区间 [起, 止)。
+    WordSel(usize, usize, usize),
+    /// 三击选中整块（一行/一段）。
+    BlockSel(usize),
+    /// Shift+点击：从光标/选区锚点到点击位置全部选中。
+    ShiftClick(usize, usize),
 }
 
 /// 代码块可选语言，覆盖常见前端/后端/脚本/配置/标记语言。
@@ -105,6 +111,7 @@ pub fn language_combo(
             popup_id,
             inner.response.clicked(),
             egui::Popup::is_id_open(ui.ctx(), popup_id),
+            std::thread::current().id(),
         ));
     }
     picked
@@ -113,8 +120,9 @@ pub fn language_combo(
 /// 测试支持：language_combo 每帧记录（按钮矩形, popup id, 本帧是否被点, 弹层是否开）。
 /// 供真实帧测试定位点击坐标与断言弹层状态。仅测试构建存在。
 #[cfg(test)]
-pub(crate) static COMBO_TRACE: std::sync::Mutex<Vec<(egui::Rect, egui::Id, bool, bool)>> =
-    std::sync::Mutex::new(Vec::new());
+pub(crate) static COMBO_TRACE: std::sync::Mutex<
+    Vec<(egui::Rect, egui::Id, bool, bool, std::thread::ThreadId)>,
+> = std::sync::Mutex::new(Vec::new());
 
 pub const LANGUAGES: &[&str] = &[
     "",
@@ -283,11 +291,12 @@ fn append_inline(
             job.append(t, 0.0, f);
         }
         Inline::Strong(v) => {
-            // 加粗用主题单独配的强调色：中文字体只靠字重不够醒目
-            let bc = theme.bold_color();
+            // 继承当前正文色，用 markd-bold 真粗体字族——与编辑态 inline_job 一致。
+            // 之前换成 bold_color() 强调色 + wght 伪粗，导致鼠标离开加粗文字
+            // （从编辑态切到渲染态）时突然变色、且变细。
             for x in v {
                 append_inline(
-                    job, x, theme, size, bc, true, italic, strike, underline, linked,
+                    job, x, theme, size, color, true, italic, strike, underline, linked,
                 );
             }
         }
@@ -767,6 +776,30 @@ fn wrapped_label(ui: &mut egui::Ui, job: LayoutJob, max_w: f32, sense: Sense) ->
     layout_label(ui, job, max_w, sense).0
 }
 
+/// 单元格内按列对齐方式放置文字：左=默认；居中=vertical_centered；
+/// 右=right_to_left 贴右。修复对齐按钮无效的 bug：此前渲染态完全没
+/// 使用 align 数组，点了「居中/右对齐」源码变了但显示仍是左对齐。
+fn align_cell_label(
+    ui: &mut egui::Ui,
+    job: LayoutJob,
+    max_w: f32,
+    a: crate::ast::Align,
+) -> egui::Response {
+    match a {
+        crate::ast::Align::Left => wrapped_label(ui, job, max_w, Sense::hover()),
+        crate::ast::Align::Center => {
+            ui.vertical_centered(|ui| wrapped_label(ui, job, max_w, Sense::hover()))
+                .inner
+        }
+        crate::ast::Align::Right => {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                wrapped_label(ui, job, max_w, Sense::hover())
+            })
+            .inner
+        }
+    }
+}
+
 fn text_response(
     ui: &mut egui::Ui,
     inlines: &[Inline],
@@ -778,6 +811,9 @@ fn text_response(
     idx: usize,
 ) -> egui::Response {
     let job = build_layout(inlines, theme, size, color, bold);
+    // 先占一个绘制槽：跨块选区底色必须垫在文字下层（在 Label 之前画），
+    // 否则蓝色矩形会盖住文字，看起来像"字没了"。
+    let bg_slot = ui.painter().add(egui::Shape::Noop);
     let (resp, galley) = layout_label(ui, job, env.max_width, Sense::click_and_drag());
     // 行右侧空白也要可点（Typora 行为）：命中区从文字左缘延伸到本行右缘。
     // 之前响应矩形只有文字 galley 的宽度，点行尾空白毫无反应；扩展后点击
@@ -819,8 +855,19 @@ fn text_response(
             let c = galley.cursor_from_pos(local).index.0;
             env.actions.push(Action::CrossDrag(idx, c, false));
         }
+    } else if pointer_down && over_this {
+        // 拖动起点不在渲染态块上（最常见：起点在活动块的 TextEdit 里，被它
+        // 吃掉了按下事件），拖到本块时才建立跨块选区：以活动块的光标为锚点。
+        // 没有这条，从编辑态段落往下拖就完全选不中（用户反馈的"断断续续"）。
+        if let Some(p) = pointer {
+            let local = p - resp.rect.min;
+            let c = galley.cursor_from_pos(local).index.0;
+            env.actions.push(Action::ShiftClick(idx, c));
+        }
     }
-    // 跨块选区底色：本块被选区覆盖时，按选中字符区间画高亮矩形（垫在文字下）。
+    // 跨块选区底色：本块被选区覆盖时，按选中字符区间收集高亮矩形，
+    // 最后填进前面预留的槽位（垫在文字下层）。
+    let mut sel_shapes: Vec<egui::Shape> = Vec::new();
     if let Some((a, ac, b, bc)) = env.cross_sel {
         let (start_b, start_c, end_b, end_c) = if (a, ac) <= (b, bc) {
             (a, ac, b, bc)
@@ -856,27 +903,55 @@ fn text_response(
                                 Pos2::new(6.0, row.pos.y + row.row.size.y),
                             )
                             .translate(resp.rect.min.to_vec2());
-                            ui.painter().rect_filled(rect, 0.0, theme.selection);
+                            sel_shapes.push(egui::Shape::rect_filled(rect, 0.0, theme.selection));
                         }
                         continue;
                     }
                     let x0 = galley.pos_from_cursor(egui::text::CCursor::new(lo)).left();
+                    // egui 的 pos_from_cursor 是「插入点」矩形（零宽）：索引 i
+                    // 的 x 是第 i 个字符的左边界。所以选中延伸到行末时要用
+                    // 边界 re（最后一字之后的插入点），不能用 re-1 的右缘——
+                    // 那样每行最后一个字永远少一截、不被高亮覆盖。
                     let x1 = if e0 >= re {
-                        // 选中延伸到行末：取该行最后一个字符的右缘
-                        galley
-                            .pos_from_cursor(egui::text::CCursor::new(re.saturating_sub(1).max(rs)))
-                            .right()
+                        galley.pos_from_cursor(egui::text::CCursor::new(re)).left()
                     } else {
-                        galley.pos_from_cursor(egui::text::CCursor::new(hi)).right()
+                        galley.pos_from_cursor(egui::text::CCursor::new(hi)).left()
                     };
                     let rect = Rect::from_min_max(
                         Pos2::new(x0, row.pos.y),
                         Pos2::new(x1.max(x0), row.pos.y + row.row.size.y),
                     )
                     .translate(resp.rect.min.to_vec2());
-                    ui.painter().rect_filled(rect, 0.0, theme.selection);
+                    sel_shapes.push(egui::Shape::rect_filled(rect, 0.0, theme.selection));
                 }
             }
+        }
+    }
+    if !sel_shapes.is_empty() {
+        // 填进预留槽位：形状位于 Label 之前，渲染时在文字下层
+        ui.painter().set(bg_slot, egui::Shape::Vec(sel_shapes));
+    }
+    // 双击选词 / 三击选整段 / Shift+点击扩选。必须在普通 clicked 之前处理：
+    // egui 里双击的第二击也会触发 clicked，命中后直接 return，避免叠加 Caret。
+    if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+        let local = p - resp.rect.min;
+        let char_idx = galley.cursor_from_pos(local).index.0;
+        let text: Vec<char> = galley.text().chars().collect();
+        if resp.triple_clicked() {
+            // 三击：选中整个块（整行/整段）
+            env.actions.push(Action::BlockSel(idx));
+            return resp;
+        }
+        if resp.double_clicked() {
+            // 双击：选中点击处的词（连续字母/数字/汉字；标点只选该字符）
+            let (a, z) = word_bounds(&text, char_idx);
+            env.actions.push(Action::WordSel(idx, a, z));
+            return resp;
+        }
+        if resp.clicked() && ui.input(|i| i.modifiers.shift) {
+            // Shift+点击：从光标位置到点击位置之间全部选中（不用按住拖动）
+            env.actions.push(Action::ShiftClick(idx, char_idx));
+            return resp;
         }
     }
     if resp.clicked() {
@@ -895,6 +970,29 @@ fn text_response(
     }
     let _ = idx;
     resp
+}
+
+/// 双击选词的词边界：从字符下标 pos 向两侧扩展。
+/// 连续的字母/数字/汉字（含下划线）算一个词；空白/标点只选单个字符。
+fn word_bounds(text: &[char], pos: usize) -> (usize, usize) {
+    if text.is_empty() {
+        return (0, 0);
+    }
+    let pos = pos.min(text.len() - 1);
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    if is_word(text[pos]) {
+        let mut a = pos;
+        while a > 0 && is_word(text[a - 1]) {
+            a -= 1;
+        }
+        let mut z = pos + 1;
+        while z < text.len() && is_word(text[z]) {
+            z += 1;
+        }
+        (a, z)
+    } else {
+        (pos, pos + 1)
+    }
 }
 
 fn image_response(
@@ -928,6 +1026,258 @@ fn image_response(
 
 /// 轻量词法着色，覆盖常见语言，不依赖 syntect。
 /// 这里给每行末尾都补 `\n`，让区块底部多一行留白、看得更像代码框。
+/// 各语言的关键字表。大小写敏感：SQL 用大写，其余多为小写。
+/// 按语言族区分，避免把 A 语言的关键字误标到 B 语言。
+fn keywords_for(lang: &str) -> &'static [&'static str] {
+    match lang_family(lang) {
+        LangFamily::Rust => &[
+            "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
+            "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
+            "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super",
+            "trait", "true", "type", "unsafe", "use", "where", "while",
+        ],
+        LangFamily::Python => &[
+            "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del",
+            "elif", "else", "except", "False", "finally", "for", "from", "global", "if", "import",
+            "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return",
+            "self", "True", "try", "while", "with", "yield",
+        ],
+        LangFamily::JavaScript => &[
+            "as",
+            "async",
+            "await",
+            "break",
+            "case",
+            "catch",
+            "class",
+            "const",
+            "continue",
+            "default",
+            "delete",
+            "do",
+            "else",
+            "enum",
+            "export",
+            "extends",
+            "false",
+            "finally",
+            "for",
+            "from",
+            "function",
+            "if",
+            "implements",
+            "import",
+            "in",
+            "instanceof",
+            "interface",
+            "let",
+            "new",
+            "null",
+            "of",
+            "private",
+            "protected",
+            "public",
+            "readonly",
+            "return",
+            "static",
+            "super",
+            "switch",
+            "this",
+            "throw",
+            "true",
+            "try",
+            "typeof",
+            "undefined",
+            "var",
+            "void",
+            "while",
+            "yield",
+        ],
+        LangFamily::CLike => &[
+            "auto",
+            "bool",
+            "break",
+            "byte",
+            "case",
+            "catch",
+            "char",
+            "class",
+            "const",
+            "continue",
+            "default",
+            "delete",
+            "do",
+            "double",
+            "else",
+            "enum",
+            "extends",
+            "false",
+            "final",
+            "finally",
+            "float",
+            "for",
+            "foreach",
+            "func",
+            "goto",
+            "if",
+            "implements",
+            "import",
+            "int",
+            "interface",
+            "long",
+            "namespace",
+            "new",
+            "nullptr",
+            "NULL",
+            "package",
+            "private",
+            "protected",
+            "public",
+            "return",
+            "short",
+            "sizeof",
+            "static",
+            "struct",
+            "super",
+            "switch",
+            "template",
+            "this",
+            "throw",
+            "true",
+            "try",
+            "typedef",
+            "typename",
+            "unsigned",
+            "using",
+            "var",
+            "virtual",
+            "void",
+            "while",
+        ],
+        LangFamily::Css => &[
+            "@import",
+            "@media",
+            "@keyframes",
+            "@font-face",
+            "from",
+            "to",
+            "important",
+            "inherit",
+            "initial",
+            "none",
+            "auto",
+            "solid",
+            "dashed",
+            "block",
+            "flex",
+            "grid",
+            "absolute",
+            "relative",
+            "fixed",
+            "center",
+            "bold",
+            "italic",
+        ],
+        LangFamily::Data => &[
+            "true", "false", "null", "True", "False", "None", "yes", "no", "on", "off",
+        ],
+        LangFamily::Shell => &[
+            "alias", "break", "case", "cd", "continue", "declare", "do", "done", "echo", "elif",
+            "else", "esac", "exit", "export", "false", "fi", "for", "function", "if", "in",
+            "local", "readonly", "return", "set", "source", "then", "true", "unset", "while",
+        ],
+        LangFamily::Sql => &[
+            "ADD",
+            "ALL",
+            "ALTER",
+            "AND",
+            "AS",
+            "ASC",
+            "AVG",
+            "BETWEEN",
+            "BY",
+            "CASE",
+            "COUNT",
+            "CREATE",
+            "CROSS",
+            "DATABASE",
+            "DEFAULT",
+            "DELETE",
+            "DESC",
+            "DISTINCT",
+            "DROP",
+            "ELSE",
+            "END",
+            "EXISTS",
+            "FALSE",
+            "FROM",
+            "FULL",
+            "GROUP",
+            "HAVING",
+            "IN",
+            "INDEX",
+            "INNER",
+            "INSERT",
+            "INTO",
+            "IS",
+            "JOIN",
+            "KEY",
+            "LEFT",
+            "LIKE",
+            "LIMIT",
+            "MAX",
+            "MIN",
+            "NOT",
+            "NULL",
+            "OFFSET",
+            "ON",
+            "OR",
+            "ORDER",
+            "OUTER",
+            "PRIMARY",
+            "REFERENCES",
+            "RIGHT",
+            "SELECT",
+            "SET",
+            "SUM",
+            "TABLE",
+            "THEN",
+            "TRUE",
+            "UNION",
+            "UPDATE",
+            "VALUES",
+            "VIEW",
+            "WHERE",
+        ],
+        LangFamily::Markup | LangFamily::Generic => &[],
+    }
+}
+
+/// 该语言的行注释前缀（返回 true 表示从此处到行尾是注释）。
+fn line_comment_at(family: LangFamily, c: &[char], i: usize) -> bool {
+    match family {
+        // # : Python / Shell / YAML / TOML
+        LangFamily::Python | LangFamily::Shell | LangFamily::Data => c[i] == '#',
+        // -- : SQL
+        LangFamily::Sql => c[i] == '-' && i + 1 < c.len() && c[i + 1] == '-',
+        // // : Rust / JS / C-like / CSS；HTML/XML 用 <!-- -->（块注释处理）
+        _ => c[i] == '/' && i + 1 < c.len() && c[i + 1] == '/',
+    }
+}
+
+/// 该语言是否支持 /* */ 块注释。
+fn has_block_comment(family: LangFamily) -> bool {
+    matches!(
+        family,
+        LangFamily::Rust | LangFamily::JavaScript | LangFamily::CLike | LangFamily::Css
+    )
+}
+
+/// HTML/XML 注释 <!-- -->。
+fn is_markup_comment(c: &[char], i: usize) -> bool {
+    c[i] == '<' && i + 3 < c.len() && c[i + 1] == '!' && c[i + 2] == '-' && c[i + 3] == '-'
+}
+
 pub fn code_job(code: &str, lang: &str, theme: &Theme) -> LayoutJob {
     code_job_impl(code, lang, theme, true)
 }
@@ -939,103 +1289,86 @@ pub fn code_job_edit(code: &str, lang: &str, theme: &Theme) -> LayoutJob {
 }
 
 fn code_job_impl(code: &str, lang: &str, theme: &Theme, trailing_newline: bool) -> LayoutJob {
-    const KW: &[&str] = &[
-        "fn",
-        "let",
-        "mut",
-        "pub",
-        "use",
-        "struct",
-        "enum",
-        "impl",
-        "match",
-        "if",
-        "else",
-        "for",
-        "while",
-        "return",
-        "const",
-        "static",
-        "type",
-        "trait",
-        "mod",
-        "self",
-        "Self",
-        "async",
-        "await",
-        "def",
-        "class",
-        "import",
-        "from",
-        "as",
-        "in",
-        "is",
-        "not",
-        "and",
-        "or",
-        "None",
-        "True",
-        "False",
-        "var",
-        "function",
-        "export",
-        "default",
-        "new",
-        "void",
-        "int",
-        "float",
-        "double",
-        "char",
-        "bool",
-        "string",
-        "public",
-        "private",
-        "package",
-        "interface",
-        "try",
-        "catch",
-        "throw",
-        "func",
-        "defer",
-        "go",
-        "map",
-        "range",
-        "select",
-        "case",
-        "break",
-        "continue",
-        "where",
-        "with",
-        "do",
-        "then",
-        "end",
-        "SELECT",
-        "FROM",
-        "WHERE",
-    ];
-    let hash_comment = matches!(
-        lang.to_lowercase().as_str(),
-        "python" | "py" | "bash" | "sh" | "shell" | "yaml" | "yml" | "toml" | "ruby" | "rb"
-    );
-    let [kw_color, str_color, num_color, comment_color] = theme.syntax(lang);
+    let family = lang_family(lang);
+    let kw = keywords_for(lang);
+    let [
+        kw_color,
+        str_color,
+        num_color,
+        comment_color,
+        fun_color,
+        type_color,
+    ] = theme.syntax(lang);
+    let markup = matches!(family, LangFamily::Markup);
+    let css = matches!(family, LangFamily::Css);
+    let data = matches!(family, LangFamily::Data);
+    let block_comments = has_block_comment(family);
+
     let mut job = LayoutJob::default();
     // 代码行常没有空格，允许在任意字符处换行以适配窄窗口。
     job.wrap.break_anywhere = true;
     let lines: Vec<&str> = code.split('\n').collect();
+    // 跨行块注释状态：None=不在块注释中；Some(true)=<!-- -->；Some(false)=/* */
+    let mut in_block: Option<bool> = None;
+
     for (n, line) in lines.iter().enumerate() {
-        let line = *line;
         let c: Vec<char> = line.chars().collect();
         let mut i = 0usize;
         while i < c.len() {
-            let comment = (hash_comment && c[i] == '#')
-                || (!hash_comment && c[i] == '/' && i + 1 < c.len() && c[i + 1] == '/');
-            if comment {
+            // 块注释中：找结束符
+            if let Some(is_markup) = in_block {
+                let end_seq: &[char] = if is_markup {
+                    &['-', '-', '>']
+                } else {
+                    &['*', '/']
+                };
+                let pos = (i..=c.len().saturating_sub(end_seq.len()))
+                    .find(|&k| &c[k..k + end_seq.len()] == end_seq);
+                if let Some(pos) = pos {
+                    let end = pos + end_seq.len();
+                    let rest: String = c[i..end].iter().collect();
+                    let mut f = theme.mono_fmt();
+                    f.color = comment_color;
+                    job.append(&rest, 0.0, f);
+                    i = end;
+                    in_block = None;
+                } else {
+                    let rest: String = c[i..].iter().collect();
+                    let mut f = theme.mono_fmt();
+                    f.color = comment_color;
+                    job.append(&rest, 0.0, f);
+                    break;
+                }
+                continue;
+            }
+            // 块注释开始
+            if markup && is_markup_comment(&c, i) {
+                in_block = Some(true);
+                let rest: String = c[i..i + 4].iter().collect();
+                let mut f = theme.mono_fmt();
+                f.color = comment_color;
+                job.append(&rest, 0.0, f);
+                i += 4;
+                continue;
+            }
+            if block_comments && c[i] == '/' && i + 1 < c.len() && c[i + 1] == '*' {
+                in_block = Some(false);
+                let rest: String = c[i..i + 2].iter().collect();
+                let mut f = theme.mono_fmt();
+                f.color = comment_color;
+                job.append(&rest, 0.0, f);
+                i += 2;
+                continue;
+            }
+            // 行注释
+            if line_comment_at(family, &c, i) {
                 let rest: String = c[i..].iter().collect();
                 let mut f = theme.mono_fmt();
                 f.color = comment_color;
                 job.append(&rest, 0.0, f);
                 break;
             }
+            // 字符串（含引号）
             if c[i] == '"' || c[i] == '\'' || c[i] == '`' {
                 let q = c[i];
                 let mut j = i + 1;
@@ -1050,6 +1383,27 @@ fn code_job_impl(code: &str, lang: &str, theme: &Theme, trailing_newline: bool) 
                 i = end;
                 continue;
             }
+            // HTML/XML 标签：<tag 的标签名用类型色
+            if markup
+                && c[i] == '<'
+                && i + 1 < c.len()
+                && (c[i + 1].is_alphabetic() || c[i + 1] == '/')
+            {
+                let mut j = i + 1;
+                if c[j] == '/' {
+                    j += 1;
+                }
+                while j < c.len() && (c[j].is_alphanumeric() || c[j] == '-' || c[j] == ':') {
+                    j += 1;
+                }
+                let s: String = c[i..j].iter().collect();
+                let mut f = theme.mono_fmt();
+                f.color = type_color;
+                job.append(&s, 0.0, f);
+                i = j;
+                continue;
+            }
+            // 标识符 / 数字
             if c[i].is_alphanumeric() || c[i] == '_' {
                 let mut j = i;
                 while j < c.len() && (c[j].is_alphanumeric() || c[j] == '_') {
@@ -1061,16 +1415,29 @@ fn code_job_impl(code: &str, lang: &str, theme: &Theme, trailing_newline: bool) 
                     .next()
                     .map(|x| x.is_ascii_digit())
                     .unwrap_or(false);
-                let is_kw = KW.contains(&tok.as_str());
-                let mut f = theme.mono_fmt();
-                f.color = if is_num {
-                    num_color
+                let is_kw = kw.contains(&tok.as_str());
+                // 下一个非空白字符是 '(' → 函数名；大写开头 → 类型/常量
+                let next = c[j..].iter().find(|&&x| !x.is_whitespace()).copied();
+                let is_call = next == Some('(');
+                let is_type = tok.chars().next().is_some_and(|x| x.is_uppercase());
+                // YAML 的 key: / CSS 的 属性:
+                let is_prop = (data || css) && next == Some(':');
+                let (color, bold) = if is_num {
+                    (num_color, false)
                 } else if is_kw {
-                    kw_color
+                    (kw_color, true)
+                } else if is_call {
+                    (fun_color, false)
+                } else if is_type {
+                    (type_color, false)
+                } else if is_prop {
+                    (fun_color, false)
                 } else {
-                    theme.text
+                    (theme.text, false)
                 };
-                if is_kw {
+                let mut f = theme.mono_fmt();
+                f.color = color;
+                if bold {
                     f.coords = egui::epaint::text::VariationCoords::new([(b"wght", 700.0)]);
                 }
                 job.append(&tok, 0.0, f);
@@ -2940,9 +3307,9 @@ pub fn render_block(
         }
         match block {
             Block::Heading { level, content, .. } => {
-                // 标题上下留白：一级标题比低级别稍多一点，但整体比正文紧凑，
-                // 避免标题之间、标题与段落之间空隙过大。
-                ui.add_space(if *level <= 2 { 8.0 } else { 4.0 });
+                // 标题上下留白：尽量紧凑，且与编辑态（标题无额外留白）接近，
+                // 否则进出编辑时整块会跳动。之前 8/6px 让 H1–H3 行距明显偏大。
+                ui.add_space(if *level <= 2 { 3.0 } else { 2.0 });
                 let r = text_response(
                     ui,
                     content,
@@ -2953,7 +3320,7 @@ pub fn render_block(
                     env,
                     idx,
                 );
-                ui.add_space(6.0);
+                ui.add_space(3.0);
                 r
             }
             Block::Paragraph { content, .. } => {
@@ -3127,6 +3494,14 @@ pub fn render_block(
                 // 记录每个单元格的矩形，用于画「单线」分隔（不是每格一个框）
                 let mut row_rects: Vec<Vec<egui::Rect>> = Vec::new();
                 let mut copied = false;
+                let mut op: Option<crate::editor::TableOp> = None;
+                let cell_key = egui::Id::new(("table_cell_ref", idx));
+                // 功能区背景：浅色主题用指定的 #F2F2F4，深色主题沿用 panel
+                let tb_fill = if theme.kind == crate::theme::ThemeKind::Light {
+                    Color32::from_rgb(0xF2, 0xF2, 0xF4)
+                } else {
+                    theme.panel
+                };
                 let r = egui::Frame::NONE
                     .fill(theme.bg)
                     .stroke(Stroke::new(1.0, theme.table_line))
@@ -3134,30 +3509,93 @@ pub fn render_block(
                     .inner_margin(6.0)
                     .show(ui, |ui| {
                         ui.set_min_width(col_w * cols as f32 + gap);
-                        // 右上角复制按钮：样式与轻提示和代码块的复制按钮完全一致
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .button(egui::RichText::new("复制").size(theme.body * 0.85))
-                                .on_hover_cursor(egui::CursorIcon::Default)
-                                .clicked()
-                            {
-                                copied = true;
-                            }
-                        });
-                        ui.add_space(2.0);
+                        // ---- 第一区：功能区（常驻，不随悬停出现/消失）----
+                        // 行/列操作以最后悬停的单元格为基准（Grid 渲染后写入记忆）；
+                        // 复制与删除表格固定在最右侧右上角。
+                        egui::Frame::NONE
+                            .fill(tb_fill)
+                            .corner_radius(3.0)
+                            .inner_margin(4.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.style_mut().spacing.item_spacing.x = 4.0;
+                                    let (hr, hc) = ui
+                                        .ctx()
+                                        .memory(|m| m.data.get_temp::<(usize, usize)>(cell_key))
+                                        .unwrap_or((0, 0));
+                                    let btn = |ui: &mut egui::Ui, label: &str, active: bool| {
+                                        let txt =
+                                            egui::RichText::new(label).size(theme.body * 0.85);
+                                        let txt =
+                                            if active { txt.color(theme.accent) } else { txt };
+                                        ui.button(txt).clicked()
+                                    };
+                                    let all = |a: crate::ast::Align| align.iter().all(|x| *x == a);
+                                    use crate::ast::Align;
+                                    use crate::editor::TableOp;
+                                    if btn(ui, "+ 行", false) {
+                                        op = Some(TableOp::InsertRow(hr));
+                                    }
+                                    if btn(ui, "− 行", false) {
+                                        op = Some(TableOp::DeleteRow(hr));
+                                    }
+                                    if btn(ui, "+ 列", false) {
+                                        op = Some(TableOp::InsertCol(hc));
+                                    }
+                                    if btn(ui, "− 列", false) {
+                                        op = Some(TableOp::DeleteCol(hc));
+                                    }
+                                    ui.separator();
+                                    if btn(ui, "左对齐", all(Align::Left)) {
+                                        op = Some(TableOp::SetAlign(Align::Left));
+                                    }
+                                    if btn(ui, "居中", all(Align::Center)) {
+                                        op = Some(TableOp::SetAlign(Align::Center));
+                                    }
+                                    if btn(ui, "右对齐", all(Align::Right)) {
+                                        op = Some(TableOp::SetAlign(Align::Right));
+                                    }
+                                    // 最右侧右上角：删除表格（最右）+ 复制
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui
+                                                .button(
+                                                    egui::RichText::new("删除表格")
+                                                        .size(theme.body * 0.85),
+                                                )
+                                                .clicked()
+                                            {
+                                                op = Some(TableOp::Delete);
+                                            }
+                                            if ui
+                                                .button(
+                                                    egui::RichText::new("复制")
+                                                        .size(theme.body * 0.85),
+                                                )
+                                                .clicked()
+                                            {
+                                                copied = true;
+                                            }
+                                        },
+                                    );
+                                });
+                            });
+                        ui.add_space(4.0);
+                        // ---- 第二区：表头行；第三区：数据行（文字按列对齐）----
                         egui::Grid::new(("md_table", idx))
                             .min_col_width(col_w)
                             .max_col_width(col_w)
                             .show(ui, |ui| {
-                                // 表头行：最深一档底色
+                                // 表头行：最深一档底色，文字按列对齐
                                 let mut rects = Vec::new();
-                                for c in head {
+                                for (ci, c) in head.iter().enumerate() {
                                     let fr = egui::Frame::NONE
                                         .fill(theme.table_head)
                                         .inner_margin(3.0)
                                         .show(ui, |ui| {
                                             ui.set_min_width(col_w - 6.0);
-                                            wrapped_label(
+                                            align_cell_label(
                                                 ui,
                                                 build_layout(
                                                     c,
@@ -3167,23 +3605,26 @@ pub fn render_block(
                                                     true,
                                                 ),
                                                 col_w - 6.0,
-                                                Sense::hover(),
+                                                align
+                                                    .get(ci)
+                                                    .copied()
+                                                    .unwrap_or(crate::ast::Align::Left),
                                             );
                                         });
                                     rects.push(fr.response.rect);
                                 }
                                 row_rects.push(rects);
                                 ui.end_row();
-                                // 数据行：正文底色（表头一档颜色就够分了）
+                                // 数据行：正文底色（表头一档颜色就够分了），文字按列对齐
                                 for row in rows {
                                     let mut rects = Vec::new();
-                                    for c in row {
+                                    for (ci, c) in row.iter().enumerate() {
                                         let fr = egui::Frame::NONE
                                             .fill(theme.bg)
                                             .inner_margin(3.0)
                                             .show(ui, |ui| {
                                                 ui.set_min_width(col_w - 6.0);
-                                                wrapped_label(
+                                                align_cell_label(
                                                     ui,
                                                     build_layout(
                                                         c,
@@ -3193,7 +3634,10 @@ pub fn render_block(
                                                         false,
                                                     ),
                                                     col_w - 6.0,
-                                                    Sense::hover(),
+                                                    align
+                                                        .get(ci)
+                                                        .copied()
+                                                        .unwrap_or(crate::ast::Align::Left),
                                                 );
                                             });
                                         rects.push(fr.response.rect);
@@ -3203,11 +3647,6 @@ pub fn render_block(
                                 }
                             });
                     });
-                // 复制整张表格的 Markdown 源码；轻提示与代码块的复制一致
-                if copied {
-                    env.ctx.copy_text(source.clone());
-                    env.actions.push(Action::Notify("复制成功".to_string()));
-                }
                 // 分隔线：行与行、列与列之间只画一条线（不是每个单元格一个盒子）。
                 // 注意 shrink2 是「每边减去全额」：frame 内边距 6px，这里必须用 6
                 // 才是真正的内容区；之前误用 12 导致所有分隔线整体内移 6px，
@@ -3281,9 +3720,16 @@ pub fn render_block(
                     .and_then(|r| r.first())
                     .map(|x| x.bottom())
                     .unwrap_or(content.bottom());
-                for k in 1..cols {
-                    let x = content.left() + k as f32 * (col_w + gap) - gap / 2.0;
-                    p.line_segment([Pos2::new(x, grid_top), Pos2::new(x, grid_bottom)], stroke);
+                // 列分隔线与编辑态一致：取相邻单元格实际矩形间隙的中点，
+                // 不能按 col_w+gap 估算——gap 是所有列间距之和，列数多时
+                // 分隔线会逐列右移，压到左对齐的文字上（文字与边框重合）。
+                if let Some(first) = row_rects.first()
+                    && first.len() == cols
+                {
+                    for k in 1..cols {
+                        let x = (first[k - 1].right() + first[k].left()) / 2.0;
+                        p.line_segment([Pos2::new(x, grid_top), Pos2::new(x, grid_bottom)], stroke);
+                    }
                 }
                 // 点击了哪个单元格：进入编辑态时直接聚焦那一格，光标落在
                 // 点击位置附近（点在文字右半边 → 光标到末尾），不再固定跳到第一格。
@@ -3298,85 +3744,18 @@ pub fn render_block(
                         }
                     }
                 }
-                // ---------------- 悬停工具栏 ----------------
-                // 指针落在表格（含上方工具栏区域）时显示，离开即隐藏。
-                let tb_h = 30.0;
-                let pointer = ui.input(|i| i.pointer.hover_pos());
-                let hover_zone = Rect::from_min_max(
-                    Pos2::new(r.response.rect.left(), r.response.rect.top() - tb_h - 8.0),
-                    r.response.rect.max,
-                );
-                let show_tb = pointer.is_some_and(|p| hover_zone.contains(p));
-                if show_tb {
-                    // 记录最后悬停的单元格：工具栏的行/列操作以此为基准
-                    let cell_key = egui::Id::new(("table_cell_ref", idx));
-                    if let Some(hp) = pointer
-                        && let Some((hr, hc)) = hit_cell(&row_rects, hp)
-                    {
-                        ui.ctx()
-                            .memory_mut(|m| m.data.insert_temp(cell_key, (hr, hc)));
-                    }
-                    let (hr, hc) = ui
-                        .ctx()
-                        .memory(|m| m.data.get_temp::<(usize, usize)>(cell_key))
-                        .unwrap_or((0, 0));
-                    let mut op: Option<crate::editor::TableOp> = None;
-                    let tb_pos =
-                        Pos2::new(r.response.rect.left(), r.response.rect.top() - tb_h - 4.0);
-                    egui::Area::new(egui::Id::new(("table_toolbar", idx)))
-                        .fixed_pos(tb_pos)
-                        .order(egui::Order::Foreground)
-                        .show(ui.ctx(), |ui| {
-                            egui::Frame::new()
-                                .fill(theme.panel)
-                                .stroke(Stroke::new(1.0, theme.border))
-                                .corner_radius(6.0)
-                                .inner_margin(4.0)
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.style_mut().spacing.item_spacing.x = 4.0;
-                                        let btn = |ui: &mut egui::Ui, label: &str, active: bool| {
-                                            let txt = egui::RichText::new(label).small();
-                                            let txt =
-                                                if active { txt.color(theme.accent) } else { txt };
-                                            ui.button(txt).clicked()
-                                        };
-                                        let all =
-                                            |a: crate::ast::Align| align.iter().all(|x| *x == a);
-                                        use crate::ast::Align;
-                                        use crate::editor::TableOp;
-                                        if btn(ui, "+ 行", false) {
-                                            op = Some(TableOp::InsertRow(hr));
-                                        }
-                                        if btn(ui, "− 行", false) {
-                                            op = Some(TableOp::DeleteRow(hr));
-                                        }
-                                        if btn(ui, "+ 列", false) {
-                                            op = Some(TableOp::InsertCol(hc));
-                                        }
-                                        if btn(ui, "− 列", false) {
-                                            op = Some(TableOp::DeleteCol(hc));
-                                        }
-                                        ui.separator();
-                                        if btn(ui, "左对齐", all(Align::Left)) {
-                                            op = Some(TableOp::SetAlign(Align::Left));
-                                        }
-                                        if btn(ui, "居中", all(Align::Center)) {
-                                            op = Some(TableOp::SetAlign(Align::Center));
-                                        }
-                                        if btn(ui, "右对齐", all(Align::Right)) {
-                                            op = Some(TableOp::SetAlign(Align::Right));
-                                        }
-                                        ui.separator();
-                                        if btn(ui, "删除表格", false) {
-                                            op = Some(TableOp::Delete);
-                                        }
-                                    });
-                                });
-                        });
-                    if let Some(op) = op {
-                        env.actions.push(Action::TableOp(idx, op));
-                    }
+                // 悬停单元格时更新基准 (hr,hc)：功能区的行/列操作按最近悬停定位
+                if let Some(hp) = ui.input(|i| i.pointer.hover_pos())
+                    && let Some(hit) = hit_cell(&row_rects, hp)
+                {
+                    ui.ctx().memory_mut(|m| m.data.insert_temp(cell_key, hit));
+                }
+                if let Some(op) = op {
+                    env.actions.push(Action::TableOp(idx, op));
+                }
+                if copied {
+                    env.ctx.copy_text(source.clone());
+                    env.actions.push(Action::Notify("复制成功".to_string()));
                 }
                 r.response.interact(Sense::click())
             }
@@ -3642,6 +4021,100 @@ mod tests {
     use super::*;
     use crate::theme::ThemeKind;
 
+    /// 回归：跨块选区高亮必须 ① 覆盖最后一个字（不能每行少一截）
+    /// ② 画在文字下层（否则蓝底盖住文字，看起来"字没了"）。
+    #[test]
+    fn cross_sel_highlight_covers_last_char_and_sits_behind_text() {
+        let theme = Theme::get(ThemeKind::Light);
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 400.0));
+        let block = Block::Paragraph {
+            content: vec![Inline::Text("abcde".to_string())],
+            source: "abcde".to_string(),
+        };
+        let outline: Vec<OutlineItem> = Vec::new();
+        let folded: HashSet<usize> = HashSet::new();
+        let mut images = ImageCache::new();
+        let mut actions: Vec<Action> = Vec::new();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let c = ui.ctx().clone();
+                    let mut env = RenderEnv {
+                        theme: &theme,
+                        ctx: &c,
+                        images: &mut images,
+                        base_dir: None,
+                        outline: &outline,
+                        actions: &mut actions,
+                        max_width: 700.0,
+                        cross_sel: Some((0, 0, 0, 5)),
+                        folded: &folded,
+                    };
+                    let _ = render_block(ui, 0, &block, &mut env, false);
+                });
+            },
+        );
+        // 选区底色被塞进 Shape::Vec 里，先摊平再看
+        fn flatten<'a>(s: &'a egui::Shape, out: &mut Vec<&'a egui::Shape>) {
+            match s {
+                egui::Shape::Vec(v) => {
+                    for x in v {
+                        flatten(x, out);
+                    }
+                }
+                other => out.push(other),
+            }
+        }
+        let mut flat: Vec<&egui::Shape> = Vec::new();
+        for cs in &out.shapes {
+            flatten(&cs.shape, &mut flat);
+        }
+        let mut sel: Option<(usize, egui::Rect)> = None;
+        let mut txt: Option<(usize, egui::Rect)> = None;
+        for (i, shape) in flat.iter().enumerate() {
+            match shape {
+                egui::Shape::Rect(r) if r.fill == theme.selection => sel = Some((i, r.rect)),
+                egui::Shape::Text(t) if t.galley.text() == "abcde" => {
+                    txt = Some((i, egui::Rect::from_min_size(t.pos, t.galley.size())))
+                }
+                _ => {}
+            }
+        }
+        let (sel_idx, sel_rect) = sel.expect("应画出选区底色");
+        let (txt_idx, txt_rect) = txt.expect("应渲染文字");
+        assert!(
+            sel_rect.right() >= txt_rect.right() - 0.5,
+            "选区右缘必须覆盖最后一个字：选区={sel_rect:?} 文字={txt_rect:?}"
+        );
+        assert!(
+            sel_idx < txt_idx,
+            "选区底色必须在文字之前绘制（垫在文字下层）：{sel_idx} vs {txt_idx}"
+        );
+        out.textures_delta.clear();
+    }
+
+    /// 双击选词边界：连续字母/数字/汉字算一个词，标点只选单字符。
+    #[test]
+    fn word_bounds_selects_word_or_char() {
+        let t: Vec<char> = "hello 世界!".chars().collect();
+        // "hello" = 0..5
+        assert_eq!(word_bounds(&t, 2), (0, 5));
+        // 空格（下标 5）只选它自己
+        assert_eq!(word_bounds(&t, 5), (5, 6));
+        // 连续汉字 "世界" = 6..8
+        assert_eq!(word_bounds(&t, 6), (6, 8));
+        assert_eq!(word_bounds(&t, 7), (6, 8));
+        // 标点 "!" 只选单字符
+        assert_eq!(word_bounds(&t, 8), (8, 9));
+        // 空文本
+        assert_eq!(word_bounds(&[], 0), (0, 0));
+    }
+
     /// 时序图解析：participant 声明、四类箭头、Note、title。
     /// 重点回归两个解析 bug："-->>" 的第一个 '-' 属于发送方（箭头匹配必须
     /// 先长后短，否则发送方被切成 "D-"）；Note 的参与者名区分大小写。
@@ -3871,6 +4344,51 @@ mod tests {
         assert_eq!(job.text, src, "排版后的文本必须与缓冲区完全一致");
     }
 
+    /// 加粗文字的外观在「编辑态(inline_job)」与「渲染态(build_layout)」必须一致：
+    /// 都用 markd-bold 真粗体、都用普通正文色。否则鼠标离开加粗文字（退出编辑态）
+    /// 时会突然变色（强调色）且变细（wght 对静态字体不生效）。
+    #[test]
+    fn bold_looks_same_in_edit_and_render_modes() {
+        use crate::ast::{Inline, parse_inline};
+        let theme = Theme::get(ThemeKind::Light);
+        let bold_family = egui::FontFamily::Name("markd-bold".into());
+
+        // 编辑态：**粗** 的正文段（egui 0.37 LayoutSection 无 text 字段，按 byte_range 取）
+        let edit = inline_job("**粗体**", &theme, 16.0, theme.text, 400.0, None);
+        let edit_bold = edit
+            .sections
+            .iter()
+            .find(|s| {
+                let (a, b) = (s.byte_range.start.0, s.byte_range.end.0);
+                edit.text.get(a..b) == Some("粗体")
+            })
+            .expect("应有加粗正文段");
+        assert_eq!(edit_bold.format.font_id.family, bold_family);
+        assert_eq!(edit_bold.format.color, theme.text);
+
+        // 渲染态：解析出的 Inline::Strong
+        let inlines = parse_inline("**粗体**");
+        let render = build_layout(&inlines, &theme, 16.0, theme.text, false);
+        let render_bold = render
+            .sections
+            .iter()
+            .find(|s| {
+                let (a, b) = (s.byte_range.start.0, s.byte_range.end.0);
+                render.text.get(a..b) == Some("粗体")
+            })
+            .expect("应有加粗正文段");
+        assert_eq!(
+            render_bold.format.font_id.family, bold_family,
+            "渲染态加粗字体应与编辑态一致（真粗体），实际 {:?}",
+            render_bold.format.font_id.family
+        );
+        assert_eq!(
+            render_bold.format.color, theme.text,
+            "渲染态加粗颜色应与编辑态一致（不变色），实际 {:?}",
+            render_bold.format.color
+        );
+    }
+
     /// 回归：光标紧挨已配对的标记时，标记必须保持隐藏。
     /// 之前 near_caret 会让紧挨光标的标记显现，表现是「鼠标一点这块就变成源码」。
     #[test]
@@ -3906,6 +4424,92 @@ mod tests {
             first.format.font_id.size >= 15.0,
             "未闭合的 ** 应显现: {job:?}"
         );
+    }
+
+    /// 15 种语言的关键字/函数/类型/标签都要被着色，且编辑态文本与缓冲区一致。
+    #[test]
+    fn code_highlights_all_supported_languages() {
+        let theme = Theme::get(ThemeKind::Dark);
+        let cases: &[(&str, &str, &[&str])] = &[
+            ("rust", "fn main() { let x = 1; }", &["fn", "let", "main"]),
+            (
+                "python",
+                "def foo():\n    return 42",
+                &["def", "return", "foo"],
+            ),
+            ("bash", "echo hi", &["echo"]),
+            ("zsh", "if true; then\nfi", &["if", "then", "fi"]),
+            ("java", "public class Main {}", &["public", "class", "Main"]),
+            ("xml", "<tag attr=\"v\">t</tag>", &["tag"]),
+            (
+                "go",
+                "package main\nfunc run() {}",
+                &["package", "func", "run"],
+            ),
+            ("c", "int main() { return 0; }", &["int", "main", "return"]),
+            (
+                "c++",
+                "int main() { return 0; }",
+                &["int", "main", "return"],
+            ),
+            ("css", "body { color: red; }", &["color"]),
+            ("yml", "key: value", &["key"]),
+            ("yaml", "key: value", &["key"]),
+            ("html", "<div id=\"x\">hi</div>", &["div"]),
+            (
+                "sql",
+                "SELECT * FROM users WHERE id = 1",
+                &["SELECT", "FROM", "WHERE"],
+            ),
+            (
+                "vue",
+                "<template><div>hi</div></template>",
+                &["template", "div"],
+            ),
+        ];
+        for &(lang, code, toks) in cases {
+            let edit = code_job_edit(code, lang, &theme);
+            assert_eq!(edit.text, code, "编辑态文本必须与缓冲区一致: {lang}");
+            let job = code_job(code, lang, &theme);
+            assert!(job.sections.len() > 2, "{lang} 应产生多段高亮: {job:?}");
+            for tok in toks {
+                let pos = code.find(tok).expect("token 应在代码里");
+                let colored = job.sections.iter().any(|s| {
+                    let a = s.byte_range.start.0;
+                    let b = s.byte_range.end.0;
+                    a <= pos
+                        && pos < b
+                        && s.format.color != theme.text
+                        && s.format.color != theme.dim
+                });
+                assert!(colored, "{lang} 的 `{tok}` 应被着色: {job:?}");
+            }
+        }
+    }
+
+    /// 各语言的注释语法（# / // / -- / /* */ / <!-- -->）都要按注释色渲染。
+    #[test]
+    fn code_highlights_comments_across_languages() {
+        let theme = Theme::get(ThemeKind::Dark);
+        let cases: &[(&str, &str, &str)] = &[
+            ("rust", "// 注释", "// 注释"),
+            ("python", "# 注释", "# 注释"),
+            ("bash", "# 注释", "# 注释"),
+            ("sql", "-- 注释", "-- 注释"),
+            ("html", "<!-- 注释 -->", "<!-- 注释 -->"),
+            ("c", "/* 注释 */", "/* 注释 */"),
+        ];
+        for &(lang, code, comment) in cases {
+            let [_, _, _, comment_color, _, _] = theme.syntax(lang);
+            let job = code_job(code, lang, &theme);
+            let pos = job.text.find(comment).expect("注释应在代码里");
+            let is_comment_color = job.sections.iter().any(|s| {
+                let a = s.byte_range.start.0;
+                let b = s.byte_range.end.0;
+                a <= pos && pos < b && s.format.color == comment_color
+            });
+            assert!(is_comment_color, "{lang} 的注释应按注释色渲染: {job:?}");
+        }
     }
 
     /// 代码块在编辑态复用同一套高亮排版：排版文本必须与缓冲区完全一致，
@@ -4034,16 +4638,82 @@ mod tests {
             !actions.iter().any(|a| matches!(a, Action::Caret(..))),
             "点链接不应同时激活编辑块: {actions:?}"
         );
+    }
 
+    /// 单击普通文字应放置光标（独立 ctx，避免与链接点击连成双击）。
+    #[test]
+    fn clicking_text_places_caret() {
+        let theme = Theme::get(ThemeKind::Light);
+        let outline: Vec<OutlineItem> = Vec::new();
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 400.0));
+        let run = |block: &Block,
+                   events: Vec<egui::Event>,
+                   images: &mut ImageCache,
+                   actions: &mut Vec<Action>|
+         -> egui::Rect {
+            let mut rect = egui::Rect::NOTHING;
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |root| {
+                    egui::CentralPanel::default().show(root, |ui| {
+                        let c = ui.ctx().clone();
+                        let folded: HashSet<usize> = HashSet::new();
+                        let mut env = RenderEnv {
+                            theme: &theme,
+                            ctx: &c,
+                            images,
+                            base_dir: None,
+                            outline: &outline,
+                            actions,
+                            max_width: 700.0,
+                            cross_sel: None,
+                            folded: &folded,
+                        };
+                        rect = render_block(ui, 0, block, &mut env, false).rect;
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            rect
+        };
         let plain = Block::Paragraph {
             content: vec![Inline::Text("普通文字".to_string())],
             source: "普通文字".to_string(),
         };
-        actions.clear();
+        let mut images = ImageCache::new();
+        let mut actions: Vec<Action> = Vec::new();
         let rect = run(&plain, vec![], &mut images, &mut actions);
         let pos = rect.center();
-        let _ = run(&plain, press(pos, true), &mut images, &mut actions);
-        let _ = run(&plain, press(pos, false), &mut images, &mut actions);
+        let _ = run(
+            &plain,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+            &mut images,
+            &mut actions,
+        );
+        let _ = run(
+            &plain,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            &mut images,
+            &mut actions,
+        );
         assert!(
             actions.iter().any(|a| matches!(a, Action::Caret(..))),
             "点普通文字应放置光标: {actions:?}"

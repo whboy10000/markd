@@ -466,10 +466,22 @@ fn list_marker(line: &str) -> Option<(usize, String, Option<bool>, &str)> {
 
     let mut marker_len = 0usize;
     let mut checked = None;
-    if (bytes[0] == b'-' || bytes[0] == b'*' || bytes[0] == b'+') && bytes.get(1) == Some(&b' ') {
+    // 无序标记："- "/"* "/"+ "；也接受单独一个 "-"（回车新建的空项经 trim_end
+    // 后就是这样），保证空列表项仍是列表、再次回车能正确退出。
+    if (bytes[0] == b'-' || bytes[0] == b'*' || bytes[0] == b'+')
+        && (bytes.get(1) == Some(&b' ') || bytes.len() == 1)
+    {
         marker_len = 1;
-        let after = &rest[2..];
-        if after.starts_with("[ ] ") || after.starts_with("[x] ") || after.starts_with("[X] ") {
+        let after = if bytes.len() > 1 { &rest[2..] } else { "" };
+        // 也接受空的复选框 "- [ ]"（行尾无空格）：回车新建的空任务项会被
+        // trim_end 成这种形式，必须仍解析为任务列表，才能在再次回车时退出。
+        if after.starts_with("[ ] ")
+            || after.starts_with("[x] ")
+            || after.starts_with("[X] ")
+            || after == "[ ]"
+            || after == "[x]"
+            || after == "[X]"
+        {
             checked = Some(after.as_bytes()[1] != b' ');
             marker_len = 5;
         }
@@ -478,10 +490,12 @@ fn list_marker(line: &str) -> Option<(usize, String, Option<bool>, &str)> {
         while k < bytes.len() && bytes[k].is_ascii_digit() {
             k += 1;
         }
+        // 有序标记："1. "/"1) "；也接受结尾无空格的 "1."（回车新建的空项），
+        // 使空有序项仍解析为列表项，再次回车可退出。
         if k > 0
-            && k + 1 < bytes.len()
+            && k < bytes.len()
             && (bytes[k] == b'.' || bytes[k] == b')')
-            && bytes[k + 1] == b' '
+            && (k + 1 >= bytes.len() || bytes[k + 1] == b' ')
         {
             marker_len = k + 1;
         }
@@ -783,6 +797,26 @@ mod tests {
             "应解析出 Underline: {:?}",
             v
         );
+    }
+
+    /// 空的列表标记（回车新建的空项）仍要解析为列表项，
+    /// 这样再次回车才能正确退出列表。
+    #[test]
+    fn empty_task_item_parses_as_list() {
+        for src in [
+            "- [ ]", "- [ ] ", "- [x]", "- [X]", // 任务项
+            "-", "*", "+", // 无序项
+            "1.", "1)", "12.", // 有序项
+        ] {
+            let blocks = parse(src);
+            assert!(
+                matches!(blocks.first(), Some(Block::ListItem { .. })),
+                "{src:?} 应解析为列表项: {blocks:?}"
+            );
+        }
+        // 源码无损往返：规范化前后都保持原样
+        let blocks = parse("- [ ]");
+        assert_eq!(blocks[0].source(), "- [ ]");
     }
 
     /// <strong>文字</strong>（加粗按钮的标记）解析为加粗行内样式。

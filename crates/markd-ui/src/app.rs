@@ -57,7 +57,7 @@ fn needs_exit_confirm(force_quit: bool, close_requested: bool, unsaved: usize) -
     !force_quit && close_requested && unsaved > 0
 }
 
-/// 工具条上的自绘图标按钮（放大镜 / 橡皮擦）：不依赖 emoji 字体，
+/// 工具条上的自绘图标按钮（放大镜等）：不依赖 emoji 字体，
 /// 尺寸按普通按钮算（文字高度 + 上下内边距），底色与描边色都跟随主题。
 fn icon_button(
     ui: &mut egui::Ui,
@@ -147,57 +147,6 @@ fn painter_redo_icon(
     fg: egui::Color32,
 ) {
     painter_undo_redo(painter, rect, bg, fg, true);
-}
-
-/// 把向量按给定角度旋转（屏幕坐标 y 向下）。
-fn rotate(v: egui::Vec2, angle: f32) -> egui::Vec2 {
-    let (s, c) = angle.sin_cos();
-    egui::vec2(v.x * c - v.y * s, v.x * s + v.y * c)
-}
-
-/// 橡皮擦图标（参考 WPS 的擦除格式）：一块斜放的橡皮 + 分界线 + 下面的擦拭痕迹。
-fn painter_eraser_icon(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    bg: egui::Color32,
-    fg: egui::Color32,
-) {
-    painter.rect_filled(rect, egui::CornerRadius::same(4), bg);
-    let stroke = egui::Stroke::new(1.5, fg);
-    let h = rect.height();
-    let c = rect.center() + egui::vec2(0.0, -h * 0.05);
-    // 橡皮形体：长条矩形绕中心转 -35°，长边 half.x、短边 half.y。
-    // 整体尺寸比按钮明显小一圈，和放大镜图标的视觉重量一致。
-    let angle = -0.62;
-    let long = rotate(egui::vec2(h * 0.29, 0.0), angle);
-    let short = rotate(egui::vec2(0.0, h * 0.165), angle);
-    let body = vec![
-        c - long - short,
-        c + long - short,
-        c + long + short,
-        c - long + short,
-    ];
-    // 先给橡胶那一端（左下、贴着纸的那头）填一层浅色再描边：
-    // 两段深浅不同才像橡皮，不像一块斜放的方框
-    let t = c - long * 0.25;
-    let rubber = vec![c - long - short, t - short, t + short, c - long + short];
-    painter.add(egui::Shape::convex_polygon(
-        rubber,
-        fg.gamma_multiply(0.35),
-        egui::Stroke::NONE,
-    ));
-    painter.add(egui::Shape::closed_line(body, stroke));
-    // 橡胶与外壳的分界
-    painter.line_segment([t - short, t + short], stroke);
-    // 底下的擦拭痕迹
-    let y = rect.center().y + h * 0.30;
-    painter.line_segment(
-        [
-            egui::pos2(rect.center().x - h * 0.15, y),
-            egui::pos2(rect.center().x + h * 0.15, y),
-        ],
-        stroke,
-    );
 }
 
 /// 在给定矩形里画一个放大镜：左上偏的圆 + 右下斜柄，圆内留空。
@@ -1650,7 +1599,9 @@ impl MarkdApp {
             }
             Command::Bullet => editor::apply_prefix(&mut self.doc, &mut self.editor, "- "),
             Command::Ordered => editor::apply_prefix(&mut self.doc, &mut self.editor, "1. "),
-            Command::Task => editor::insert_template(&mut self.doc, &mut self.editor, "- [ ] "),
+            // 任务列表：把当前块/选中文字转成任务项（保留正文、不新增块），
+            // 与标题/列表按钮一致走 apply_prefix；这样回车继承逻辑才能衔接。
+            Command::Task => editor::apply_prefix(&mut self.doc, &mut self.editor, "- [ ] "),
             Command::Rule => editor::insert_template(&mut self.doc, &mut self.editor, "---"),
             // 和 Typora 一样：先问几行几列，再插入
             Command::Table => self.table_dialog = true,
@@ -2058,20 +2009,7 @@ impl MarkdApp {
             {
                 chosen = Some(Command::Strike);
             }
-            // 清除格式（橡皮擦）：把光标所在块变回普通段落，并去掉行内加粗/删除线等标记。
-            if icon_button(
-                ui,
-                "清除格式：当前块变回普通段落（像 WPS 橡皮擦）",
-                painter_eraser_icon,
-            ) {
-                if editor::clear_format(&mut self.doc, &mut self.editor) {
-                    self.on_changed();
-                    self.status = "已清除格式".to_string();
-                } else {
-                    self.status = "这一块不是文本段落，没有可清除的格式".to_string();
-                }
-            }
-            // 三种列表摆在橡皮擦后面，从「插入」下拉里移出来方便高频使用
+            // 三种列表从「插入」下拉里移出来，方便高频使用
             for (label, cmd) in [
                 ("列表", Command::Bullet),
                 ("编号", Command::Ordered),
@@ -3654,6 +3592,8 @@ impl eframe::App for MarkdApp {
                 }
                 // 跨块拖选已在 show_editor 帧末聚合进 cross_sel，不会到达这里
                 Action::CrossDrag(..) => {}
+                // 双击选词 / 三击选整段 / Shift+点击扩选：同样在 show_editor 聚合
+                Action::WordSel(..) | Action::BlockSel(..) | Action::ShiftClick(..) => {}
                 Action::FoldToggle(i) => {
                     // 折叠/展开代码块：只改视图状态，不动文档。
                     if !self.editor.folded.insert(i) {
@@ -3772,6 +3712,109 @@ mod tests {
         app.editor.last_sel = Some((0, 2, 6)); // 选中「这段文字」
         app.execute(Command::Bold, &ctx);
         assert_eq!(app.doc.source(), "加粗**这段文字**");
+    }
+
+    /// 跨块拖选：鼠标选中某块的文字后点加粗，只加粗选中的文字，
+    /// 不碰光标所在的活动块（两者往往不是同一行）。
+    #[test]
+    fn bold_applies_to_cross_sel_not_active_block() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.doc = Document::new("光标行\n\n第二行选中文字结尾\n\n第三行", None);
+        app.editor.active = 0; // 光标在第 0 块
+        // 鼠标拖选的是第 2 块的「选中文字」（字符 3..7）
+        app.editor.cross_sel = Some((2, 3, 2, 7));
+        app.execute(Command::Bold, &ctx);
+        assert_eq!(app.doc.blocks[0].source(), "光标行", "光标所在行不应被加粗");
+        assert_eq!(app.doc.blocks[2].source(), "第二行**选中文字**结尾");
+    }
+
+    /// 跨多块选区：首块取选中片段、中间块整块、尾块取片段。
+    #[test]
+    fn bold_cross_sel_spans_multiple_blocks() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.doc = Document::new("甲甲乙丙丁\n\n第二块全文\n\n戊己庚辛", None);
+        app.editor.active = 0;
+        // 选区：块0 的 2..5（乙丙丁） → 块4 的 0..2（戊己）；0/4 是块下标
+        app.editor.cross_sel = Some((0, 2, 4, 2));
+        app.execute(Command::Bold, &ctx);
+        assert_eq!(app.doc.blocks[0].source(), "甲甲**乙丙丁**");
+        assert_eq!(app.doc.blocks[4].source(), "**戊己**庚辛");
+    }
+
+    /// 再次对已加粗的选区点加粗 → 取消加粗。
+    #[test]
+    fn bold_cross_sel_toggles_off() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.doc = Document::new("前缀粗体后缀", None);
+        app.editor.cross_sel = Some((0, 2, 0, 4));
+        app.execute(Command::Bold, &ctx);
+        assert_eq!(app.doc.source(), "前缀**粗体**后缀");
+        // 渲染态仍显示纯文本「前缀粗体后缀」，再次选中「粗体」应取消加粗
+        app.editor.cross_sel = Some((0, 2, 0, 4));
+        app.execute(Command::Bold, &ctx);
+        assert_eq!(app.doc.source(), "前缀粗体后缀");
+    }
+
+    /// 无跨块选区时，加粗仍作用于活动块（原有行为不变）。
+    #[test]
+    fn bold_without_cross_sel_uses_active_block() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.doc = Document::new("正文一段", None);
+        app.editor.last_sel = Some((0, 2, 4));
+        app.execute(Command::Bold, &ctx);
+        assert_eq!(app.doc.source(), "正文**一段**");
+    }
+
+    /// 行内代码按钮：跨块拖选一段文字后点「行内代码」，应只包裹选中文字，
+    /// 光标所在的活动块不受影响（与加粗共用 wrap 逻辑）。
+    #[test]
+    fn inline_code_applies_to_cross_sel() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.doc = Document::new("光标行\n\n第二行选中文字结尾", None);
+        app.editor.active = 0;
+        app.editor.cross_sel = Some((2, 3, 2, 7)); // 选中块2的「选中文字」
+        app.execute(Command::Code, &ctx);
+        assert_eq!(app.doc.blocks[0].source(), "光标行", "光标行不应被改动");
+        assert_eq!(app.doc.blocks[2].source(), "第二行`选中文字`结尾");
+    }
+
+    /// 点「有序列表」「无序列表」按钮：把当前段落转成列表项、不新增块。
+    #[test]
+    fn list_buttons_convert_current_block() {
+        let ctx = egui::Context::default();
+        for (cmd, want_marker) in [(Command::Ordered, "1."), (Command::Bullet, "-")] {
+            let mut app = test_app();
+            app.doc = Document::new("列表内容", None);
+            app.execute(cmd.clone(), &ctx);
+            assert_eq!(app.doc.blocks.len(), 1, "不应新增块");
+            assert!(
+                matches!(&app.doc.blocks[0], crate::ast::Block::ListItem { item, .. } if item.marker == want_marker),
+                "{:?} 应转成标记 {want_marker} 的列表项: {:?}",
+                &cmd,
+                app.doc.blocks[0]
+            );
+        }
+    }
+
+    /// 点「任务列表」按钮：把光标所在段落转成任务项，保留文字、不新增块。
+    #[test]
+    fn task_button_converts_current_block() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.doc = Document::new("写文档", None);
+        app.execute(Command::Task, &ctx);
+        assert_eq!(app.doc.blocks.len(), 1, "不应新增块，只转换当前块");
+        assert!(
+            matches!(&app.doc.blocks[0], crate::ast::Block::ListItem { item, .. } if item.checked == Some(false)),
+            "当前段应转成任务项: {:?}",
+            app.doc.blocks[0]
+        );
+        assert_eq!(app.doc.source(), "- [ ] 写文档");
     }
 
     /// 即时渲染态：inline_job 把 **...** 的内容渲染为粗体、标记隐藏。
@@ -4295,11 +4338,16 @@ mod tests {
             "前置条件：光标应在代码块的编辑框里"
         );
 
-        // 从测试钩子里拿到语言下拉按钮的矩形与弹层 id
+        // 从测试钩子里拿到语言下拉按钮的矩形与弹层 id。
+        // 只取本测试线程写入的记录：COMBO_TRACE 是全局的，并行跑别的
+        // 渲染测试时也会往里 push，取 last() 会偶尔拿到别人的矩形（偶发失败）。
+        let me = std::thread::current().id();
         let (rect, popup_id, ..) = *crate::render::COMBO_TRACE
             .lock()
             .unwrap()
-            .last()
+            .iter()
+            .rev()
+            .find(|e| e.4 == me)
             .expect("代码块编辑态应渲染语言下拉");
         crate::render::COMBO_TRACE.lock().unwrap().clear();
 

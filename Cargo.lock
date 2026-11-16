@@ -1716,7 +1716,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "markd"
-version = "2026.11.16"
+version = "2026.11.17"
 dependencies = [
  "eframe",
  "egui",
@@ -1728,7 +1728,7 @@ dependencies = [
 
 [[package]]
 name = "markd-core"
-version = "2026.11.16"
+version = "2026.11.17"
 dependencies = [
  "egui",
  "serde",
@@ -1737,7 +1737,7 @@ dependencies = [
 
 [[package]]
 name = "markd-platform"
-version = "2026.11.16"
+version = "2026.11.17"
 dependencies = [
  "egui",
  "markd-core",
@@ -1746,7 +1746,7 @@ dependencies = [
 
 [[package]]
 name = "markd-ui"
-version = "2026.11.16"
+version = "2026.11.17"
 dependencies = [
  "eframe",
  "egui",
