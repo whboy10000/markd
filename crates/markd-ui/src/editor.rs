@@ -645,7 +645,7 @@ pub fn show_editor(
                                 egui::Pos2::new(gutter_rect.right() - 8.0, out.galley_pos.y + y),
                                 egui::Align2::RIGHT_CENTER,
                                 &line_no.to_string(),
-                                egui::FontId::monospace(theme.mono * 0.85),
+                                egui::FontId::monospace(theme.mono),
                                 theme.dim.gamma_multiply(0.7),
                             );
                         }
@@ -1185,7 +1185,7 @@ pub fn show_editor(
                                     ),
                                     egui::Align2::RIGHT_CENTER,
                                     &block_start_lines[idx].to_string(),
-                                    egui::FontId::proportional(theme.body * 0.7),
+                                    egui::FontId::proportional(theme.body),
                                     theme.dim.gamma_multiply(0.75),
                                 );
                             }
