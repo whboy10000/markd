@@ -240,7 +240,9 @@ jobs:
           set -euo pipefail
           # 取全量 tag 才能和上一版做对比
           git fetch --tags --force --quiet
-          PREV=$(git tag --sort=-v:refname | grep -vxF "$TAG" | head -n 1 || true)
+          # 只认版本号形式的标签（2026.11.17.1）；CI 还会创建滚动标签
+          # latest，它会被 v:refname 排到最前，误当成"上一版"导致对比区间为空。
+          PREV=$(git tag --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+' | grep -vxF "$TAG" | head -n 1 || true)
           if [ -n "$PREV" ]; then
             RANGE="${PREV}..${TAG}"
             COMPARE="**完整变更**：[${PREV}...${TAG}](https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${TAG})"
@@ -257,7 +259,9 @@ jobs:
               *修复*|*修正*|*解决*|*fix*|*bug*) echo "- $line" >> "$FIX" ;;
               *) echo "- $line" >> "$OTHER" ;;
             esac
-          done < <(git log "$RANGE" --pretty=format:'%s' --no-merges)
+          # 结尾补 %n：git log --pretty=format 不带末尾换行，while read 会漏掉
+          # 最后一条提交（通常是区间里最早的那条）。
+          done < <(git log "$RANGE" --pretty=format:'%s%n' --no-merges)
 
           {
             echo "## 本次更新"
