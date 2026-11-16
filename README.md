@@ -22,9 +22,13 @@ Markd 是一个桌面 Markdown 编辑器。Markdown 解析、块级实时渲染�
 
 从 [Releases](https://github.com/whboy10000/markd/releases/latest) 下载对应安装包：
 
-- **macOS**：`Markd-*-macos.dmg`，打开后把 Markd 拖进 Applications 即可。
+- **macOS**（三种架构任选其一）：
+  - `Markd-*-macos-intel.dmg`：Intel 芯片
+  - `Markd-*-macos-apple-silicon.dmg`：Apple Silicon（M 系列）芯片
+  - `Markd-*-macos-universal.dmg`：通用二进制，两种芯片都能跑
+  - 打开后把 Markd 拖进 Applications 即可。
 - **Windows**：`Markd-*-windows-setup.exe`，安装向导里可选目录，会自动创建开始菜单与桌面快捷方式。
-- **Linux**：`Markd-*-linux-amd64.deb`（`sudo dpkg -i Markd-*.deb`，会注册应用菜单项），或直接用 `.tar.gz` 里的二进制。
+- **Linux**：`Markd-*-linux-amd64.deb`（`sudo dpkg -i Markd-*.deb`）、`Markd-*-linux-amd64.rpm`（`sudo rpm -i Markd-*.rpm`），都会注册应用菜单项；或直接用 `.tar.gz` 里的二进制。
 
 ## 运行
 
@@ -96,6 +100,21 @@ markd-core → markd-platform → markd-ui → markd (bin)
 | `markd-ui` | egui 界面：块级渲染、Hybrid View 编辑器、侧栏、PTY 终端、各类浮层 |
 | `markd` | 二进制入口 |
 
+## 性能：50 万字长文打开不卡顿
+
+Markd 的渲染管线为超长文档做过专门设计——**几十万字的单文件打开即写，输入与滚动全程流畅**。关键优化：
+
+- **解析只做一次，编辑走增量**。打开文档时全文解析一次；之后每次按键只重新解析**当前编辑的那一块**（微秒级，~3µs），绝不全文重解析。只有粘贴空行等把单块拆成多块的情况才回退一次全文解析。这就是"编辑不随文档变长而变慢"的核心。
+- **每帧成本与文档总长无关**。每帧只克隆活动块的源码用于编辑，非活动块只做只读排版；不存在"每帧对全文做 O(n) 字符串拼接"的路径。
+- **不用虚拟滚动**。尝试过"估算高度 + 占位"的虚拟滚动，但估算高度与实测高度的差异会让滚动条反复回弹（表现为滚轮滚不动）。Markd 渲染全部块，把单块渲染做到足够快，实测 10 万字 / 989 块单帧 ~9.5ms（最差 ~13ms），远低于 60fps 预算。
+- **显式宽度排版**。所有文本块都用固定可用宽度预排版成 galley 再交给 `Label`，避免横向布局里 `Label` 退化成无限宽导致长段落不换行、每帧重排。
+- **撤销栈节流**。快照按 450ms 节流记录（上限 200 条），连续输入不会把撤销栈打爆，也不会每键复制一次全文。
+- **懒加载的工作区**。文件树扫描有 4000 文件 / 6 万条目上限兜底；快速打开与双链关系图都只在面板打开时才后台扫描，绝不在启动阶段同步扫盘。
+- **图标零运行时开销**。侧栏 220+ 个 SVG 图标编译期嵌入二进制，运行时只栅格化一次进纹理缓存，之后每帧只是纹理绘制。
+- **开发构建也够快**。`[profile.dev.package."*"] opt-level = 3` 只对依赖做全量优化，`cargo run` 直接可日用，自己代码仍可断点调试。
+
+实测基线（10 万字 / 989 块）：全文解析 ~11ms（仅打开时一次）；单块编辑增量写回 ~3µs；编辑器单帧 ~9.5ms。50 万字文档约为该基线 5 倍体量，打开与编辑同样全程流畅。
+
 ## 配置
 
 配置与版本快照保存在用户目录 `~/.markd/`，不写入项目目录。
@@ -110,4 +129,4 @@ GitHub Actions 会在 macOS / Windows / Linux 三个平台自动构建（`.githu
 
 - push 到 `main` / `master` 或提 PR 时执行编译与测试；
 - 编译产物上传为 Actions Artifacts，可直接下载运行；
-- 推送 `v*` 标签时自动创建 Release 并附带三平台可执行文件。
+- 推送 `v*` / `20*` 标签时自动创建 Release：macOS 产出 Intel / Apple Silicon / 通用三种 DMG（`scripts/package-macos.sh`，本地与 CI 同一份逻辑），Linux 产出 `.deb` / `.rpm` / `.tar.gz`，Windows 产出 NSIS 安装程序。
