@@ -2002,9 +2002,11 @@ mod tests {
         assert_eq!(grid[0].len(), 2);
         assert!(table_op_on_grid(&mut grid, &mut align, TableOp::SetAlign(Align::Center)));
         assert_eq!(align, vec![Align::Center, Align::Center]);
-        // 表头行不可删；最后一列不可删
+        // 表头行不可删；只剩一列时删列无效
         assert!(!table_op_on_grid(&mut grid, &mut align, TableOp::DeleteRow(0)));
-        assert!(!table_op_on_grid(&mut grid, &mut align, TableOp::DeleteCol(1)));
+        assert!(table_op_on_grid(&mut grid, &mut align, TableOp::DeleteCol(1)));
+        assert_eq!(grid[0].len(), 1, "删掉最后一列后仍保留一列");
+        assert!(!table_op_on_grid(&mut grid, &mut align, TableOp::DeleteCol(0)));
         assert_eq!(grid.len(), 2);
     }
 
