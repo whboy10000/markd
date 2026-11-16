@@ -489,7 +489,7 @@ fn icon_bytes(key: &str) -> Option<&'static [u8]> {
         "svelte" => "svelte.svg",
         "json" => "json.svg",
         "yaml" => "yaml.svg",
-        "toml" => "document.svg", // TODO: toml.svg 素材缺失，临时回落通用文档图标；素材恢复后改回 "toml.svg"
+        "toml" => "toml.svg",
         "xml" => "xml.svg",
         "table" => "table.svg",
         "database" => "database.svg",
