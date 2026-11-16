@@ -29,3 +29,6 @@ dist/
 Markd-*.tar.gz
 Markd-*-setup.exe
 Markd-*.deb
+
+# 完整图标素材库：只作本地参考，实际打包用 assets/file-icons 里的子集
+assets/icons/

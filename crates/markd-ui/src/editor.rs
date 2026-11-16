@@ -6,7 +6,7 @@ use crate::ast::Block;
 use crate::document::{Document, OutlineItem};
 use crate::render::{self, Action, ImageCache, RenderEnv};
 use crate::theme::Theme;
-use egui::{self, Id, Key, TextEdit};
+use egui::{self, Id, Key, Sense, TextEdit};
 use std::path::Path;
 
 #[derive(Default)]
@@ -33,6 +33,9 @@ pub struct EditorState {
     pub pending_caret: Option<egui::Vec2>,
     /// 查找/替换跳转要求选中的文字：(块下标, 起始字符, 结束字符)，用后清零。
     pub select_req: Option<(usize, usize, usize)>,
+    /// 格式按钮用完选区后把光标收敛成单点：(块下标, 字符下标)，用后清零。
+    /// 不然文本框里存的旧选区会让刚处理过的文字一直保持选中状态。
+    pub caret_req: Option<(usize, usize)>,
     /// 缩进空格数（设置里可调）。
     pub tab_size: usize,
     /// 是否自动补全括号/引号。
@@ -146,7 +149,13 @@ fn strip_block_prefix(src: &str) -> String {
 /// 去掉行内强调标记：反引号全部去掉，成对的星号/下划线/波浪号去掉。
 /// 单个 * 和 _ 保留，免得把 snake_case、2*3 这种正常文字也擦掉。
 fn strip_inline_markers(s: &str) -> String {
-    let s = s.replace("<u>", "").replace("</u>", "");
+    let s = s
+        .replace("<u>", "")
+        .replace("</u>", "")
+        .replace("<strong>", "")
+        .replace("</strong>", "")
+        .replace("<em>", "")
+        .replace("</em>", "");
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
@@ -264,8 +273,95 @@ pub fn wrap(
     }
     doc.record();
     doc.edit_block(idx, &src_out);
+    // 选区已经用掉：清掉记录，并要求把光标收敛成单点（见 caret_req），
+    // 不然文本框里存的旧选区会让刚加粗/斜体过的文字一直保持选中。
+    state.sel = None;
     state.last_sel = None;
     state.last_cursor = (a + open_c).min(out.chars().count());
+    state.caret_req = Some((idx, state.last_cursor));
+}
+
+/// 当前选区（块下标, 起始, 结束, 选中文字）。
+///
+/// 点工具条按钮或打开弹窗时编辑框已经失焦，实时选区 `sel` 可能被清空，
+/// 所以要回退到 `last_sel`（最近一次有效选区）。选区为空或块已被删除时返回 None。
+pub fn selection_text(
+    doc: &Document,
+    state: &EditorState,
+) -> Option<(usize, usize, usize, String)> {
+    let (idx, a, z) = match state.sel {
+        Some((a, z)) => (state.active, a, z),
+        None => state
+            .last_sel
+            .filter(|(b, _, _)| *b == state.active)
+            .map(|(b, a, z)| (b, a, z))?,
+    };
+    let b = doc.blocks.get(idx)?;
+    let chars: Vec<char> = block_buffer(b).chars().collect();
+    let (a, z) = (a.min(chars.len()), z.min(chars.len()));
+    if a >= z {
+        return None;
+    }
+    Some((idx, a, z, chars[a..z].iter().collect()))
+}
+
+/// 把一个链接插进指定块：`[label](url)`。
+///
+/// - `target` 是打开弹窗前记住的选区；确认时直接按它写回，不依赖编辑框还持有焦点。
+/// - 没有选区时插入到光标处；label 为空则用 URL 当显示文字，避免出现看不见的链接。
+pub fn insert_link(
+    doc: &mut Document,
+    state: &mut EditorState,
+    target: Option<(usize, usize, usize)>,
+    label: &str,
+    url: &str,
+) -> bool {
+    let url = url.trim();
+    if url.is_empty() {
+        return false;
+    }
+    let idx = target.map(|(i, _, _)| i).unwrap_or(state.active);
+    let Some(b) = doc.blocks.get(idx) else {
+        return false;
+    };
+    let text = block_buffer(b);
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let (a, z) = target
+        .map(|(_, a, z)| (a.min(len), z.min(len)))
+        .unwrap_or_else(|| {
+            let p = state.last_cursor.min(len);
+            (p, p)
+        });
+    let (a, z) = if a <= z { (a, z) } else { (z, a) };
+
+    // 标签里的方括号会截断 Markdown 链接语法；换行也会破坏单行链接。
+    let mut label = label.trim().replace('\n', " ").replace('\r', " ");
+    if label.is_empty() {
+        label = url.to_string();
+    }
+    label = label.replace('[', "［").replace(']', "］");
+    // 空格和右括号会提前结束 `(url)`，编码掉而不是让解析器截断链接。
+    let url = url.replace(' ', "%20").replace(')', "%29");
+
+    let mut out: String = chars[..a].iter().collect();
+    out.push('[');
+    out.push_str(&label);
+    out.push_str("](");
+    out.push_str(&url);
+    out.push(')');
+    out.extend(&chars[z..]);
+
+    let src_out = rebuild_source(b, &out);
+    doc.record();
+    doc.edit_block(idx, &src_out);
+    state.sel = None;
+    state.last_sel = None;
+    state.last_cursor =
+        (a + label.chars().count() + url.chars().count() + 4).min(out.chars().count());
+    state.caret_req = Some((idx, state.last_cursor));
+    state.focus_req = Some(idx);
+    true
 }
 
 pub fn toggle_task(doc: &mut Document, idx: usize) {
@@ -324,6 +420,8 @@ enum EditKind {
     Source,
     Heading(u8),
     Code(String),
+    /// 图表块（mermaid 等）：编辑时隐藏 ``` 围栏，只编辑图形描述代码。
+    Diagram(String),
 }
 
 impl EditKind {
@@ -331,6 +429,7 @@ impl EditKind {
         match b {
             Block::Heading { level, .. } => EditKind::Heading(*level),
             Block::Code { lang, .. } => EditKind::Code(lang.clone()),
+            Block::Diagram { .. } => EditKind::Diagram("mermaid".to_string()),
             _ => EditKind::Source,
         }
     }
@@ -346,7 +445,8 @@ impl EditKind {
                     text.trim_end()
                 )
             }
-            EditKind::Code(lang) => {
+            // 图表块与代码块同构：都补回 ```lang 围栏，往返一致。
+            EditKind::Code(lang) | EditKind::Diagram(lang) => {
                 let mut s = String::with_capacity(text.len() + lang.len() + 8);
                 s.push_str("```");
                 s.push_str(lang);
@@ -400,6 +500,26 @@ pub(crate) fn rebuild_source(b: &Block, text: &str) -> String {
     EditKind::of(b).rebuild(text)
 }
 
+/// 滚动条所在的那条窄带：点这里应该交给滚动条，不能当成空白点击。
+fn scroll_bar_zone(ui: &egui::Ui, inner_rect: egui::Rect, content_height: f32) -> egui::Rect {
+    if content_height > inner_rect.height() {
+        let w = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin;
+        egui::Rect::from_min_max(
+            egui::pos2(inner_rect.right() - w - 2.0, inner_rect.top()),
+            egui::pos2(inner_rect.right() + 8.0, inner_rect.bottom()),
+        )
+    } else {
+        egui::Rect::NOTHING
+    }
+}
+
+/// 空白点击调试：`MARKD_TRACE_BLANK=1 cargo run` 时打印判定结果。
+fn trace_blank(pos: &Option<egui::Pos2>, msg: &str) {
+    if std::env::var("MARKD_TRACE_BLANK").is_ok() {
+        eprintln!("[blank] pointer={pos:?} {msg}");
+    }
+}
+
 #[allow(clippy::too_many_arguments, deprecated)]
 pub fn show_editor(
     ui: &mut egui::Ui,
@@ -423,7 +543,8 @@ pub fn show_editor(
         // TextEdit 会随内容自动撑高，直接放在父 Ui 上会被裁剪、滚轮无处生效，
         // 表现就是源码模式下鼠标滚不动；必须像下方混合模式一样包一层 ScrollArea。
         let mut changed = false;
-        egui::ScrollArea::vertical()
+        let mut editor_rect = egui::Rect::NOTHING;
+        let scroll = egui::ScrollArea::vertical()
             .id_salt("source_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -435,7 +556,36 @@ pub fn show_editor(
                     .code_editor()
                     .show(ui);
                 changed = out.response.changed();
+                editor_rect = out.response.rect;
             });
+        // 源码模式同样支持「点空白落光标」：点在编辑框外（页边距/正文下方）时，
+        // 把光标移到文档末尾（最后一行）并立刻聚焦，行为与混合模式一致。
+        let pointer = ctx.input(|i| i.pointer.interact_pos());
+        let clicked = ctx.input(|i| i.pointer.primary_clicked());
+        let bar_zone = scroll_bar_zone(ui, scroll.inner_rect, scroll.content_size.y);
+        let blank = pointer.filter(|p| {
+            clicked
+                && ui.max_rect().contains(*p)
+                && !bar_zone.contains(*p)
+                && !editor_rect.contains(*p)
+                && ctx
+                    .layer_id_at(*p)
+                    .is_none_or(|layer| layer == ui.layer_id())
+        });
+        if let Some(p) = blank {
+            let id = Id::new(("source_editor", tab_key));
+            if let Some(mut ts) = egui::TextEdit::load_state(ui.ctx(), id) {
+                ts.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(src.chars().count()),
+                )));
+                ts.store(ui.ctx(), id);
+            }
+            ctx.memory_mut(|m| m.request_focus(id));
+            ctx.request_repaint();
+            trace_blank(&pointer, &format!("source -> 文档末尾 (点在 {p:?})"));
+        } else {
+            trace_blank(&pointer, "source miss");
+        }
         if changed {
             doc.maybe_record();
             doc.set_source(&src);
@@ -443,6 +593,15 @@ pub fn show_editor(
         }
         return EditorEvent::None;
     }
+
+    // 编辑区空白处也要能落光标。先登记一个底层热区作为兜底；真正判定用
+    // 本帧指针位置 + 块矩形（见 ScrollArea 之后）——不依赖哪个控件抢到这次
+    // 点击，所以即使 ScrollArea/滚动条吃掉了事件，空白点击也不会丢。
+    let bg = ui.interact(
+        ui.max_rect(),
+        Id::new(("editor_blank", tab_key)),
+        Sense::click(),
+    );
 
     let active = state.active.min(doc.blocks.len().saturating_sub(1));
     state.active = active;
@@ -499,8 +658,10 @@ pub fn show_editor(
     let mut table_edit_src: Option<String> = None;
     // 代码块编辑态里更换语言时置位，帧末统一处理
     let mut lang_change: Option<String> = None;
+    // 本帧每个块实际占用的矩形：(块下标, 矩形)。空白点击靠它区分「点在块上」和「点在留白」。
+    let mut block_rects: Vec<(usize, egui::Rect)> = Vec::new();
 
-    egui::ScrollArea::vertical()
+    let scroll_out = egui::ScrollArea::vertical()
         .id_salt("editor_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -647,6 +808,9 @@ pub fn show_editor(
                             };
                             // 编辑态行内排版：缓冲区还是原始 Markdown，但标记被隐藏，
                             // 看起来就是渲染后的富文本，而不是源码。
+                            // 光标位置传给排版器：紧挨光标的标记要显示出来，
+                            // 不然在加粗文字旁边按 Shift+8 打的星号会看不见。
+                            let caret = state.last_cursor;
                             let mut layouter =
                                 |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
                                     let job = render::inline_job(
@@ -655,13 +819,14 @@ pub fn show_editor(
                                         theme.body,
                                         theme.text,
                                         wrap,
+                                        Some(caret),
                                     );
                                     ui.fonts_mut(|f| f.layout_job(job))
                                 };
                             // 代码块编辑时也走高亮排版：缓冲区是纯代码，用同一套词法着色，
                             // 边打字边能看到关键字/字符串的颜色，而不是退化成一片纯文本。
                             let code_lang = match &edit_kind {
-                                EditKind::Code(l) => l.as_str(),
+                                EditKind::Code(l) | EditKind::Diagram(l) => l.as_str(),
                                 _ => "",
                             };
                             let mut code_layouter =
@@ -684,7 +849,7 @@ pub fn show_editor(
                                     .text_color(theme.heading)
                                     .frame(egui::Frame::NONE)
                                     .return_key(Option::<egui::KeyboardShortcut>::None),
-                                EditKind::Code(_) => te
+                                EditKind::Code(_) | EditKind::Diagram(_) => te
                                     .font(egui::FontId::new(
                                         theme.mono,
                                         egui::FontFamily::Monospace,
@@ -707,6 +872,17 @@ pub fn show_editor(
                                     .layouter(&mut layouter),
                             };
                             let out = te.show(ui);
+                            // 编辑态里单击链接也直接打开：用户刚插好链接就想点一下验证，
+                            // 这时块还处于编辑态，不能只把光标放进链接文字里。
+                            // 仍可用方向键把光标移进链接标签修改文字。
+                            if out.response.response.clicked() {
+                                if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+                                    let ci = out.galley.cursor_from_pos(p - out.galley_pos).index.0;
+                                    if let Some(url) = render::link_at_markdown(&active_buf, ci) {
+                                        actions.push(Action::OpenLink(url));
+                                    }
+                                }
+                            }
                             // 点击进入编辑：把光标放到刚才点击的位置，而不是跳到末尾/居中
                             if let Some(off) = state.pending_caret.take() {
                                 let ccursor = out.galley.cursor_from_pos(off);
@@ -748,6 +924,22 @@ pub fn show_editor(
                                     Some((a.min(b).min(len), a.max(b).min(len)))
                                 };
                             }
+                            // 格式按钮（加粗/斜体等）用完选区后，把文本框里存的
+                            // 旧选区收敛成单点光标，不然那段文字会一直保持选中。
+                            if let Some((bi, pos)) = state.caret_req
+                                && bi == idx
+                            {
+                                state.caret_req = None;
+                                let pos = pos.min(len);
+                                let mut ts = out.state.clone();
+                                ts.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                                    egui::text::CCursor::new(pos),
+                                )));
+                                ts.store(ui.ctx(), id);
+                                cursor_idx = pos;
+                                selection = None;
+                                resp.request_focus();
+                            }
                             if let Some(f) = state.focus_req {
                                 if f == idx {
                                     resp.request_focus();
@@ -766,6 +958,9 @@ pub fn show_editor(
                             };
                             render::render_block(ui, idx, block, &mut env, focus_mode)
                         };
+                        if resp.rect.is_positive() {
+                            block_rects.push((idx, resp.rect));
+                        }
                         if resp.clicked() {
                             new_active = Some(idx);
                             state.clicked = true;
@@ -812,6 +1007,23 @@ pub fn show_editor(
             }
         });
 
+    // 空白点击判定：不依赖哪个控件抢到这次点击，直接看指针落点。
+    // 条件：在编辑区范围内、不在任何块（含块里的链接/按钮）上、且事件归属
+    // 编辑区这一层（弹窗/对话框盖在上面时不算）。滚动条那一条也要排除。
+    let pointer = ctx.input(|i| i.pointer.interact_pos());
+    let primary_clicked = ctx.input(|i| i.pointer.primary_clicked());
+    let bar_zone = scroll_bar_zone(ui, scroll_out.inner_rect, scroll_out.content_size.y);
+    let blank_pos = pointer.filter(|p| {
+        ui.max_rect().contains(*p)
+            && !bar_zone.contains(*p)
+            && !block_rects.iter().any(|(_, r)| r.contains(*p))
+            && ctx
+                .layer_id_at(*p)
+                .is_none_or(|layer| layer == ui.layer_id())
+    });
+    // bg 是兜底：极端情况下拿不到指针坐标，但底层热区仍然命中了。
+    let blank_clicked = (primary_clicked && blank_pos.is_some()) || bg.clicked();
+
     if !state.read_only {
         state.last_cursor = cursor_idx;
         state.sel = selection;
@@ -829,6 +1041,48 @@ pub fn show_editor(
         );
     }
     state.focus_req = None;
+
+    // 点在编辑区空白处：重新聚焦并把光标放回去。
+    // - 新建文档只有一个块：无论点多少次，光标都回到第一行闪烁（caret 0）。
+    // - 多块文档：聚焦离落点最近的块；点在正文下方时放到最后一块末尾，方便继续写。
+    // 这一步要放在 `focus_req = None` 之后，否则请求会被同一帧清掉，
+    // 下一帧 TextEdit 拿不到焦点，光标依旧不闪。
+    if blank_clicked {
+        // 空白点击统一落到「可以继续输入的最后一行」：最后一块的末尾。
+        // 新建空文档只有一块，末尾就是第一行行首——所以无论点多少次、点哪里，
+        // 光标都在第一行闪烁。
+        let target = doc.blocks.len().saturating_sub(1);
+        let caret = doc
+            .blocks
+            .get(target)
+            .map(|b| block_buffer(b).chars().count())
+            .unwrap_or(0);
+        state.active = target;
+        state.focus_req = Some(target);
+        state.caret_req = Some((target, caret));
+        state.last_cursor = caret;
+        state.sel = None;
+        state.last_sel = None;
+        state.pending_caret = None;
+        // 立即把焦点设过去，不等下一帧的 TextEdit 重新请求：
+        // 中间任何一帧都不会出现「没有光标」的空窗。
+        ctx.memory_mut(|m| m.request_focus(Id::new(("block_edit", tab_key, target))));
+        state.clicked = true;
+        ctx.request_repaint();
+        trace_blank(
+            &blank_pos,
+            &format!("block {target} caret {caret} (blocks={})", doc.blocks.len()),
+        );
+    } else {
+        trace_blank(
+            &blank_pos,
+            &format!(
+                "miss: primary_clicked={primary_clicked} blocks={} bg_clicked={}",
+                block_rects.len(),
+                bg.clicked()
+            ),
+        );
+    }
 
     // ---------------- 结构性按键（回车 / 退格 / Tab）----------------
     // 终端持有键盘焦点时（read_only = true），按键全部归终端：
@@ -988,6 +1242,35 @@ pub fn show_editor(
 mod tests {
     use super::*;
 
+    /// 图表块编辑往返：编辑缓冲只含图形代码（无围栏），改完能补回围栏写回。
+    /// 插入流程图后必须还能再次编辑——回归「点击图形无法重新激活块」的修复。
+    #[test]
+    fn diagram_edit_roundtrip() {
+        let src = "```mermaid\nflowchart TD\n  A[开始] --> B{判断}\n  B -->|是| C[结束]\n```";
+        let doc = Document::new(src, None);
+        let b = &doc.blocks[0];
+        assert!(
+            matches!(b, Block::Diagram { .. }),
+            "应解析出图表块，实际是别的块类型"
+        );
+        let ek = EditKind::of(b);
+        assert!(
+            matches!(ek, EditKind::Diagram(_)),
+            "图表块应识别为 Diagram 编辑类型"
+        );
+        assert_eq!(
+            block_buffer(b),
+            "flowchart TD\n  A[开始] --> B{判断}\n  B -->|是| C[结束]",
+            "编辑缓冲不应包含 ``` 围栏"
+        );
+        // 改代码后重建源码：补回围栏，图形随之更新
+        let rebuilt = rebuild_source(b, "flowchart TD\n  X[起点] --> Y[终点]");
+        assert_eq!(
+            rebuilt,
+            "```mermaid\nflowchart TD\n  X[起点] --> Y[终点]\n```"
+        );
+    }
+
     fn frame(width: f32, f: impl FnMut(&mut egui::Ui)) {
         frame_sized(width, 900.0, f);
     }
@@ -1123,10 +1406,16 @@ mod tests {
         // 末尾空行（缓冲以 \n 结尾）也要能往返：在末行回车产生的空行不丢失
         let src = EditKind::Code("rust".to_string()).rebuild("a\n");
         let blocks = crate::ast::parse(&src);
-        assert!(matches!(&blocks[0], Block::Code { code, .. } if code == "a\n"), "{src}");
+        assert!(
+            matches!(&blocks[0], Block::Code { code, .. } if code == "a\n"),
+            "{src}"
+        );
         let src = EditKind::Code("rust".to_string()).rebuild("\n");
         let blocks = crate::ast::parse(&src);
-        assert!(matches!(&blocks[0], Block::Code { code, .. } if code == "\n"), "{src}");
+        assert!(
+            matches!(&blocks[0], Block::Code { code, .. } if code == "\n"),
+            "{src}"
+        );
     }
 
     /// 清除格式：标题 / 引用 / 列表 / 任务列表都变回普通段落，行内加粗也去掉。
@@ -1206,6 +1495,44 @@ mod tests {
         assert_eq!(doc.source(), "正文[](https://)一段");
     }
 
+    /// 选中文字后打开链接弹窗：确认时用记住的选区写回，选中文字必须保留。
+    #[test]
+    fn insert_link_keeps_selected_text() {
+        let mut doc = Document::new("看这段文字", None);
+        let mut st = EditorState::default();
+        assert!(insert_link(
+            &mut doc,
+            &mut st,
+            Some((0, 1, 3)),
+            "这段",
+            "https://example.com",
+        ));
+        assert_eq!(doc.source(), "看[这段](https://example.com)文字");
+        assert_eq!(st.focus_req, Some(0));
+    }
+
+    /// 没有选区时用 URL 当显示文字，链接可见、可点。
+    #[test]
+    fn insert_link_without_selection_uses_url_label() {
+        let mut doc = Document::new("正文", None);
+        let mut st = EditorState::default();
+        st.last_cursor = 2;
+        assert!(insert_link(&mut doc, &mut st, None, "", "https://e.com"));
+        assert_eq!(doc.source(), "正文[https://e.com](https://e.com)");
+    }
+
+    /// selection_text 在失焦后会回退到 last_sel，供链接弹窗取选中文字。
+    #[test]
+    fn selection_text_falls_back_to_last_sel() {
+        let doc = Document::new("选中这段文字", None);
+        let mut st = EditorState::default();
+        st.last_sel = Some((0, 2, 4));
+        assert_eq!(
+            selection_text(&doc, &st),
+            Some((0, 2, 4, "这段".to_string()))
+        );
+    }
+
     /// 删除线（工具条按钮）：选中文字后两侧各补一个 ~~，渲染成一条横线。
     #[test]
     fn strike_wraps_selection() {
@@ -1217,6 +1544,354 @@ mod tests {
         wrap(&mut doc, &mut st, "~~", "~~", true);
         assert_eq!(doc.source(), "~~普通~~文字");
         assert!(doc.dirty);
+    }
+
+    /// 点一下编辑区空白处（按下/松开分两帧），再跑两帧让焦点落地。
+    #[allow(deprecated)]
+    fn click_blank(
+        ctx: &egui::Context,
+        doc: &mut Document,
+        state: &mut EditorState,
+        theme: &Theme,
+        images: &mut ImageCache,
+        actions: &mut Vec<crate::render::Action>,
+        pos: egui::Pos2,
+    ) {
+        run_editor_frame(
+            ctx,
+            doc,
+            state,
+            theme,
+            images,
+            actions,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        run_editor_frame(
+            ctx,
+            doc,
+            state,
+            theme,
+            images,
+            actions,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        // 给「请求焦点 + 设置光标」一帧的落地时间
+        for _ in 0..2 {
+            run_editor_frame(ctx, doc, state, theme, images, actions, vec![]);
+        }
+    }
+
+    /// 新建空白文档后，无论点多少次、点哪块空白，光标都应回到第一行并保持闪烁。
+    /// 之前只在块自身矩形内处理点击，点正文下方没有任何控件命中，焦点就丢了。
+    #[allow(deprecated)]
+    #[test]
+    fn blank_click_refocuses_first_line() {
+        let mut doc = Document::new("", None);
+        let mut state = EditorState::default();
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let ctx = egui::Context::default();
+        // 第一帧建立布局
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+
+        // 正文下方、左右页边距、页面中部：反复点，每次都必须落回第一行。
+        for (i, pos) in [
+            egui::pos2(400.0, 800.0),
+            egui::pos2(20.0, 400.0),
+            egui::pos2(780.0, 400.0),
+            egui::pos2(400.0, 300.0),
+            egui::pos2(400.0, 800.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            click_blank(
+                &ctx,
+                &mut doc,
+                &mut state,
+                &theme,
+                &mut images,
+                &mut actions,
+                pos,
+            );
+            assert_eq!(state.active, 0, "第 {} 次点空白后应回到第一个块", i + 1);
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(egui::Id::new(("block_edit", 1, 0))),
+                "第 {} 次点空白后第一行的 TextEdit 必须持有键盘焦点",
+                i + 1
+            );
+            assert_eq!(
+                state.last_cursor,
+                0,
+                "第 {} 次点空白后光标应停在第一行行首",
+                i + 1
+            );
+        }
+    }
+
+    /// 模拟真实 app 的面板结构（menubar/toolbar/tabbar/sidebar + CentralPanel）跑一帧。
+    #[allow(clippy::too_many_arguments)]
+    fn run_app_like_frame(
+        ctx: &egui::Context,
+        doc: &mut Document,
+        state: &mut EditorState,
+        theme: &Theme,
+        images: &mut ImageCache,
+        actions: &mut Vec<crate::render::Action>,
+        events: Vec<egui::Event>,
+    ) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let outline = doc.outline();
+        let mut out = ctx.run_ui(input, |root| {
+            let mut root = egui::Ui::new(
+                root.clone(),
+                egui::Id::unique("app_root"),
+                egui::UiBuilder::new(),
+            );
+            egui::Panel::top("menubar").show(&mut root, |ui| {
+                ui.label("menu");
+            });
+            egui::Panel::top("toolbar").show(&mut root, |ui| {
+                ui.label("toolbar");
+            });
+            egui::Panel::bottom("statusbar").show(&mut root, |ui| {
+                ui.label("status");
+            });
+            egui::Panel::left("sidebar")
+                .exact_size(220.0)
+                .show(&mut root, |ui| {
+                    ui.label("sidebar");
+                });
+            egui::Panel::top("tabbar").show(&mut root, |ui| {
+                ui.label("tabs");
+            });
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().inner_margin(8))
+                .show(&mut root, |ui| {
+                    let _ = show_editor(
+                        ui, doc, state, theme, ctx, images, None, &outline, false, false, false, 1,
+                        actions,
+                    );
+                });
+        });
+        out.textures_delta.clear();
+    }
+
+    /// 真实面板结构下点空白：焦点必须回到第一行（复现用户报告的 bug）。
+    #[test]
+    fn blank_click_refocuses_in_app_like_layout() {
+        let mut doc = Document::new("", None);
+        let mut state = EditorState::default();
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let ctx = egui::Context::default();
+        run_app_like_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+        let pos = egui::pos2(600.0, 500.0);
+        run_app_like_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        run_app_like_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        // 给「请求焦点 + 设置光标」两帧的落地时间
+        for _ in 0..2 {
+            run_app_like_frame(
+                &ctx,
+                &mut doc,
+                &mut state,
+                &theme,
+                &mut images,
+                &mut actions,
+                vec![],
+            );
+        }
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(egui::Id::new(("block_edit", 1, 0))),
+            "真实面板结构下点空白也必须把焦点还给第一行"
+        );
+    }
+
+    /// 多块文档：无论点正文下方还是页边空白，光标都落到最后一行（最后一块末尾）。
+    #[allow(deprecated)]
+    #[test]
+    fn blank_click_below_content_focuses_last_block_end() {
+        let mut doc = Document::new("a\n\nb", None);
+        let mut state = EditorState::default();
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let ctx = egui::Context::default();
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+
+        // 点正文下方、点正文左侧的空白，结果都一样：光标落在最后一行（最后一块末尾）。
+        let last = doc.blocks.len() - 1;
+        for pos in [egui::pos2(400.0, 800.0), egui::pos2(20.0, 300.0)] {
+            click_blank(
+                &ctx,
+                &mut doc,
+                &mut state,
+                &theme,
+                &mut images,
+                &mut actions,
+                pos,
+            );
+            assert_eq!(state.active, last, "点空白 {pos:?} 应回到最后一块");
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(egui::Id::new(("block_edit", 1, last))),
+                "点空白 {pos:?} 后最后一块的 TextEdit 必须持有键盘焦点"
+            );
+            assert_eq!(
+                state.last_cursor, 1,
+                "点空白 {pos:?} 光标应停在最后一块末尾"
+            );
+        }
+    }
+
+    /// 源码模式：点编辑框外的空白，光标跳到文档末尾（最后一行）并重新聚焦。
+    #[test]
+    fn source_mode_blank_click_focuses_document_end() {
+        let mut doc = Document::new("a\nb", None);
+        let mut state = EditorState::default();
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let ctx = egui::Context::default();
+        let outline = doc.outline();
+        let mut src_frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let outline = &outline;
+            let mut out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let _ = show_editor(
+                        ui,
+                        &mut doc,
+                        &mut state,
+                        &theme,
+                        &ctx,
+                        &mut images,
+                        None,
+                        outline,
+                        true,
+                        false,
+                        false,
+                        1,
+                        &mut actions,
+                    );
+                });
+            });
+            out.textures_delta.clear();
+        };
+        src_frame(vec![]);
+        let pos = egui::pos2(400.0, 800.0);
+        src_frame(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+        ]);
+        src_frame(vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        }]);
+        for _ in 0..2 {
+            src_frame(vec![]);
+        }
+        let id = egui::Id::new(("source_editor", 1));
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(id),
+            "源码模式点空白后源码编辑器必须持有键盘焦点"
+        );
+        let caret = egui::TextEdit::load_state(&ctx, id)
+            .and_then(|ts| ts.cursor.char_range())
+            .map(|r| r.primary.index.0);
+        assert_eq!(caret, Some(3), "光标应停在文档末尾（最后一行）");
     }
 
     /// 终端持有键盘焦点时（read_only），编辑区不得处理回车：

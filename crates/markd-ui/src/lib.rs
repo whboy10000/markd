@@ -13,6 +13,7 @@ pub mod app;
 pub mod editor;
 pub mod features;
 pub mod find;
+pub mod icons;
 pub mod render;
 pub mod settings;
 pub mod sidebar;

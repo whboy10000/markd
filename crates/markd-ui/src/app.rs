@@ -471,6 +471,21 @@ fn build_link_graph(root: Option<&Path>) -> HashMap<String, Vec<String>> {
     m
 }
 
+/// 插入链接弹窗：先把选中文字和选区记下来，用户粘贴 URL 后再写回。
+/// 这样点工具条/菜单导致编辑框失焦、选区被清掉时也不会丢掉选中的文字。
+#[derive(Default)]
+struct LinkDialog {
+    open: bool,
+    /// 链接地址输入框（支持直接 Cmd/Ctrl+V 粘贴）。
+    url: String,
+    /// 显示文字；选中文字时预填，未选中文字时留空表示用 URL 当文字。
+    text: String,
+    /// (块下标, 起始字符, 结束字符)：打开弹窗时记住的选区。
+    target: Option<(usize, usize, usize)>,
+    /// 打开后的第一帧把焦点交给地址输入框，直接粘贴就能用。
+    focus_url: bool,
+}
+
 /// 一个标签页的完整文档状态。除活动标签外，其余标签的状态都暂存在这里，
 /// 切换时与 MarkdApp 上的 doc/editor/outline/stats 字段整体换出换入。
 struct TabState {
@@ -497,6 +512,8 @@ pub struct MarkdApp {
     theme: Theme,
     editor: EditorState,
     images: ImageCache,
+    /// 侧栏文件树图标纹理缓存（SVG 在首次显示时栅格化）。
+    icons: crate::icons::IconCache,
     root: Option<PathBuf>,
     tree: Vec<FileNode>,
     expanded: HashSet<PathBuf>,
@@ -524,6 +541,8 @@ pub struct MarkdApp {
     table_dialog: bool,
     table_rows: usize,
     table_cols: usize,
+    /// 插入链接弹窗。
+    link_dialog: LinkDialog,
     link_docs: HashMap<String, Vec<String>>,
     /// 后台线程算好的链接图，算完通过它回传。
     link_rx: Option<std::sync::mpsc::Receiver<HashMap<String, Vec<String>>>>,
@@ -637,6 +656,7 @@ impl MarkdApp {
             theme,
             editor: EditorState::default(),
             images: ImageCache::new(),
+            icons: crate::icons::IconCache::default(),
             root,
             tree,
             expanded,
@@ -657,6 +677,7 @@ impl MarkdApp {
             table_dialog: false,
             table_rows: 3,
             table_cols: 3,
+            link_dialog: LinkDialog::default(),
             link_docs,
             link_rx: None,
             last_autosave: now_secs(),
@@ -1191,6 +1212,39 @@ impl MarkdApp {
         self.status = format!("主题: {}", self.theme.kind.name());
     }
 
+    /// 打开「插入链接」弹窗：先把当前选区取出来存好，确认时再写回 Markdown。
+    fn open_link_dialog(&mut self) {
+        let sel = editor::selection_text(&self.doc, &self.editor);
+        let (text, target) = match sel {
+            Some((idx, a, z, text)) => (text, Some((idx, a, z))),
+            None => (String::new(), None),
+        };
+        self.link_dialog = LinkDialog {
+            open: true,
+            url: String::new(),
+            text,
+            target,
+            focus_url: true,
+        };
+    }
+
+    /// 链接弹窗点「插入」：按记住的选区把 [文字](URL) 写回文档。
+    fn confirm_link_dialog(&mut self) {
+        let url = self.link_dialog.url.trim().to_string();
+        if url.is_empty() {
+            self.status = "请先粘贴或输入链接地址".to_string();
+            self.link_dialog.focus_url = true;
+            return;
+        }
+        let label = self.link_dialog.text.clone();
+        let target = self.link_dialog.target;
+        if editor::insert_link(&mut self.doc, &mut self.editor, target, &label, &url) {
+            self.on_changed();
+            self.status = format!("已插入链接 {}", url);
+            self.link_dialog.open = false;
+        }
+    }
+
     fn open_link(&mut self, url: &str) {
         if url.starts_with("http://") || url.starts_with("https://") {
             #[cfg(target_os = "macos")]
@@ -1320,16 +1374,16 @@ impl MarkdApp {
             Command::H4 => editor::apply_prefix(&mut self.doc, &mut self.editor, "#### "),
             Command::H5 => editor::apply_prefix(&mut self.doc, &mut self.editor, "##### "),
             Command::H6 => editor::apply_prefix(&mut self.doc, &mut self.editor, "###### "),
-            Command::Bold => editor::wrap(&mut self.doc, &mut self.editor, "**", "**", true),
-            Command::Italic => editor::wrap(&mut self.doc, &mut self.editor, "*", "*", true),
+            Command::Bold => {
+                editor::wrap(&mut self.doc, &mut self.editor, "<strong>", "</strong>", true)
+            }
+            Command::Italic => editor::wrap(&mut self.doc, &mut self.editor, "<em>", "</em>", true),
             Command::Strike => editor::wrap(&mut self.doc, &mut self.editor, "~~", "~~", true),
             Command::Underline => {
                 editor::wrap(&mut self.doc, &mut self.editor, "<u>", "</u>", true)
             }
             Command::Code => editor::wrap(&mut self.doc, &mut self.editor, "`", "`", true),
-            Command::Link => {
-                editor::wrap(&mut self.doc, &mut self.editor, "[", "](https://)", false)
-            }
+            Command::Link => self.open_link_dialog(),
             Command::Image => {
                 editor::insert_template(&mut self.doc, &mut self.editor, "![](./image.png)")
             }
@@ -1366,7 +1420,7 @@ impl MarkdApp {
             Command::Mermaid => editor::insert_template(
                 &mut self.doc,
                 &mut self.editor,
-                "```mermaid\ngraph TD\n  A[开始] --> B[结束]\n```",
+                "```mermaid\npie title 示例图表\n  \"分类一\" : 42\n  \"分类二\" : 31\n  \"分类三\" : 27\n```",
             ),
             Command::Toc => editor::insert_template(&mut self.doc, &mut self.editor, "[TOC]"),
             Command::Footnote => {
@@ -1951,6 +2005,7 @@ impl MarkdApp {
                 &mut self.tree,
                 self.doc.path.as_deref(),
                 &self.theme,
+                &mut self.icons,
                 &mut actions,
             ),
             SideTab::Outline => {
@@ -1976,6 +2031,7 @@ impl MarkdApp {
                         &mut self.tree,
                         self.doc.path.as_deref(),
                         &self.theme,
+                        &mut self.icons,
                         &mut actions,
                     );
                 }
@@ -2263,7 +2319,7 @@ impl MarkdApp {
                         ("Cmd/Ctrl + Shift + H", "显示 / 隐藏侧栏标签栏"),
                         ("F1", "快捷键一览"),
                         ("Enter / Shift + Tab", "拆分块 / 减少缩进"),
-                        ("Ctrl + 点击链接", "打开链接"),
+                        ("单击链接", "打开链接"),
                     ];
                     for (k, v) in rows {
                         ui.horizontal(|ui| {
@@ -2340,6 +2396,56 @@ impl MarkdApp {
 
         if self.exit_dialog {
             self.exit_confirm(ctx);
+        }
+
+        if self.link_dialog.open {
+            let mut open = true;
+            let mut insert = false;
+            let mut cancel = false;
+            egui::Window::new("插入链接")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.label("链接地址");
+                    let url_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.link_dialog.url)
+                            .hint_text("粘贴链接，如 https://example.com")
+                            .desired_width(380.0),
+                    );
+                    if self.link_dialog.focus_url {
+                        url_resp.request_focus();
+                        self.link_dialog.focus_url = false;
+                    }
+                    if url_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        insert = true;
+                    }
+                    ui.add_space(6.0);
+                    ui.label("显示文字（留空则直接显示链接地址）");
+                    let text_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.link_dialog.text)
+                            .hint_text("默认使用选中的文字")
+                            .desired_width(380.0),
+                    );
+                    if text_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        insert = true;
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("插入").clicked() {
+                            insert = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if insert {
+                self.confirm_link_dialog();
+            }
+            if cancel || !open {
+                self.link_dialog.open = false;
+            }
         }
 
         if self.table_dialog {
@@ -2621,6 +2727,7 @@ impl MarkdApp {
         // 气泡下缘落在窗口高度的 40% 处（中上部）：醒目且不与顶部工具条打架。
         let screen = ctx.viewport_rect();
         let pos = egui::pos2(screen.center().x, screen.top() + screen.height() * 0.40);
+        #[allow(deprecated)]
         egui::Area::new(egui::Id::new("toast"))
             .order(egui::Order::Foreground)
             .fixed_pos(pos)

@@ -20,6 +20,7 @@ pub fn file_tree(
     nodes: &mut [FileNode],
     current: Option<&Path>,
     theme: &Theme,
+    icons: &mut crate::icons::IconCache,
     actions: &mut Vec<SideAction>,
 ) {
     fn walk(
@@ -27,55 +28,72 @@ pub fn file_tree(
         nodes: &mut [FileNode],
         current: Option<&Path>,
         theme: &Theme,
+        icons: &mut crate::icons::IconCache,
         actions: &mut Vec<SideAction>,
         depth: usize,
     ) {
+        let full_w = ui.available_width();
         for n in nodes.iter_mut() {
             let selected = current.map(|c| c == n.path.as_path()).unwrap_or(false);
             if n.is_dir {
-                let resp = ui
+                let row = ui
                     .horizontal(|ui| {
-                        ui.add_space(depth as f32 * 11.0);
-                        let icon = if n.expanded { "▾" } else { "▸" };
+                        ui.set_min_width(full_w.max(60.0));
+                        ui.add_space(depth as f32 * 14.0);
+                        let arrow = if n.expanded { "▾" } else { "▸" };
                         ui.add(
-                            egui::Label::new(
-                                RichText::new(format!("{}  {}", icon, n.name))
-                                    .color(theme.text)
-                                    .strong(),
-                            )
-                            .selectable(false)
-                            .sense(Sense::click()),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::Default)
+                            egui::Label::new(RichText::new(arrow).small().color(theme.dim))
+                                .selectable(false),
+                        );
+                        let icon = crate::icons::folder_icon(&n.name, n.expanded);
+                        icons.show(ui, &icon, crate::icons::SIZE);
+                        ui.add(
+                            egui::Label::new(RichText::new(&n.name).color(theme.text).strong())
+                                .selectable(false),
+                        );
                     })
-                    .inner;
-                if resp.clicked() {
+                    .response
+                    .interact(Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::Default);
+                if row.clicked() {
                     actions.push(SideAction::ToggleDir(n.path.clone()));
                 }
                 if n.expanded {
-                    walk(ui, &mut n.children, current, theme, actions, depth + 1);
+                    walk(
+                        ui,
+                        &mut n.children,
+                        current,
+                        theme,
+                        icons,
+                        actions,
+                        depth + 1,
+                    );
                 }
             } else {
-                let resp = ui
+                let icon = crate::icons::file_icon(&n.name);
+                let row = ui
                     .horizontal(|ui| {
-                        ui.add_space(depth as f32 * 11.0 + 12.0);
-                        let mut r = RichText::new(format!("·  {}", n.name));
+                        ui.set_min_width(full_w.max(60.0));
+                        ui.add_space(depth as f32 * 14.0 + 14.0);
+                        icons.show(ui, icon, crate::icons::SIZE);
+                        let mut r = RichText::new(&n.name);
                         if selected {
                             r = r.strong().color(theme.accent);
                         } else {
                             r = r.color(theme.text);
                         }
-                        ui.add(egui::Label::new(r).selectable(false).sense(Sense::click()))
-                            .on_hover_cursor(egui::CursorIcon::Default)
+                        ui.add(egui::Label::new(r).selectable(false));
                     })
-                    .inner;
-                if resp.clicked() {
+                    .response
+                    .interact(Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::Default);
+                if row.clicked() {
                     actions.push(SideAction::Open(n.path.clone()));
                 }
             }
         }
     }
-    walk(ui, nodes, current, theme, actions, 0);
+    walk(ui, nodes, current, theme, icons, actions, 0);
 }
 
 /// 计算大纲每个条目的可见性：被折叠标题的所有下级条目（level 更大的连续段）隐藏。

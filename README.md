@@ -63,7 +63,7 @@ sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev \
 | `Cmd/Ctrl + N` | 新建文档 |
 | `Cmd/Ctrl + P` | 命令面板 |
 | `Cmd/Ctrl + 1 / 2 / 3` | 一级 / 二级 / 三级标题 |
-| `Cmd/Ctrl + B / I / K` | 加粗 / 斜体 / 链接 |
+| `Cmd/Ctrl + B / I / K` | 加粗 / 斜体 / 链接（弹窗粘贴地址） |
 | `Cmd/Ctrl + Shift + `` `` | 行内代码 |
 | `Ctrl + Shift + `` `` | 删除线 |
 | `Cmd + Option + C` / `B` | 代码块 / 公式块 |
