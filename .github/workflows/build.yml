@@ -201,8 +201,10 @@ jobs:
        startsWith(github.ref, 'refs/tags/20'))
     runs-on: ubuntu-latest
     steps:
-      # checkout 会执行 git clean，必须放在下载产物之前，否则会把 out/ 清掉
+      # 需要完整 git 历史与所有 tag，才能算出「这一版相对上一版改了什么」
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -228,6 +230,57 @@ jobs:
             echo "tag=latest" >> "$GITHUB_OUTPUT"
             echo "rolling=true" >> "$GITHUB_OUTPUT"
           fi
+      # 标签版本：按「新功能 / Bug 修复 / 其他改进」分类生成发布说明，
+      # 让 Release 页一眼看到这一版更新了什么，而不是只有一串 commit 标题。
+      - name: Generate release notes
+        if: steps.tag.outputs.rolling == 'false'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # 取全量 tag 才能和上一版做对比
+          git fetch --tags --force --quiet
+          PREV=$(git tag --sort=-v:refname | grep -vxF "$TAG" | head -n 1 || true)
+          if [ -n "$PREV" ]; then
+            RANGE="${PREV}..${TAG}"
+            COMPARE="**完整变更**：[${PREV}...${TAG}](https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${TAG})"
+          else
+            RANGE="$TAG"
+            COMPARE=""
+          fi
+
+          FEAT=$(mktemp); FIX=$(mktemp); OTHER=$(mktemp)
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            case "$line" in
+              *新增*|*添加*|*支持*|*加入*|*实现*|*增强*|*工具条*|*工具栏*|*菜单*|*feat*|*feature*) echo "- $line" >> "$FEAT" ;;
+              *修复*|*修正*|*解决*|*fix*|*bug*) echo "- $line" >> "$FIX" ;;
+              *) echo "- $line" >> "$OTHER" ;;
+            esac
+          done < <(git log "$RANGE" --pretty=format:'%s' --no-merges)
+
+          {
+            echo "## 本次更新"
+            echo
+            if [ -s "$FEAT" ]; then
+              echo "### ✨ 新功能"
+              cat "$FEAT"
+              echo
+            fi
+            if [ -s "$FIX" ]; then
+              echo "### 🐛 Bug 修复"
+              cat "$FIX"
+              echo
+            fi
+            if [ -s "$OTHER" ]; then
+              echo "### 🔧 其他改进"
+              cat "$OTHER"
+              echo
+            fi
+            [ -n "$COMPARE" ] && echo "$COMPARE"
+          } > notes.md
+          cat notes.md
+
       - name: Publish rolling latest release
         if: steps.tag.outputs.rolling == 'true'
         env:
@@ -255,5 +308,5 @@ jobs:
         run: |
           gh release create "${{ steps.tag.outputs.tag }}" out/* --repo "${GITHUB_REPOSITORY}" \
             --title "${{ steps.tag.outputs.tag }}" \
-            --generate-notes \
+            --notes-file notes.md \
             --verify-tag
