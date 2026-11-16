@@ -157,7 +157,10 @@ pub fn install(ctx: &egui::Context) {
         fonts
             .font_data
             .insert(key.clone(), Arc::new(egui::FontData::from_owned(bytes)));
-        if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Name("markd-bold".into())) {
+        if let Some(list) = fonts
+            .families
+            .get_mut(&egui::FontFamily::Name("markd-bold".into()))
+        {
             list.insert(0, key);
         }
     }

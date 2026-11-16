@@ -2,6 +2,8 @@
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm_Noncommercial_1.0.0-blue)](./LICENSE)
 
+**简体中文** | [English](README.en.md)
+
 纯 Rust + egui 从零实现的 Markdown 编辑器，界面与交互对齐主流所见即所得编辑器。
 
 ## 这是什么
@@ -16,7 +18,7 @@ Markd 是一个桌面 Markdown 编辑器。Markdown 解析、块级实时渲染�
 - **写作模式**：源码模式、专注模式、打字机模式、自动保存。
 - **特色功能**：命令面板、快速打开、工作区全文搜索、双向链接关系图、写作统计、版本快照（时间机器）。
 - **集成终端**：基于 PTY 的交互式 shell（VS Code 风格），支持彩色输出、备用屏（vim / less / htop），面板缩放自动同步行列。
-- **6 套主题**：默认浅色 / 默认深色 / GitHub / 羊皮纸 / Nord / Solarized。
+- **2 套主题**：浅色 / 深色。
 - **导出**：自包含 HTML（可用浏览器打印为 PDF）。
 - **macOS 原生菜单栏**，自定义标题栏：系统红绿灯右侧是命令面板 / 快速打开 / 搜索 / 保存 / 终端快捷按钮。
 

@@ -433,25 +433,75 @@ impl GraphPanel {
                         Pos2::new(center.x + radius * a.cos(), center.y + radius * a.sin()),
                     );
                 }
+                // 先收集每个节点的交互响应（画线之前）：悬停哪个节点决定连线高亮，
+                // 点击哪个节点决定打开哪个文档。
+                let node_r = 26.0_f32;
+                let mut hits: Vec<(usize, egui::Response)> = Vec::new();
+                for (i, name) in names.iter().enumerate() {
+                    if let Some(c) = pos.get(name) {
+                        let r = Rect::from_center_size(*c, Vec2::splat(node_r * 2.0));
+                        let resp = ui.interact(r, ui.scope_id().with(name), Sense::click());
+                        hits.push((i, resp));
+                    }
+                }
+                let hovered_name: Option<&str> = hits
+                    .iter()
+                    .find(|(_, r)| r.hovered())
+                    .map(|(i, _)| names[*i].as_str());
                 let p = ui.painter();
+                // 连线：默认用主题色画粗一些（浅色主题下硬编码的灰蓝细线看不清）。
+                // 悬停节点时，与它相连的线（出边+入边）用强调色加粗高亮，
+                // 无关的线淡出——线条之间的关系一眼可辨。
+                let idle_stroke = Stroke::new(1.8, theme.dim.gamma_multiply(0.7));
+                let hot_stroke = Stroke::new(2.6, theme.accent);
+                let faded_stroke = Stroke::new(1.2, theme.dim.gamma_multiply(0.22));
+                let mut edges: Vec<(&String, &String)> = Vec::new();
                 for (src, targets) in links {
-                    if let Some(a) = pos.get(src) {
-                        for t in targets {
-                            if let Some(b) = pos.get(t) {
-                                p.line_segment(
-                                    [*a, *b],
-                                    Stroke::new(1.0, Color32::from_rgb(120, 140, 170)),
-                                );
+                    for t in targets {
+                        edges.push((src, t));
+                    }
+                }
+                for (src, t) in &edges {
+                    if let (Some(a), Some(b)) = (pos.get(*src), pos.get(*t)) {
+                        let stroke = if let Some(h) = hovered_name {
+                            if src.as_str() == h || t.as_str() == h {
+                                hot_stroke
+                            } else {
+                                faded_stroke
                             }
+                        } else {
+                            idle_stroke
+                        };
+                        p.line_segment([*a, *b], stroke);
+                        // 方向箭头：在线的目标端画一个小三角，双向链接两端各有一个。
+                        let dir = (*b - *a).normalized();
+                        if dir.is_finite() {
+                            let tip = *b - dir * (node_r + 3.0);
+                            let back = tip - dir * 8.0;
+                            let perp = Vec2::new(-dir.y, dir.x) * 3.5;
+                            p.add(egui::Shape::convex_polygon(
+                                vec![tip, back + perp, back - perp],
+                                stroke.color,
+                                egui::Stroke::NONE,
+                            ));
                         }
                     }
                 }
-                let node_r = 26.0_f32;
-                for name in &names {
+                // 节点：面板色填充 + 强调色描边，悬停时填充淡强调色并显示完整文件名。
+                for (i, resp) in hits {
+                    let name = &names[i];
                     if let Some(c) = pos.get(name) {
-                        let r = Rect::from_center_size(*c, Vec2::splat(node_r * 2.0));
-                        p.circle_filled(*c, node_r, theme.code_bg);
-                        p.circle_stroke(*c, node_r, Stroke::new(1.5, theme.accent));
+                        if resp.hovered() {
+                            p.circle_filled(*c, node_r, theme.accent.gamma_multiply(0.15));
+                        } else {
+                            p.circle_filled(*c, node_r, theme.panel);
+                        }
+                        let stroke = if resp.hovered() {
+                            Stroke::new(2.5, theme.link)
+                        } else {
+                            Stroke::new(2.0, theme.accent)
+                        };
+                        p.circle_stroke(*c, node_r, stroke);
                         let short: String = name.chars().take(4).collect();
                         p.text(
                             *c,
@@ -460,12 +510,9 @@ impl GraphPanel {
                             FontId::new(11.0, FontFamily::Proportional),
                             theme.text,
                         );
-                        let hit = ui.interact(r, ui.scope_id().with(name), Sense::click());
-                        if hit.clicked() {
+                        let resp = resp.on_hover_text(name.clone());
+                        if resp.clicked() {
                             open_file = Some(name.clone());
-                        }
-                        if hit.hovered() {
-                            p.circle_stroke(*c, node_r + 2.0, Stroke::new(2.0, theme.link));
                         }
                     }
                 }

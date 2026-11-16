@@ -591,6 +591,8 @@ pub struct MarkdApp {
     last_autosave: u64,
     /// 关闭窗口前的「有未保存文件」确认弹窗。
     exit_dialog: bool,
+    /// 待确认删除的代码块下标：点「删除」按钮后弹窗，确定才真正删除。
+    code_delete_confirm: Option<usize>,
     /// 用户已选择「不保存」，下次关闭请求直接放行。
     force_quit: bool,
     theme_dirty: bool,
@@ -699,7 +701,7 @@ impl MarkdApp {
             .unwrap_or_default();
 
         let stats_cache = doc.stats();
-        let mut app = Self {
+        let app = Self {
             stats: WritingStats::new(&doc),
             stats_cache,
             stats_at: std::time::Instant::now(),
@@ -734,6 +736,7 @@ impl MarkdApp {
             link_rx: None,
             last_autosave: now_secs(),
             exit_dialog: false,
+            code_delete_confirm: None,
             force_quit: false,
             theme_dirty: false,
             menu_guard: false,
@@ -1042,8 +1045,7 @@ impl MarkdApp {
         match result {
             Ok(_) => {
                 if cut {
-                    let _ = std::fs::remove_dir_all(&src)
-                        .or_else(|_| std::fs::remove_file(&src));
+                    let _ = std::fs::remove_dir_all(&src).or_else(|_| std::fs::remove_file(&src));
                     for t in self.tabs.iter_mut() {
                         if t.path.as_deref() == Some(src.as_path()) {
                             t.path = Some(dest.clone());
@@ -1288,10 +1290,12 @@ impl MarkdApp {
                 self.push_recent(&path);
                 self.stash_active();
                 let doc = Document::new(&text, Some(path.clone()));
-                let editor = EditorState {
+                let mut editor = EditorState {
                     focus_req: Some(0),
                     ..Default::default()
                 };
+                // 还原上次保存的折叠状态。
+                editor.folded = editor::load_folds(&path, &doc);
                 let outline = doc.outline();
                 let uid = self.next_tab_uid();
                 self.tabs.push(Tab {
@@ -1309,11 +1313,6 @@ impl MarkdApp {
                 self.load_tab(i);
                 self.refresh_stats();
                 self.refresh_tree();
-                // 状态栏只显示文件名，完整路径既长又乱。
-                self.status = format!(
-                    "已打开 {}",
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                );
                 self.config.last_file = Some(path.to_string_lossy().to_string());
                 self.config.save();
             }
@@ -1406,6 +1405,8 @@ impl MarkdApp {
                 self.config.last_file = Some(path.to_string_lossy().to_string());
                 self.push_recent(&path);
                 self.refresh_tree();
+                // 折叠状态随文档路径一起落盘（覆盖「首次另存为」后才确定路径的情况）。
+                editor::save_folds(&path, &self.doc, &self.editor.folded);
                 self.status = "已保存".to_string();
             }
             Err(e) => self.status = format!("保存失败: {}", e),
@@ -1621,9 +1622,9 @@ impl MarkdApp {
             Command::H4 => editor::apply_prefix(&mut self.doc, &mut self.editor, "#### "),
             Command::H5 => editor::apply_prefix(&mut self.doc, &mut self.editor, "##### "),
             Command::H6 => editor::apply_prefix(&mut self.doc, &mut self.editor, "###### "),
-            Command::Bold => {
-                editor::wrap(&mut self.doc, &mut self.editor, "<strong>", "</strong>", true)
-            }
+            // 加粗用标准 Markdown 的 **：即时渲染态由 inline_job 隐藏标记、显示粗体，
+            // 源码态则原样显示 **加粗的部分**（WYSIWYG 与源码两态一致）。
+            Command::Bold => editor::wrap(&mut self.doc, &mut self.editor, "**", "**", true),
             Command::Italic => editor::wrap(&mut self.doc, &mut self.editor, "<em>", "</em>", true),
             Command::Strike => editor::wrap(&mut self.doc, &mut self.editor, "~~", "~~", true),
             Command::Underline => {
@@ -1717,6 +1718,12 @@ impl MarkdApp {
             )
         });
         let key = |k: egui::Key| ctx.input(|i| i.key_pressed(k));
+        #[cfg(test)]
+        eprintln!(
+            "[shortcuts] cmd={cmd} ctrl={ctrl} alt={alt} shift={shift} C_pressed={} terminal_focus={}",
+            key(egui::Key::C),
+            self.terminal.has_focus()
+        );
 
         // ---- 无修饰键：Typora 的 F8 专注 / F9 打字机 / F1 快捷键速查 ----
         if key(egui::Key::F8) {
@@ -1799,7 +1806,15 @@ impl MarkdApp {
         }
 
         // ---- 纯 Command 组合 ----
-        if key(egui::Key::S) && shift {
+        if key(egui::Key::C) && cmd {
+            // 跨块选区（渲染态拖选）的复制：无编辑态焦点，不会与 TextEdit 冲突。
+            // 没有跨块选区时不拦截，单块选区交给 TextEdit 原生复制。
+            if let Some(text) = editor::cross_sel_text(&self.doc, self.editor.cross_sel) {
+                ctx.copy_text(text);
+                self.notify(ctx, "已复制".to_string());
+                return;
+            }
+        } else if key(egui::Key::S) && shift {
             self.execute(Command::SaveAs, ctx);
         } else if key(egui::Key::S) {
             self.execute(Command::Save, ctx);
@@ -1819,6 +1834,14 @@ impl MarkdApp {
             self.execute(Command::Italic, ctx);
         } else if key(egui::Key::K) {
             self.execute(Command::Link, ctx);
+        } else if key(egui::Key::C) {
+            // 跨块选区（渲染态拖选）的复制：无编辑态焦点，不会与 TextEdit 冲突。
+            // 没有跨块选区时不拦截，单块选区交给 TextEdit 原生复制。
+            if let Some(text) = editor::cross_sel_text(&self.doc, self.editor.cross_sel) {
+                ctx.copy_text(text);
+                self.notify(ctx, "已复制".to_string());
+                return;
+            }
         } else if key(egui::Key::Backtick) && shift {
             self.execute(Command::Code, ctx);
         } else if key(egui::Key::Slash) {
@@ -2190,11 +2213,8 @@ impl MarkdApp {
                         .frame(false),
                 );
                 if x.hovered() {
-                    ui.painter().rect_filled(
-                        x.rect,
-                        4.0,
-                        self.theme.dim.gamma_multiply(0.25),
-                    );
+                    ui.painter()
+                        .rect_filled(x.rect, 4.0, self.theme.dim.gamma_multiply(0.25));
                 }
                 if x.on_hover_text("关闭标签").clicked() {
                     close = Some(i);
@@ -2651,42 +2671,52 @@ impl MarkdApp {
                             ui.style_mut().spacing.item_spacing.y = 2.0;
                             if !is_dir
                                 && ui
-                                    .add(egui::Button::new("打开").frame(false).min_size(
-                                        egui::vec2(158.0, 20.0),
-                                    ))
+                                    .add(
+                                        egui::Button::new("打开")
+                                            .frame(false)
+                                            .min_size(egui::vec2(158.0, 20.0)),
+                                    )
                                     .clicked()
                             {
                                 chosen = Some(FileMenuAction::Open);
                             }
                             if ui
-                                .add(egui::Button::new("复制路径").frame(false).min_size(
-                                    egui::vec2(158.0, 20.0),
-                                ))
+                                .add(
+                                    egui::Button::new("复制路径")
+                                        .frame(false)
+                                        .min_size(egui::vec2(158.0, 20.0)),
+                                )
                                 .clicked()
                             {
                                 chosen = Some(FileMenuAction::CopyPath);
                             }
                             if ui
-                                .add(egui::Button::new("复制相对路径").frame(false).min_size(
-                                    egui::vec2(158.0, 20.0),
-                                ))
+                                .add(
+                                    egui::Button::new("复制相对路径")
+                                        .frame(false)
+                                        .min_size(egui::vec2(158.0, 20.0)),
+                                )
                                 .clicked()
                             {
                                 chosen = Some(FileMenuAction::CopyRelative);
                             }
                             ui.separator();
                             if ui
-                                .add(egui::Button::new("复制").frame(false).min_size(
-                                    egui::vec2(158.0, 20.0),
-                                ))
+                                .add(
+                                    egui::Button::new("复制")
+                                        .frame(false)
+                                        .min_size(egui::vec2(158.0, 20.0)),
+                                )
                                 .clicked()
                             {
                                 chosen = Some(FileMenuAction::CopyFile);
                             }
                             if ui
-                                .add(egui::Button::new("剪切").frame(false).min_size(
-                                    egui::vec2(158.0, 20.0),
-                                ))
+                                .add(
+                                    egui::Button::new("剪切")
+                                        .frame(false)
+                                        .min_size(egui::vec2(158.0, 20.0)),
+                                )
                                 .clicked()
                             {
                                 chosen = Some(FileMenuAction::CutFile);
@@ -2695,9 +2725,9 @@ impl MarkdApp {
                             if ui
                                 .add_enabled(
                                     paste_enabled,
-                                    egui::Button::new("粘贴").frame(false).min_size(
-                                        egui::vec2(158.0, 20.0),
-                                    ),
+                                    egui::Button::new("粘贴")
+                                        .frame(false)
+                                        .min_size(egui::vec2(158.0, 20.0)),
                                 )
                                 .clicked()
                             {
@@ -2705,34 +2735,42 @@ impl MarkdApp {
                             }
                             ui.separator();
                             if ui
-                                .add(egui::Button::new("重命名").frame(false).min_size(
-                                    egui::vec2(158.0, 20.0),
-                                ))
+                                .add(
+                                    egui::Button::new("重命名")
+                                        .frame(false)
+                                        .min_size(egui::vec2(158.0, 20.0)),
+                                )
                                 .clicked()
                             {
                                 chosen = Some(FileMenuAction::Rename);
                             }
                             if ui
-                                .add(egui::Button::new("删除").frame(false).min_size(
-                                    egui::vec2(158.0, 20.0),
-                                ))
+                                .add(
+                                    egui::Button::new("删除")
+                                        .frame(false)
+                                        .min_size(egui::vec2(158.0, 20.0)),
+                                )
                                 .clicked()
                             {
                                 chosen = Some(FileMenuAction::Delete);
                             }
                             ui.separator();
                             if ui
-                                .add(egui::Button::new("新建文件").frame(false).min_size(
-                                    egui::vec2(158.0, 20.0),
-                                ))
+                                .add(
+                                    egui::Button::new("新建文件")
+                                        .frame(false)
+                                        .min_size(egui::vec2(158.0, 20.0)),
+                                )
                                 .clicked()
                             {
                                 chosen = Some(FileMenuAction::NewFile);
                             }
                             if ui
-                                .add(egui::Button::new("新建文件夹").frame(false).min_size(
-                                    egui::vec2(158.0, 20.0),
-                                ))
+                                .add(
+                                    egui::Button::new("新建文件夹")
+                                        .frame(false)
+                                        .min_size(egui::vec2(158.0, 20.0)),
+                                )
                                 .clicked()
                             {
                                 chosen = Some(FileMenuAction::NewDir);
@@ -2752,9 +2790,10 @@ impl MarkdApp {
                 });
             // 点在菜单外面：收起菜单。
             let clicked_outside = ctx.input(|i| i.pointer.primary_clicked())
-                && !area.response.rect.contains(ctx.input(|i| {
-                    i.pointer.interact_pos().unwrap_or(egui::Pos2::ZERO)
-                }));
+                && !area
+                    .response
+                    .rect
+                    .contains(ctx.input(|i| i.pointer.interact_pos().unwrap_or(egui::Pos2::ZERO)));
             if chosen.is_some() || clicked_outside {
                 self.ctx_menu = None;
             }
@@ -2870,7 +2909,11 @@ impl MarkdApp {
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.label(format!("确定要删除 {} 吗？", target.display()));
-                    ui.label(RichText::new("此操作不可撤销。").small().color(self.theme.dim));
+                    ui.label(
+                        RichText::new("此操作不可撤销。")
+                            .small()
+                            .color(self.theme.dim),
+                    );
                     ui.horizontal(|ui| {
                         if ui.button("删除").clicked() {
                             confirm = true;
@@ -2898,7 +2941,11 @@ impl MarkdApp {
             let mut input = std::mem::take(&mut self.new_dialog)
                 .map(|(_, _, b)| b)
                 .unwrap_or_default();
-            let win_title = if is_dir { "新建文件夹" } else { "新建文件" };
+            let win_title = if is_dir {
+                "新建文件夹"
+            } else {
+                "新建文件"
+            };
             egui::Window::new(win_title)
                 .open(&mut open)
                 .collapsible(false)
@@ -3346,8 +3393,8 @@ impl MarkdApp {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             // 自绘绿色圆 + 白色对勾图标，不依赖 emoji 字体
-                            let (ir, _) =
-                                ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                            let (ir, _) = ui
+                                .allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
                             let p = ui.painter();
                             let c = ir.center();
                             p.circle_filled(c, 8.0, mix(ICON));
@@ -3593,15 +3640,29 @@ impl eframe::App for MarkdApp {
                     self.editor.table_caret_end = end;
                     // 记录最后命中的单元格：表格工具栏的行/列操作以此为基准。
                     ctx.memory_mut(|m| {
-                        m.data.insert_temp(
-                            egui::Id::new(("table_cell_ref", bi)),
-                            (ri, ci),
-                        );
+                        m.data
+                            .insert_temp(egui::Id::new(("table_cell_ref", bi)), (ri, ci));
                     });
                 }
                 Action::TableOp(i, op) => {
                     editor::apply_table_op(&mut self.doc, i, op);
                     self.on_changed();
+                }
+                Action::AskDeleteBlock(i) => {
+                    // 请求删除代码块：弹确认窗，确定才真正删除（取消不删）。
+                    self.code_delete_confirm = Some(i);
+                }
+                // 跨块拖选已在 show_editor 帧末聚合进 cross_sel，不会到达这里
+                Action::CrossDrag(..) => {}
+                Action::FoldToggle(i) => {
+                    // 折叠/展开代码块：只改视图状态，不动文档。
+                    if !self.editor.folded.insert(i) {
+                        self.editor.folded.remove(&i);
+                    }
+                    // 有路径的文档立即把折叠状态写盘，关闭/重开不丢。
+                    if let Some(p) = &self.doc.path {
+                        editor::save_folds(p, &self.doc, &self.editor.folded);
+                    }
                 }
                 Action::SetLang(i, lang) => {
                     let rebuilt = match self.doc.blocks.get(i) {
@@ -3650,6 +3711,40 @@ impl eframe::App for MarkdApp {
                 ctx.memory(|m| m.focused())
             );
         }
+        // 代码块删除确认弹窗：确定才删除，取消（或点 × 关闭）不删。
+        if let Some(idx) = self.code_delete_confirm {
+            let mut open = true;
+            egui::Window::new("删除代码块")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(&ctx, |ui| {
+                    ui.label("确定要删除这个代码块吗？删除后可以用撤销找回。");
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("确定删除").clicked() {
+                            self.doc.record();
+                            // 只剩这一块时删成空段落，保证文档至少有一个块
+                            if self.doc.blocks.len() <= 1 {
+                                self.doc.edit_block(idx, "");
+                            } else {
+                                self.doc.remove_block(idx);
+                            }
+                            let n = self.doc.blocks.len();
+                            self.editor.active = self.editor.active.min(n - 1);
+                            self.on_changed();
+                            self.code_delete_confirm = None;
+                        }
+                        if ui.button("取消").clicked() {
+                            self.code_delete_confirm = None;
+                        }
+                    });
+                });
+            if !open {
+                self.code_delete_confirm = None;
+            }
+        }
         self.show_toast(&ctx);
         self.windows(&ctx);
         self.auto_save();
@@ -3666,6 +3761,31 @@ impl eframe::App for MarkdApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 加粗按钮：源码用标准 Markdown 的 ** 标记（即时渲染态由 inline_job
+    /// 隐藏标记、显示粗体），不再写 <strong>。
+    #[test]
+    fn bold_button_writes_markdown_stars() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        app.doc = Document::new("加粗这段文字", None);
+        app.editor.last_sel = Some((0, 2, 6)); // 选中「这段文字」
+        app.execute(Command::Bold, &ctx);
+        assert_eq!(app.doc.source(), "加粗**这段文字**");
+    }
+
+    /// 即时渲染态：inline_job 把 **...** 的内容渲染为粗体、标记隐藏。
+    #[test]
+    fn inline_job_renders_stars_as_bold() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let job = crate::render::inline_job("**粗体**", &theme, 16.0, theme.text, 400.0, None);
+        assert!(
+            job.sections.iter().any(|sec| {
+                matches!(&sec.format.font_id.family, egui::FontFamily::Name(n) if n.as_ref() == "markd-bold")
+            }),
+            "双星号内容应以粗体字体渲染: {job:?}"
+        );
+    }
 
     /// 自动保存判定：开关 / 有修改 / 已落盘 三个条件缺一不可。
     #[test]
@@ -3875,13 +3995,16 @@ mod tests {
             link_rx: None,
             last_autosave: now_secs(),
             exit_dialog: false,
+            code_delete_confirm: None,
             force_quit: false,
             theme_dirty: false,
             menu_guard: false,
             workspace_dialog: false,
             quick_cache_dir: String::new(),
             quick_cache: Vec::new(),
-            menu_queue: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            menu_queue: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::VecDeque::new(),
+            )),
             terminal: Terminal::new(std::env::temp_dir()),
             settings: Default::default(),
             home: true,
@@ -3905,6 +4028,17 @@ mod tests {
         frame: &mut eframe::Frame,
         events: Vec<egui::Event>,
     ) {
+        let _ = run_real_frame_ext(ctx, app, frame, events);
+    }
+
+    /// 同上，但额外返回 (全部绘制形状, 系统剪贴板收到的文本)：
+    /// 跨块选区的手动链路验证需要抓块坐标和剪贴板内容。
+    fn run_real_frame_ext(
+        ctx: &egui::Context,
+        app: &mut MarkdApp,
+        frame: &mut eframe::Frame,
+        events: Vec<egui::Event>,
+    ) -> (Vec<egui::epaint::ClippedShape>, String) {
         use eframe::App as _;
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -3923,6 +4057,17 @@ mod tests {
             app.ui(&mut root, frame);
         });
         out.textures_delta.clear();
+        // 0.37 的剪贴板写入走 platform_output.commands 的 CopyText 命令
+        let copied = out
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|c| match c {
+                egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        (out.shapes, copied)
     }
 
     fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
@@ -3932,6 +4077,134 @@ mod tests {
             pressed,
             modifiers: Default::default(),
         }
+    }
+
+    /// 手动链路验证：拖选跨块 → Cmd+C 复制剪贴板 → 退格合并 → Cmd+Z 撤销。
+    #[test]
+    fn cross_block_manual_flow() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        let mut frame = eframe::Frame::_new_kittest();
+        app.doc = Document::new("第一段\n\n第二段\n\n第三段", None);
+        app.home = false;
+        app.editor.active = 0;
+        for _ in 0..3 {
+            run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+        }
+
+        // 抓"第二段"/"第三段"的文本锚点（块文字左上角）
+        let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+        let find = |shapes: &[egui::epaint::ClippedShape], name: &str| -> egui::Pos2 {
+            for cs in shapes {
+                if let egui::Shape::Text(t) = &cs.shape {
+                    if t.galley.text() == name {
+                        return t.pos;
+                    }
+                }
+            }
+            panic!("{name} 未渲染");
+        };
+        let p2 = find(&shapes, "第二段");
+        let p4 = find(&shapes, "第三段");
+        println!(
+            "[坐标] 第二段@({:.1},{:.1}) 第三段@({:.1},{:.1})",
+            p2.x, p2.y, p4.x, p4.y
+        );
+        // 拖选点：起点在块 2 文字开头（字符 0），终点在块 4 行尾空白（钳到末尾）
+        let start = egui::pos2(p2.x + 3.0, p2.y + 9.0);
+        let end = egui::pos2(p4.x + 300.0, p4.y + 9.0);
+
+        // 拖选：按下 → 移动 → 多帧保持（drag_started 晚一帧生效）→ 抬起
+        run_real_frame(
+            &ctx,
+            &mut app,
+            &mut frame,
+            vec![
+                egui::Event::PointerMoved(start),
+                pointer_button(start, true),
+            ],
+        );
+        run_real_frame(
+            &ctx,
+            &mut app,
+            &mut frame,
+            vec![egui::Event::PointerMoved(end)],
+        );
+        run_real_frame(
+            &ctx,
+            &mut app,
+            &mut frame,
+            vec![egui::Event::PointerMoved(end)],
+        );
+        run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(end, false)]);
+        for _ in 0..2 {
+            run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+        }
+        let sel = app.editor.cross_sel.expect("拖选后应建立跨块选区");
+        let (lo, hi) = (sel.0.min(sel.2), sel.0.max(sel.2));
+        assert_eq!((lo, hi), (2, 4), "选区应覆盖第二段到第三段，实际 {sel:?}");
+
+        // Cmd+C：剪贴板应收到两段文本
+        let cmd_c = egui::Event::Key {
+            key: egui::Key::C,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                command: true,
+                ..Default::default()
+            },
+        };
+        let mods_cmd = egui::Event::ModifiersChanged(egui::Modifiers {
+            command: true,
+            mac_cmd: true,
+            ..Default::default()
+        });
+        let (_, copied) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![mods_cmd, cmd_c]);
+        assert_eq!(copied, "第二段\n\n第三段", "Cmd+C 应把跨块选区复制进剪贴板");
+
+        // 退格：删除选区（跨块合并）
+        run_real_frame(
+            &ctx,
+            &mut app,
+            &mut frame,
+            vec![egui::Event::Key {
+                key: egui::Key::Backspace,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        let src = app.doc.source();
+        assert!(
+            !src.contains("第二段") && !src.contains("第三段"),
+            "退格应删除选中的两段，实际 {src:?}"
+        );
+        assert!(src.contains("第一段"), "未选中的第一段必须保留：{src:?}");
+
+        // Cmd+Z：撤销恢复
+        let cmd_z = egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                command: true,
+                ..Default::default()
+            },
+        };
+        let mods_cmd = egui::Event::ModifiersChanged(egui::Modifiers {
+            command: true,
+            mac_cmd: true,
+            ..Default::default()
+        });
+        run_real_frame(&ctx, &mut app, &mut frame, vec![mods_cmd, cmd_z]);
+        assert_eq!(
+            app.doc.source(),
+            "第一段\n\n第二段\n\n第三段",
+            "Cmd+Z 应恢复被删除的两段"
+        );
     }
 
     /// 真实 app 完整帧路径：新建文档后点编辑区空白，光标必须一直在第一行。
@@ -3967,9 +4240,17 @@ mod tests {
                 &ctx,
                 &mut app,
                 &mut frame,
-                vec![egui::Event::PointerMoved(blank), pointer_button(blank, true)],
+                vec![
+                    egui::Event::PointerMoved(blank),
+                    pointer_button(blank, true),
+                ],
             );
-            run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(blank, false)]);
+            run_real_frame(
+                &ctx,
+                &mut app,
+                &mut frame,
+                vec![pointer_button(blank, false)],
+            );
             for _ in 0..3 {
                 run_real_frame(&ctx, &mut app, &mut frame, vec![]);
             }
@@ -3978,8 +4259,14 @@ mod tests {
                 Some(egui::Id::unique(("block_edit", tab_key, 0))),
                 "第 {round} 次点空白后光标必须仍在第一行"
             );
-            assert_eq!(app.editor.active, 0, "第 {round} 次点空白后活动块应为第一块");
-            assert_eq!(app.editor.last_cursor, 0, "第 {round} 次点空白后光标应在行首");
+            assert_eq!(
+                app.editor.active, 0,
+                "第 {round} 次点空白后活动块应为第一块"
+            );
+            assert_eq!(
+                app.editor.last_cursor, 0,
+                "第 {round} 次点空白后光标应在行首"
+            );
         }
     }
 
@@ -4026,7 +4313,12 @@ mod tests {
                 pointer_button(rect.center(), true),
             ],
         );
-        run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(rect.center(), false)]);
+        run_real_frame(
+            &ctx,
+            &mut app,
+            &mut frame,
+            vec![pointer_button(rect.center(), false)],
+        );
         run_real_frame(&ctx, &mut app, &mut frame, vec![]);
         assert!(
             egui::Popup::is_id_open(&ctx, popup_id),
@@ -4043,9 +4335,17 @@ mod tests {
             &ctx,
             &mut app,
             &mut frame,
-            vec![egui::Event::PointerMoved(item_pos), pointer_button(item_pos, true)],
+            vec![
+                egui::Event::PointerMoved(item_pos),
+                pointer_button(item_pos, true),
+            ],
         );
-        run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(item_pos, false)]);
+        run_real_frame(
+            &ctx,
+            &mut app,
+            &mut frame,
+            vec![pointer_button(item_pos, false)],
+        );
         for _ in 0..3 {
             run_real_frame(&ctx, &mut app, &mut frame, vec![]);
         }

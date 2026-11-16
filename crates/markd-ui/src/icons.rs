@@ -780,8 +780,10 @@ mod tests {
                 "{key} 长边占框 {long:.2}，未归一化到位（期望 ~{FILL}）"
             );
             // 贴死最外圈像素说明内容被 pixmap 边界裁掉了。
-            assert!(x0 > 0 && y0 > 0 && x1 + 1 < px as usize && y1 + 1 < px as usize,
-                "{key} 内容触到画布边缘，疑似被裁切: bbox={x0},{y0}..{x1},{y1}");
+            assert!(
+                x0 > 0 && y0 > 0 && x1 + 1 < px as usize && y1 + 1 < px as usize,
+                "{key} 内容触到画布边缘，疑似被裁切: bbox={x0},{y0}..{x1},{y1}"
+            );
         }
     }
 
@@ -809,7 +811,8 @@ mod tests {
             let key = path.file_stem().unwrap().to_str().unwrap().to_string();
             let bytes = icon_bytes(&key).unwrap_or_else(|| panic!("素材未嵌入二进制: {key}"));
             let image = rasterize(bytes, PIXELS);
-            let (x0, y0, x1, y1) = alpha_bbox(&image).unwrap_or_else(|| panic!("渲染全透明: {key}"));
+            let (x0, y0, x1, y1) =
+                alpha_bbox(&image).unwrap_or_else(|| panic!("渲染全透明: {key}"));
             assert!(
                 x0 > 0 && y0 > 0 && x1 + 1 < PIXELS as usize && y1 + 1 < PIXELS as usize,
                 "{key} 内容贴边，疑似被裁切: bbox={x0},{y0}..{x1},{y1}"

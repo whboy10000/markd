@@ -7,7 +7,8 @@ use crate::document::{Document, OutlineItem};
 use crate::render::{self, Action, ImageCache, RenderEnv};
 use crate::theme::Theme;
 use egui::{self, Id, Key, Sense, TextEdit};
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 #[derive(Default)]
 pub struct EditorState {
@@ -35,6 +36,10 @@ pub struct EditorState {
     pub pending_caret: Option<egui::Vec2>,
     /// 查找/替换跳转要求选中的文字：(块下标, 起始字符, 结束字符)，用后清零。
     pub select_req: Option<(usize, usize, usize)>,
+    /// 跨块选区 (锚块, 锚字符, 头块, 头字符)：在渲染态块上按住拖动产生，
+    /// 覆盖首尾块之间的所有内容。Cmd+C 复制、输入/退格替换、单击清除。
+    /// 字符按各块所见文本（plain）计，与渲染态 galley 光标同体系。
+    pub cross_sel: Option<(usize, usize, usize, usize)>,
     /// 格式按钮用完选区后把光标收敛成单点：(块下标, 字符下标)，用后清零。
     /// 不然文本框里存的旧选区会让刚处理过的文字一直保持选中状态。
     pub caret_req: Option<(usize, usize)>,
@@ -42,11 +47,93 @@ pub struct EditorState {
     pub tab_size: usize,
     /// 是否自动补全括号/引号。
     pub auto_pair: bool,
+    /// 已折叠的代码块下标集合（渲染态折叠，切换标签/文档时随 EditorState 一起保存）。
+    pub folded: HashSet<usize>,
 }
 
 pub enum EditorEvent {
     None,
     Changed,
+}
+
+// ---------------------------------------------------------------- 折叠状态持久化
+//
+// 折叠状态按文档绝对路径存到 ~/.markd/folds.json，内容是
+// `{ 文档路径: [折叠代码块的 source 字符串] }`。
+//
+// 用块的 source（含围栏的完整 Markdown 源码）而不是块下标做键：文档在折叠块
+// 之前增删块会导致下标整体错位，source 则不受影响。只有当折叠块自身的源码被
+// 修改时（例如点开它编辑再离开）才会随保存更新到新 source。两个内容完全相同的
+// 代码块会共享同一键，展开/折叠会同步，属可接受的边缘情况。
+
+fn folds_path() -> PathBuf {
+    let dir = crate::workspace::Config::dir();
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("folds.json")
+}
+
+fn read_folds_map() -> HashMap<String, Vec<String>> {
+    std::fs::read_to_string(folds_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_folds_map(map: &HashMap<String, Vec<String>>) {
+    if let Ok(s) = serde_json::to_string_pretty(map) {
+        let _ = std::fs::write(folds_path(), s);
+    }
+}
+
+/// 可折叠的块：代码块或 Mermaid 图表块。
+fn is_foldable(b: &Block) -> bool {
+    matches!(b, Block::Code { .. } | Block::Diagram { .. })
+}
+
+/// 纯函数：折叠下标集合 → 各折叠块的 source 键（排序去重）。
+fn fold_keys(doc: &Document, folded: &HashSet<usize>) -> Vec<String> {
+    let mut keys: Vec<String> = folded
+        .iter()
+        .filter_map(|&i| doc.blocks.get(i))
+        .filter(|b| is_foldable(b))
+        .map(|b| b.source().to_string())
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+/// 纯函数：source 键 → 当前文档里匹配的块下标集合。
+fn fold_indices(doc: &Document, keys: &[String]) -> HashSet<usize> {
+    let mut out = HashSet::new();
+    for (i, b) in doc.blocks.iter().enumerate() {
+        if is_foldable(b) && keys.iter().any(|k| k == b.source()) {
+            out.insert(i);
+        }
+    }
+    out
+}
+
+/// 打开文档时把已保存的折叠状态还原成块下标集合：按 source 匹配当前块。
+pub fn load_folds(path: &Path, doc: &Document) -> HashSet<usize> {
+    let map = read_folds_map();
+    let Some(keys) = map.get(&path.to_string_lossy().to_string()) else {
+        return HashSet::new();
+    };
+    fold_indices(doc, keys)
+}
+
+/// 保存当前文档的折叠状态（无折叠项时移除该路径的条目）。
+pub fn save_folds(path: &Path, doc: &Document, folded: &HashSet<usize>) {
+    let mut map = read_folds_map();
+    let key = path.to_string_lossy().to_string();
+    let keys = fold_keys(doc, folded);
+    if keys.is_empty() {
+        map.remove(&key);
+    } else {
+        map.insert(key, keys);
+    }
+    write_folds_map(&map);
 }
 
 fn split_at_char(s: &str, pos: usize) -> (String, String) {
@@ -408,7 +495,11 @@ pub(crate) fn table_op_on_grid(
     op: TableOp,
 ) -> bool {
     use crate::ast::Align;
-    let cols = grid.first().map(|r| r.len()).into_iter().fold(0usize, usize::max);
+    let cols = grid
+        .first()
+        .map(|r| r.len())
+        .into_iter()
+        .fold(0usize, usize::max);
     match op {
         TableOp::InsertRow(r) => {
             // 在第 r 行下方插入：r=0（表头）→ 数据区最前；其余插到其后
@@ -460,22 +551,23 @@ pub(crate) fn table_op_on_grid(
 
 /// 对第 idx 块（表格）执行结构操作：解析块、改结构、重建源码写回。
 pub fn apply_table_op(doc: &mut Document, idx: usize, op: TableOp) {
-    use crate::ast::{Align, Block};
-    let Some(Block::Table { head, rows, align, .. }) = doc.blocks.get(idx) else {
+    use crate::ast::Block;
+    let Some(Block::Table {
+        head, rows, align, ..
+    }) = doc.blocks.get(idx)
+    else {
         return;
     };
-    let mut head = head.clone();
-    let mut rows = rows.clone();
+    let head = head.clone();
+    let rows = rows.clone();
     let mut align = align.clone();
     if let TableOp::Delete = op {
         doc.record();
         doc.edit_block(idx, "");
         return;
     }
-    let mut grid: Vec<Vec<String>> = vec![head
-        .iter()
-        .map(|c| crate::ast::inline_plain(c))
-        .collect()];
+    let mut grid: Vec<Vec<String>> =
+        vec![head.iter().map(|c| crate::ast::inline_plain(c)).collect()];
     grid.extend(rows.iter().map(|r| {
         r.iter()
             .map(|c| crate::ast::inline_plain(c))
@@ -649,6 +741,72 @@ fn trace_blank(pos: &Option<egui::Pos2>, msg: &str) {
     }
 }
 
+/// 规范化跨块选区顺序：(起块, 起字符, 止块, 止字符)。
+fn cross_sel_range(sel: (usize, usize, usize, usize)) -> (usize, usize, usize, usize) {
+    let (a, ac, b, bc) = sel;
+    if (a, ac) <= (b, bc) {
+        (a, ac, b, bc)
+    } else {
+        (b, bc, a, ac)
+    }
+}
+
+/// 跨块选区的文本（Cmd+C 复制用）：首尾块取选中片段，中间块取全文，
+/// 块与块之间用空行连接（所见文本）。
+pub fn cross_sel_text(doc: &Document, sel: Option<(usize, usize, usize, usize)>) -> Option<String> {
+    let (s, sc, e, ec) = cross_sel_range(sel?);
+    let mut out: Vec<String> = Vec::new();
+    for i in s..=e {
+        let Some(b) = doc.blocks.get(i) else { continue };
+        let plain = b.plain();
+        let len = plain.chars().count();
+        let t0 = if i == s { sc.min(len) } else { 0 };
+        let t1 = if i == e { ec.min(len) } else { len };
+        if t0 < t1 {
+            out.push(plain.chars().skip(t0).take(t1 - t0).collect());
+        }
+    }
+    (!out.is_empty()).then(|| out.join("\n\n"))
+}
+
+/// 把跨块选区替换为 `insert`（None = 纯删除）：
+/// 首块保留前缀 + 插入文本 + 尾块保留后缀合并成一块（按首块类型补标记），
+/// 中间块与尾块移除。返回是否发生了修改。
+fn apply_cross_sel_edit(doc: &mut Document, state: &mut EditorState, insert: Option<&str>) -> bool {
+    let Some(sel) = state.cross_sel.take() else {
+        return false;
+    };
+    let n = doc.blocks.len();
+    let (s, sc, e, ec) = cross_sel_range(sel);
+    if s >= n || e >= n {
+        return false;
+    }
+    let head_plain = doc.blocks[s].plain();
+    let tail_plain = doc.blocks[e].plain();
+    let sc = sc.min(head_plain.chars().count());
+    let ec = ec.min(tail_plain.chars().count());
+    let head_keep: String = head_plain.chars().take(sc).collect();
+    let tail_keep: String = tail_plain.chars().skip(ec).collect();
+    let merged = format!("{head_keep}{}{tail_keep}", insert.unwrap_or(""));
+
+    doc.record();
+    // 按首块的编辑类型补回标记（标题的 #、列表的 - 等）
+    let ek = EditKind::of(&doc.blocks[s]);
+    doc.edit_block(s, &ek.rebuild(&merged));
+    // 中间块与尾块倒序移除（索引不失效）
+    for i in (s + 1..=e.min(n - 1)).rev() {
+        if i < doc.blocks.len() {
+            doc.remove_block(i);
+        }
+    }
+    // 光标落到插入文本之后
+    state.active = s;
+    state.focus_req = Some(s);
+    state.last_cursor = head_keep.chars().count() + insert.map(|t| t.chars().count()).unwrap_or(0);
+    state.sel = None;
+    true
+}
+
 #[allow(clippy::too_many_arguments, deprecated)]
 pub fn show_editor(
     ui: &mut egui::Ui,
@@ -675,12 +833,14 @@ pub fn show_editor(
         // 表现就是源码模式下鼠标滚不动；必须像下方混合模式一样包一层 ScrollArea。
         let mut changed = false;
         let mut editor_rect = egui::Rect::NOTHING;
-        // 行号栏宽度：按最大行号的位数估。等宽字体行高用同一个 FontId 测量，
-        // 与编辑框逐行对齐。
+        // 行号栏宽度：固定按至少 3 位数字预留（≤999 行的文档宽度恒定），
+        // 回车增减行不会引起正文横移跳动（用户反馈的"一按回车行号乱动"）。
+        // 行号与正文的间隔对齐混合模式的 28px（数字右缘 gutter_w - 28），
+        // 另留 8px 左内边距防止数字贴着视口左缘被裁。
         let line_count = src.split('\n').count();
         let digit_w = theme.mono * 0.62;
         let gutter_w = if show_line_numbers {
-            (line_count.to_string().len().max(2) as f32) * digit_w + 18.0
+            (line_count.to_string().len().max(3) as f32) * digit_w + 36.0
         } else {
             0.0
         };
@@ -721,28 +881,31 @@ pub fn show_editor(
                 let vpr = ui.clip_rect().right();
                 // 不换行：一行源码 = 一个视觉行。换行会让一个源码行占多行，
                 // 行号随之忽上忽下（用户反馈的"跳动"）。
-                let mut layouter =
-                    |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
-                        let mut job = egui::text::LayoutJob::default();
-                        job.append(buf.as_str(), 0.0, theme.mono_fmt());
-                        job.wrap.max_width = f32::INFINITY;
-                        let galley = ui.fonts_mut(|f| f.layout_job(job));
-                        rows_state.borrow_mut().clear();
-                        let mut acc = 0usize;
-                        for row in &galley.rows {
-                            let start_char = acc;
-                            acc += row.char_count_including_newline().0;
-                            let line_no = match line_starts.binary_search(&start_char) {
-                                Ok(i) => i + 1,
-                                Err(i) => i.min(line_starts.len()).max(1),
-                            };
-                            rows_state
-                                .borrow_mut()
-                                .push((line_no, row.pos.y, row.row.size.y));
-                            let _ = start_char;
-                        }
-                        galley
-                    };
+                let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
+                    let mut job = egui::text::LayoutJob::default();
+                    // 行距放大到字号的 1.4 倍：行与行（含空行）之间的间隔
+                    // 更舒展，行号数字不再显得挤在一起。
+                    let mut fmt = theme.mono_fmt();
+                    fmt.line_height = Some(theme.mono * 1.4);
+                    job.append(buf.as_str(), 0.0, fmt);
+                    job.wrap.max_width = f32::INFINITY;
+                    let galley = ui.fonts_mut(|f| f.layout_job(job));
+                    rows_state.borrow_mut().clear();
+                    let mut acc = 0usize;
+                    for row in &galley.rows {
+                        let start_char = acc;
+                        acc += row.char_count_including_newline().0;
+                        let line_no = match line_starts.binary_search(&start_char) {
+                            Ok(i) => i + 1,
+                            Err(i) => i.min(line_starts.len()).max(1),
+                        };
+                        rows_state
+                            .borrow_mut()
+                            .push((line_no, row.pos.y, row.row.size.y));
+                        let _ = start_char;
+                    }
+                    galley
+                };
                 // 长行宽度估算（ASCII 半宽、CJK 全宽）：编辑框按最长行撑宽，
                 // 配合横向滚动；窄于视口时照常占满。
                 let content_w = src
@@ -778,10 +941,7 @@ pub fn show_editor(
                 let out = ui.horizontal(|ui| {
                     if show_line_numbers {
                         // 占位让正文右移；数字本身在 show 之后按视口固定 x 补画。
-                        ui.allocate_exact_size(
-                            egui::Vec2::new(gutter_w, 0.0),
-                            Sense::hover(),
-                        );
+                        ui.allocate_exact_size(egui::Vec2::new(gutter_w, 0.0), Sense::hover());
                     }
                     let te = TextEdit::multiline(&mut src)
                         .id(Id::new(("source_editor", tab_key)))
@@ -811,6 +971,9 @@ pub fn show_editor(
                         }
                     }
                     let p = ui.painter();
+                    // 数字右对齐到行号栏右缘内 28px：与混合模式（page_left - 28）
+                    // 的行号-正文间隔完全一致；多位数字也不会贴到裁剪区。
+                    let num_right = vpl + gutter_w - 28.0;
                     for (line_no, y) in per_line.iter().enumerate().skip(1) {
                         if let Some(y) = y {
                             let color = if line_no == cur_line {
@@ -819,7 +982,7 @@ pub fn show_editor(
                                 theme.dim.gamma_multiply(0.7)
                             };
                             p.text(
-                                egui::Pos2::new(vpl + 10.0, out.galley_pos.y + y),
+                                egui::Pos2::new(num_right, out.galley_pos.y + y),
                                 egui::Align2::RIGHT_CENTER,
                                 &line_no.to_string(),
                                 egui::FontId::monospace(theme.mono),
@@ -957,6 +1120,11 @@ pub fn show_editor(
                 ui.add_space(pad);
                 ui.vertical(|ui| {
                     ui.set_width(page_w);
+                    // 页左缘：行号统一对齐这一列（VS Code 式 gutter）。
+                    // 不能用 resp.rect.left() 推：列表/任务项的 resp 是去掉行首
+                    // 缩进与标记（复选框/圆点/编号）后的内容 Label，按它会算出
+                    // 落在正文里的 x，行号就叠进任务列表了。
+                    let page_left = ui.cursor().left();
                     for idx in 0..blocks.len() {
                         let block = &blocks[idx];
                         let compact = matches!(block, Block::ListItem { .. } | Block::Blank { .. });
@@ -1004,32 +1172,26 @@ pub fn show_editor(
                                     let cell_key = Id::new(("table_cell_ref", idx));
                                     let (hr, hc) = ui
                                         .ctx()
-                                        .memory(|m| {
-                                            m.data
-                                                .get_temp::<(usize, usize)>(cell_key)
-                                        })
+                                        .memory(|m| m.data.get_temp::<(usize, usize)>(cell_key))
                                         .unwrap_or((
                                             grid.len().saturating_sub(1),
-                                            grid.first().map(|r| r.len()).unwrap_or(1)
+                                            grid.first()
+                                                .map(|r| r.len())
+                                                .unwrap_or(1)
                                                 .saturating_sub(1),
                                         ));
                                     let mut op: Option<TableOp> = None;
                                     ui.horizontal(|ui| {
                                         ui.style_mut().spacing.item_spacing.x = 4.0;
-                                        let btn = |ui: &mut egui::Ui,
-                                                  label: &str,
-                                                  active: bool| {
-                                            let txt = egui::RichText::new(label).small();
-                                            let txt = if active {
-                                                txt.color(theme.accent)
-                                            } else {
-                                                txt
-                                            };
+                                        let btn = |ui: &mut egui::Ui, label: &str, active: bool| {
+                                            let txt =
+                                                egui::RichText::new(label).size(theme.body * 0.85);
+                                            let txt =
+                                                if active { txt.color(theme.accent) } else { txt };
                                             ui.button(txt).clicked()
                                         };
-                                        let all = |a: crate::ast::Align| {
-                                            aligns.iter().all(|x| *x == a)
-                                        };
+                                        let all =
+                                            |a: crate::ast::Align| aligns.iter().all(|x| *x == a);
                                         use crate::ast::Align;
                                         if btn(ui, "+ 行", false) {
                                             op = Some(TableOp::InsertRow(hr));
@@ -1057,12 +1219,30 @@ pub fn show_editor(
                                         if btn(ui, "删除表格", false) {
                                             op = Some(TableOp::Delete);
                                         }
+                                        // 复制整张表格的 Markdown 源码：右对齐到最右侧，
+                                        // 与渲染态右上角的复制按钮一致。
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui
+                                                    .button(
+                                                        egui::RichText::new("复制")
+                                                            .size(theme.body * 0.85),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    ctx.copy_text(table_source(grid, aligns));
+                                                    actions.push(render::Action::Notify(
+                                                        "复制成功".to_string(),
+                                                    ));
+                                                }
+                                            },
+                                        );
                                         if let Some(op) = op {
                                             match op {
                                                 TableOp::Delete => deleted = true,
                                                 other => {
-                                                    if table_op_on_grid(grid, aligns, other)
-                                                    {
+                                                    if table_op_on_grid(grid, aligns, other) {
                                                         edited = true;
                                                     }
                                                 }
@@ -1079,13 +1259,15 @@ pub fn show_editor(
                                         / cols as f32)
                                         .max(56.0);
                                     ui.set_min_width(col_w * cols as f32 + gap);
-                                    // 表头行各单元格的矩形：Grid 之后用标题色把间隙补满
-                                    let mut head_rects: Vec<egui::Rect> = Vec::new();
+                                    // 各行单元格矩形：Grid 之后画标题行补缝与行/列分隔线，
+                                    // 与渲染态（render.rs 表格分支）同一套画法。
+                                    let mut row_rects: Vec<Vec<egui::Rect>> = Vec::new();
                                     egui::Grid::new(("table_edit", idx))
                                         .min_col_width(col_w)
                                         .max_col_width(col_w)
                                         .show(ui, |ui| {
                                             for (ri, row) in grid.iter_mut().enumerate() {
+                                                let mut cell_rects: Vec<egui::Rect> = Vec::new();
                                                 for (ci, cell) in row.iter_mut().enumerate() {
                                                     // 编辑态与渲染态同一套配色与字号（body*0.95）：
                                                     // 行高一致，点击进入编辑时表格才不会跳。
@@ -1108,9 +1290,7 @@ pub fn show_editor(
                                                                     .inner_margin(3.0),
                                                             ),
                                                     );
-                                                    if ri == 0 {
-                                                        head_rects.push(r.rect);
-                                                    }
+                                                    cell_rects.push(r.rect);
                                                     // 渲染态点击了哪个单元格，这里就聚焦哪一格，
                                                     // 光标落在点击位置附近（右半边 → 文字末尾）。
                                                     if state.table_focus == Some((ri, ci)) {
@@ -1137,23 +1317,26 @@ pub fn show_editor(
                                                         edited = true;
                                                     }
                                                 }
+                                                row_rects.push(cell_rects);
                                                 ui.end_row();
                                             }
                                         });
-                                    // 与渲染态一致：标题行底色铺满整行，盖住单元格之间的缝隙
-                                    if head_rects.len() == cols {
-                                        let top = head_rects
-                                            .iter()
-                                            .map(|x| x.top())
-                                            .fold(f32::MAX, f32::min);
-                                        let bottom = head_rects
+                                    // 与渲染态一致：标题行底色铺满整行 + 行/列之间画单线分隔。
+                                    // 之前编辑态只有外框描边、单元格又是同色填充，
+                                    // 一点进表格格子之间的线就全没了。
+                                    let p = ui.painter();
+                                    if let Some(head) = row_rects.first()
+                                        && head.len() == cols
+                                    {
+                                        let top =
+                                            head.iter().map(|x| x.top()).fold(f32::MAX, f32::min);
+                                        let bottom = head
                                             .iter()
                                             .map(|x| x.bottom())
                                             .fold(f32::MIN, f32::max);
-                                        let p = ui.painter();
                                         for k in 1..cols {
-                                            let left = head_rects[k - 1].right();
-                                            let right = head_rects[k].left();
+                                            let left = head[k - 1].right();
+                                            let right = head[k].left();
                                             if right > left {
                                                 p.rect_filled(
                                                     egui::Rect::from_min_max(
@@ -1164,6 +1347,60 @@ pub fn show_editor(
                                                     theme.table_head,
                                                 );
                                             }
+                                        }
+                                    }
+                                    let stroke = egui::Stroke::new(1.0, theme.table_line);
+                                    // 行分隔线：相邻两行单元格之间的中线
+                                    for i in 1..row_rects.len() {
+                                        let next_top = row_rects[i].first().map(|x| x.top());
+                                        let prev_bottom = row_rects[i - 1]
+                                            .iter()
+                                            .map(|x| x.bottom())
+                                            .fold(f32::MIN, f32::max);
+                                        if let Some(t) = next_top {
+                                            let y = (t + prev_bottom) / 2.0;
+                                            let left = row_rects[i]
+                                                .iter()
+                                                .map(|x| x.left())
+                                                .fold(f32::MAX, f32::min);
+                                            let right = row_rects[i]
+                                                .iter()
+                                                .map(|x| x.right())
+                                                .fold(f32::MIN, f32::max);
+                                            p.line_segment(
+                                                [
+                                                    egui::Pos2::new(left, y),
+                                                    egui::Pos2::new(right, y),
+                                                ],
+                                                stroke,
+                                            );
+                                        }
+                                    }
+                                    // 列分隔线：相邻单元格右/左缘的中点，纵贯整个网格
+                                    let grid_top =
+                                        row_rects.first().and_then(|r| r.first()).map(|x| x.top());
+                                    let grid_bottom = row_rects
+                                        .last()
+                                        .and_then(|r| r.first())
+                                        .map(|x| x.bottom());
+                                    if let (Some(top), Some(bottom)) = (grid_top, grid_bottom) {
+                                        let mut xs: Vec<f32> = Vec::new();
+                                        for row in &row_rects {
+                                            for k in 1..row.len() {
+                                                let x = (row[k - 1].right() + row[k].left()) / 2.0;
+                                                if !xs.iter().any(|v| (*v - x).abs() < 0.5) {
+                                                    xs.push(x);
+                                                }
+                                            }
+                                        }
+                                        for x in xs {
+                                            p.line_segment(
+                                                [
+                                                    egui::Pos2::new(x, top),
+                                                    egui::Pos2::new(x, bottom),
+                                                ],
+                                                stroke,
+                                            );
                                         }
                                     }
                                 }
@@ -1184,39 +1421,6 @@ pub fn show_editor(
                             // 的点击聚焦，表现为「点了没反应」。单元格自己处理点击。
                             inner.response
                         } else if editing {
-                            // 代码块编辑态也保留工具行：复制 + 语言选择（可搜索、A→Z），
-                            // 和渲染态完全一致，点进去不会失去这两样能力。
-                            if let EditKind::Code(lang) = &edit_kind {
-                                let mut copied = false;
-                                ui.horizontal(|ui| {
-                                    // 左上角语言文字标签已移除：右上角语言下拉已显示当前语言。
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui
-                                                .button(egui::RichText::new("复制").small())
-                                                .clicked()
-                                            {
-                                                copied = true;
-                                            }
-                                            if let Some(l) = render::language_combo(
-                                                ui,
-                                                ("code_lang_edit", tab_key, idx),
-                                                lang,
-                                            ) {
-                                                lang_change = Some(l);
-                                            }
-                                        },
-                                    );
-                                });
-                                if copied {
-                                    ctx.copy_text(active_buf.clone());
-                                    actions.push(Action::Notify("复制成功".to_string()));
-                                }
-                                // 与渲染态对齐：工具行和代码区之间留同样的 3px 空隙，
-                                // 否则点击进入编辑时这一行会差 3px，整块往下跳一下。
-                                ui.add_space(3.0);
-                            }
                             let id = Id::new(("block_edit", tab_key, idx));
                             // 标题只编辑文字、代码块只编辑代码（不含围栏），像 Typora 一样直接改。
                             // 代码块的行数 + 1 对齐渲染态：渲染态的 code_job 会在末尾
@@ -1272,7 +1476,19 @@ pub fn show_editor(
                                     .text_color(theme.heading)
                                     .frame(egui::Frame::NONE)
                                     .return_key(Option::<egui::KeyboardShortcut>::None),
-                                EditKind::Code(_) | EditKind::Diagram(_) => te
+                                // 代码块：外层 panel_frame 提供盒子（按钮行 + 代码同盒，
+                                // 与渲染态一致），TextEdit 自身不再带底色边距。
+                                // 宽度对齐渲染态：盒子内可用宽 = page_w - 两侧边距 24。
+                                EditKind::Code(_) => te
+                                    .font(egui::FontId::new(
+                                        theme.mono,
+                                        egui::FontFamily::Monospace,
+                                    ))
+                                    .text_color(theme.text)
+                                    .layouter(&mut code_layouter)
+                                    .desired_width((page_w - 24.0).max(80.0))
+                                    .frame(egui::Frame::NONE),
+                                EditKind::Diagram(_) => te
                                     .font(egui::FontId::new(
                                         theme.mono,
                                         egui::FontFamily::Monospace,
@@ -1285,19 +1501,93 @@ pub fn show_editor(
                                             .inner_margin(12.0)
                                             .corner_radius(6.0),
                                     ),
+                                // 段落/列表：TextEdit 主题默认的垂直 margin 会让
+                                // 编辑态比渲染态（Label 无 margin）高约 5px，点击进入
+                                // 编辑时整块往下跳。归零后两态高度一致，块不再跳动。
                                 EditKind::Source | EditKind::List { .. } => te
                                     .font(egui::FontId::new(
                                         theme.body,
                                         egui::FontFamily::Proportional,
                                     ))
                                     .frame(egui::Frame::NONE)
+                                    .margin(egui::Margin::ZERO)
                                     .return_key(Option::<egui::KeyboardShortcut>::None)
                                     .layouter(&mut layouter),
                             };
-                            // 列表项编辑态：行首标记与渲染态完全同款（复选框可点、
-                            // 圆点/编号淡色显示），TextEdit 只编辑正文——所见即所得，
-                            // 不再显示 "- [ ] 文字" 这样的源码。
-                            let (out, row_resp) = if let EditKind::List {
+                            // 代码块编辑态：按钮行（删除/复制/语言）与代码同在一个
+                            // panel_frame 盒子里，与渲染态完全一致——否则点击进入
+                            // 编辑后按钮会"跳到"盒子右上方之外。
+                            let (out, row_resp) = if let EditKind::Code(lang) = &edit_kind {
+                                let mut copied = false;
+                                let fr = render::panel_frame(theme).show(ui, |ui| {
+                                    // 功能栏：左语言 + 右操作按钮（与渲染态同款布局）
+                                    render::code_header_frame(theme).show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            if let Some(l) = render::language_combo(
+                                                ui,
+                                                ("code_lang_edit", tab_key, idx),
+                                                lang,
+                                            ) {
+                                                lang_change = Some(l);
+                                            }
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .button(
+                                                            egui::RichText::new("折叠")
+                                                                .size(theme.body * 0.85),
+                                                        )
+                                                        .on_hover_cursor(egui::CursorIcon::Default)
+                                                        .clicked()
+                                                    {
+                                                        actions
+                                                            .push(render::Action::FoldToggle(idx));
+                                                        // 折叠的是活动块：把它让给相邻块，立即退出编辑态看到折叠效果。
+                                                        new_active =
+                                                            Some(if idx + 1 < doc.blocks.len() {
+                                                                idx + 1
+                                                            } else {
+                                                                idx.saturating_sub(1)
+                                                            });
+                                                    }
+                                                    if ui
+                                                        .button(
+                                                            egui::RichText::new("删除")
+                                                                .size(theme.body * 0.85),
+                                                        )
+                                                        .on_hover_cursor(egui::CursorIcon::Default)
+                                                        .clicked()
+                                                    {
+                                                        actions.push(
+                                                            render::Action::AskDeleteBlock(idx),
+                                                        );
+                                                    }
+                                                    if ui
+                                                        .button(
+                                                            egui::RichText::new("复制")
+                                                                .size(theme.body * 0.85),
+                                                        )
+                                                        .on_hover_cursor(egui::CursorIcon::Default)
+                                                        .clicked()
+                                                    {
+                                                        copied = true;
+                                                    }
+                                                },
+                                            );
+                                        });
+                                    });
+                                    ui.add_space(6.0);
+                                    render::code_divider(ui, theme);
+                                    ui.add_space(6.0);
+                                    te.show(ui)
+                                });
+                                if copied {
+                                    ctx.copy_text(active_buf.clone());
+                                    actions.push(Action::Notify("复制成功".to_string()));
+                                }
+                                (fr.inner, fr.response)
+                            } else if let EditKind::List {
                                 indent,
                                 marker,
                                 checked,
@@ -1315,13 +1605,12 @@ pub fn show_editor(
                                             }
                                         }
                                         None => {
-                                            let m = if marker.ends_with('.')
-                                                || marker.ends_with(')')
-                                            {
-                                                format!("{}  ", marker)
-                                            } else {
-                                                "•  ".to_string()
-                                            };
+                                            let m =
+                                                if marker.ends_with('.') || marker.ends_with(')') {
+                                                    format!("{}  ", marker)
+                                                } else {
+                                                    "•  ".to_string()
+                                                };
                                             let mut f = theme.fmt(theme.body);
                                             f.color = theme.dim;
                                             let mut job = egui::text::LayoutJob::default();
@@ -1329,9 +1618,8 @@ pub fn show_editor(
                                             ui.label(job);
                                         }
                                     }
-                                    let te = te.desired_width(
-                                        (ui.available_width() - 8.0).max(80.0),
-                                    );
+                                    let te =
+                                        te.desired_width((ui.available_width() - 8.0).max(80.0));
                                     te.show(ui)
                                 });
                                 (hr.inner, hr.response)
@@ -1378,6 +1666,23 @@ pub fn show_editor(
                             }
                             let cr = out.cursor_range;
                             let resp = out.response;
+                            // 空活动块（空行）作为跨块拖选的起点：渲染态块走
+                            // text_response 上报 CrossDrag，但活动块用 TextEdit、
+                            // 没有这条路径，导致「在光标所在空行按下向下拖」选不中
+                            // 任何内容。这里在按下帧直接锚定选区；普通点击（无拖动）
+                            // 会由下方 resp.clicked() 分支清除，不产生残留。不在这里
+                            // surrender focus——空行点击后 TextEdit 仍需焦点显示光标。
+                            if active_buf.is_empty() && state.cross_sel.is_none() {
+                                let pointer = ui.input(|i| i.pointer.interact_pos());
+                                let pressed_now = ui.input(|i| {
+                                    i.pointer.button_pressed(egui::PointerButton::Primary)
+                                });
+                                if pressed_now
+                                    && pointer.is_some_and(|p| resp.response.rect.contains(p))
+                                {
+                                    state.cross_sel = Some((idx, 0, idx, 0));
+                                }
+                            }
                             if resp.changed() {
                                 changed = true;
                             }
@@ -1425,19 +1730,19 @@ pub fn show_editor(
                                 outline,
                                 actions,
                                 max_width: page_w,
+                                cross_sel: state.cross_sel,
+                                folded: &state.folded,
                             };
                             render::render_block(ui, idx, block, &mut env, focus_mode)
                         };
-                        // 行号：画在块左缘的页边距里，对齐块的第一行。
-                        // 左侧空间不足（窗口太窄）时不画，避免盖住正文。
+                        // 行号：固定画在页左缘外的同一列（不随块内容偏移），
+                        // 与正文保持约 28px 间距。左侧空间不足（窗口太窄）时不画，
+                        // 避免盖住正文。
                         if show_line_numbers {
-                            let num_x = resp.rect.left() - 10.0;
+                            let num_x = page_left - 28.0;
                             if num_x - theme.body > ui.clip_rect().left() {
                                 ui.painter().text(
-                                    egui::Pos2::new(
-                                        num_x,
-                                        resp.rect.top() + theme.body * 0.5,
-                                    ),
+                                    egui::Pos2::new(num_x, resp.rect.top() + theme.body * 0.5),
                                     egui::Align2::RIGHT_CENTER,
                                     &block_start_lines[idx].to_string(),
                                     egui::FontId::proportional(theme.body),
@@ -1451,6 +1756,10 @@ pub fn show_editor(
                         if resp.clicked() {
                             new_active = Some(idx);
                             state.clicked = true;
+                            // 点击进入编辑：清除跨块选区（拖选才产生它）
+                            if state.cross_sel.is_some() {
+                                state.cross_sel = None;
+                            }
                         }
                         if is_active {
                             active_rect = Some(resp.rect);
@@ -1492,6 +1801,24 @@ pub fn show_editor(
                 }
                 state.scroll_top = false;
             }
+
+            // 跨块拖选聚合：渲染态块上报的 CrossDrag 在这里聚成全局选区，
+            // 并从 actions 中移除（app 层无需关心）。拖选开始时放弃编辑态
+            // 焦点，否则活动块的 TextEdit 会抢先消费键盘输入。
+            actions.retain(|a| match a {
+                Action::CrossDrag(i, c, start) => {
+                    if *start {
+                        state.cross_sel = Some((*i, *c, *i, *c));
+                        if let Some(fid) = ctx.memory(|m| m.focused()) {
+                            ctx.memory_mut(|m| m.surrender_focus(fid));
+                        }
+                    } else if let Some((a, ac, _, _)) = state.cross_sel {
+                        state.cross_sel = Some((a, ac, *i, *c));
+                    }
+                    false
+                }
+                _ => true,
+            });
         });
 
     // 空白点击判定：不依赖哪个控件抢到这次点击，直接看指针落点。
@@ -1555,6 +1882,8 @@ pub fn show_editor(
         // 中间任何一帧都不会出现「没有光标」的空窗。
         ctx.memory_mut(|m| m.request_focus(Id::new(("block_edit", tab_key, target))));
         state.clicked = true;
+        // 空白点击：清除跨块选区（拖选才产生它）
+        state.cross_sel = None;
         ctx.request_repaint();
         trace_blank(
             &blank_pos,
@@ -1576,6 +1905,24 @@ pub fn show_editor(
     // 编辑区不再处理回车/退格/Tab，否则在终端里按回车，编辑区的段落也跟着换行。
     if state.read_only {
         return EditorEvent::None;
+    }
+
+    // ---------------- 跨块选区：输入替换 / 退格删除 ----------------
+    // 拖选出的跨块选区存在时，键盘输入优先作用于选区（Typora 行为）：
+    // 打字 → 删除选中内容并插入新文字；退格 → 删除选中内容；
+    // 选区由拖选建立时编辑框已失焦，不会与 TextEdit 的输入处理冲突。
+    if state.cross_sel.is_some() {
+        let typed: Option<String> = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+        });
+        if backspace || typed.is_some() {
+            apply_cross_sel_edit(doc, state, typed.as_deref());
+            ctx.request_repaint();
+            return EditorEvent::Changed;
+        }
     }
 
     // ---------------- 代码块换语言 ----------------
@@ -1611,7 +1958,7 @@ pub fn show_editor(
     //    排除「同帧打字 + 回车」「行中间回车」的误判。
     if enter
         && changed
-        && matches!(edit_kind, EditKind::Code(_))
+        && matches!(edit_kind, EditKind::Code(_) | EditKind::Diagram(_))
         && buf_ended_nl
         && state.sel.is_none()
         && cursor_idx == active_buf.chars().count()
@@ -1729,6 +2076,47 @@ pub fn show_editor(
 mod tests {
     use super::*;
 
+    /// 折叠状态往返：source 键不随下标变化，折叠块之前插入块不会导致错位。
+    #[test]
+    fn fold_keys_indices_roundtrip() {
+        let src = "# 标题\n\n```rust\nfn a() {}\n```\n\n正文\n\n```rust\nfn b() {}\n```";
+        let doc = Document::new(src, None);
+        let code_idx: Vec<usize> = doc
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| matches!(b, Block::Code { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(code_idx.len(), 2, "应有且仅有两个代码块: {code_idx:?}");
+
+        // 折叠第二个代码块 → 得到它的 source 键。
+        let mut folded = HashSet::new();
+        folded.insert(code_idx[1]);
+        let keys = fold_keys(&doc, &folded);
+        assert_eq!(keys.len(), 1, "只有一个折叠代码块: {keys:?}");
+        assert!(
+            keys[0].contains("fn b()"),
+            "键应指向 fn b 的代码块: {keys:?}"
+        );
+
+        // 在该代码块之前插入一个段落，其下标后移一位，但 source 键不变，
+        // 还原时仍应命中 fn b 的代码块（下标已变）。
+        let mut doc2 = Document::new(src, None);
+        doc2.insert_block_after(code_idx[1] - 1, "插入的段落");
+        let restored = fold_indices(&doc2, &keys);
+        assert_eq!(restored.len(), 1, "应恰好还原一个折叠块: {restored:?}");
+        let ri = *restored.iter().next().unwrap();
+        assert!(
+            doc2.blocks[ri].source().contains("fn b()"),
+            "source 匹配应抵消下标偏移，实际命中: {:?}",
+            doc2.blocks[ri].source()
+        );
+
+        // 空键集合应还原成空集。
+        assert!(fold_indices(&doc2, &[]).is_empty());
+    }
+
     /// 图表块编辑往返：编辑缓冲只含图形代码（无围栏），改完能补回围栏写回。
     /// 插入流程图后必须还能再次编辑——回归「点击图形无法重新激活块」的修复。
     #[test]
@@ -1786,8 +2174,8 @@ mod tests {
             egui::CentralPanel::default().show(root, |ui| {
                 let c = ui.ctx().clone();
                 let _ = show_editor(
-                    ui, doc, state, theme, &c, images, None, outline, false, false, false,
-                    false, 1, actions,
+                    ui, doc, state, theme, &c, images, None, outline, false, false, false, false,
+                    1, actions,
                 );
             });
         });
@@ -1849,6 +2237,7 @@ mod tests {
                                 source: text.clone(),
                             };
                             let ctx_q = ui.ctx().clone();
+                            let folded: HashSet<usize> = HashSet::new();
                             let mut env = RenderEnv {
                                 theme: &theme,
                                 ctx: &ctx_q,
@@ -1857,6 +2246,8 @@ mod tests {
                                 outline: &[],
                                 actions: &mut actions,
                                 max_width: page_w,
+                                cross_sel: None,
+                                folded: &folded,
                             };
                             quote_size = render::render_block(ui, 0, &quote, &mut env, false)
                                 .rect
@@ -1991,22 +2382,54 @@ mod tests {
             vec!["1".to_string(), "2".to_string()],
         ];
         let mut align = vec![Align::Left, Align::Left];
-        assert!(table_op_on_grid(&mut grid, &mut align, TableOp::InsertRow(0)));
+        assert!(table_op_on_grid(
+            &mut grid,
+            &mut align,
+            TableOp::InsertRow(0)
+        ));
         assert_eq!(grid.len(), 3, "表头下插入空行");
         assert_eq!(grid[1], vec![String::new(), String::new()]);
-        assert!(table_op_on_grid(&mut grid, &mut align, TableOp::DeleteRow(1)));
+        assert!(table_op_on_grid(
+            &mut grid,
+            &mut align,
+            TableOp::DeleteRow(1)
+        ));
         assert_eq!(grid.len(), 2);
-        assert!(table_op_on_grid(&mut grid, &mut align, TableOp::InsertCol(0)));
+        assert!(table_op_on_grid(
+            &mut grid,
+            &mut align,
+            TableOp::InsertCol(0)
+        ));
         assert_eq!(grid[0].len(), 3, "第一列右侧插入空列");
-        assert!(table_op_on_grid(&mut grid, &mut align, TableOp::DeleteCol(0)));
+        assert!(table_op_on_grid(
+            &mut grid,
+            &mut align,
+            TableOp::DeleteCol(0)
+        ));
         assert_eq!(grid[0].len(), 2);
-        assert!(table_op_on_grid(&mut grid, &mut align, TableOp::SetAlign(Align::Center)));
+        assert!(table_op_on_grid(
+            &mut grid,
+            &mut align,
+            TableOp::SetAlign(Align::Center)
+        ));
         assert_eq!(align, vec![Align::Center, Align::Center]);
         // 表头行不可删；只剩一列时删列无效
-        assert!(!table_op_on_grid(&mut grid, &mut align, TableOp::DeleteRow(0)));
-        assert!(table_op_on_grid(&mut grid, &mut align, TableOp::DeleteCol(1)));
+        assert!(!table_op_on_grid(
+            &mut grid,
+            &mut align,
+            TableOp::DeleteRow(0)
+        ));
+        assert!(table_op_on_grid(
+            &mut grid,
+            &mut align,
+            TableOp::DeleteCol(1)
+        ));
         assert_eq!(grid[0].len(), 1, "删掉最后一列后仍保留一列");
-        assert!(!table_op_on_grid(&mut grid, &mut align, TableOp::DeleteCol(0)));
+        assert!(!table_op_on_grid(
+            &mut grid,
+            &mut align,
+            TableOp::DeleteCol(0)
+        ));
         assert_eq!(grid.len(), 2);
     }
 
@@ -2244,8 +2667,8 @@ mod tests {
                 .frame(egui::Frame::new().inner_margin(8))
                 .show(&mut root, |ui| {
                     let _ = show_editor(
-                        ui, doc, state, theme, ctx, images, None, &outline, false, false,
-                        false, false, 1, actions,
+                        ui, doc, state, theme, ctx, images, None, &outline, false, false, false,
+                        false, 1, actions,
                     );
                 });
         });
@@ -2486,6 +2909,1251 @@ mod tests {
         );
     }
 
+    /// 行尾空白点击链路验证：
+    /// 1) 编辑态直接点击行尾空白 —— TextEdit 应把光标钳到该行最后一个字符
+    ///    之后，且持有焦点（光标闪烁的前提）；
+    /// 2) 渲染态点击非活动块行尾空白 —— 产生 Caret 动作进入编辑态后，
+    ///    pending_caret 传入的超宽 x 也要钳到行末。
+    #[test]
+    fn click_row_blank_puts_caret_at_line_end_with_focus() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+
+        // ---- 1) 编辑态：点 TextEdit 内文字右侧的空白 ----
+        let mut doc = Document::new("短文字", None);
+        let mut state = EditorState::default(); // active=0 → 块 0 编辑态
+        let ctx = egui::Context::default();
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+        // 页宽 720 居中（pad 40），文字只有三个字：点击点 (400, 20) 在
+        // TextEdit 之内、文字 galley 之外的空白区。
+        let pos = egui::pos2(400.0, 20.0);
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        let id = egui::Id::new(("block_edit", 1, 0));
+        let caret = egui::TextEdit::load_state(&ctx, id)
+            .and_then(|ts| ts.cursor.char_range())
+            .map(|r| r.primary.index.0);
+        assert_eq!(
+            caret,
+            Some(3),
+            "编辑态点行尾空白，光标应落在最后一个字符之后，实际 {caret:?}"
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(id),
+            "点击后 TextEdit 必须持有焦点（否则光标不闪烁）"
+        );
+
+        // ---- 2) 渲染态点击非活动块行尾空白 → Caret 动作 → 进入编辑 ----
+        let mut doc = Document::new("短文字\n\n第二段", None);
+        let mut state = EditorState::default();
+        let ctx = egui::Context::default();
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+        // 第三块（"第二段"）是渲染态。先模拟渲染态块点击行尾空白产生的
+        // Caret 动作：app.rs 会设置 active / focus_req / pending_caret。
+        // local 偏移故意给一个超出文字宽度的 x，编辑态必须钳到行末。
+        let id2 = egui::Id::new(("block_edit", 1, 2));
+        state.active = 2;
+        state.focus_req = Some(2);
+        state.pending_caret = Some(egui::vec2(400.0, 2.0));
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+        let caret = egui::TextEdit::load_state(&ctx, id2)
+            .and_then(|ts| ts.cursor.char_range())
+            .map(|r| r.primary.index.0);
+        assert_eq!(
+            caret,
+            Some(3),
+            "渲染态点行尾空白进入编辑后，光标应钳到行末，实际 {caret:?}"
+        );
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(id2),
+            "Caret 动作后块必须获得焦点（光标闪烁）"
+        );
+    }
+
+    /// 源码模式行号栏宽度恒定验证：抓取行号数字的真实绘制坐标，
+    /// 回车增加一行后（行数 10→11，位数都被 max(3) 钳住），
+    /// 所有行号的 x 位置必须保持不动（宽度没变、正文没横移）。
+    #[test]
+    fn source_mode_gutter_x_stays_put_across_enter() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let src: String = (1..=10)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut doc = Document::new(&src, None);
+        let mut state = EditorState::default();
+        let ctx = egui::Context::default();
+
+        // 跑一帧源码模式（行号开启），返回所有行号数字 (文本, 锚点位置)
+        let mut run = |doc: &mut Document,
+                       state: &mut EditorState,
+                       events: Vec<egui::Event>|
+         -> Vec<(String, egui::Pos2)> {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut nums: Vec<(String, egui::Pos2)> = Vec::new();
+            let mut out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let c = ui.ctx().clone();
+                    let _ = show_editor(
+                        ui,
+                        doc,
+                        state,
+                        &theme,
+                        &c,
+                        &mut images,
+                        None,
+                        &[],
+                        true, // source_mode
+                        false,
+                        false,
+                        true, // show_line_numbers
+                        1,
+                        &mut actions,
+                    );
+                });
+            });
+            for cs in &out.shapes {
+                if let egui::Shape::Text(t) = &cs.shape {
+                    let s = t.galley.text();
+                    if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
+                        nums.push((s.to_string(), t.pos));
+                    }
+                }
+            }
+            out.textures_delta.clear();
+            nums
+        };
+
+        let key = |pressed: bool| -> Vec<egui::Event> {
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Default::default(),
+            }]
+        };
+        let click = egui::pos2(400.0, 100.0);
+
+        // 基线：10 行文档
+        let before = run(&mut doc, &mut state, vec![]);
+        assert_eq!(before.len(), 10, "应有 10 个行号数字，实际 {:?}", before);
+
+        // 点击编辑区聚焦 TextEdit，然后回车新增一行
+        run(
+            &mut doc,
+            &mut state,
+            vec![
+                egui::Event::PointerMoved(click),
+                egui::Event::PointerButton {
+                    pos: click,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        run(
+            &mut doc,
+            &mut state,
+            vec![egui::Event::PointerButton {
+                pos: click,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        run(&mut doc, &mut state, key(true));
+        run(&mut doc, &mut state, key(false));
+
+        // 回车后：11 行
+        let after = run(&mut doc, &mut state, vec![]);
+        assert_eq!(after.len(), 11, "回车后应有 11 个行号数字");
+        assert_eq!(
+            doc.source().matches('\n').count() + 1,
+            11,
+            "文档应真的多了一行"
+        );
+        // 共同行号的 x 必须完全一致：行号栏宽度恒定，正文没有横移
+        for (text, before_pos) in &before {
+            let matched = after
+                .iter()
+                .find(|(t, _)| t == text)
+                .map(|(_, p)| *p)
+                .expect("回车后原有行号应仍在");
+            assert_eq!(
+                before_pos.x, matched.x,
+                "行号 {text} 的 x 坐标在回车后发生了移动（行号栏宽度不稳定）"
+            );
+        }
+    }
+
+    /// 跨过 999 行的边界表现：行号位数 3→4，行号栏一次性变宽一个数字位宽，
+    /// 所有行号整体右移相同距离（此后 ≤4 位行数内保持恒定）。
+    #[test]
+    fn source_mode_gutter_widens_once_past_999_lines() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        // 999 行文档（位数 3）
+        let src: String = (1..=999)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut doc = Document::new(&src, None);
+        let mut state = EditorState::default();
+        let ctx = egui::Context::default();
+
+        let mut run = |doc: &mut Document,
+                       state: &mut EditorState,
+                       events: Vec<egui::Event>|
+         -> Vec<(String, egui::Pos2)> {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut nums: Vec<(String, egui::Pos2)> = Vec::new();
+            let mut out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let c = ui.ctx().clone();
+                    let _ = show_editor(
+                        ui,
+                        doc,
+                        state,
+                        &theme,
+                        &c,
+                        &mut images,
+                        None,
+                        &[],
+                        true,
+                        false,
+                        false,
+                        true,
+                        1,
+                        &mut actions,
+                    );
+                });
+            });
+            for cs in &out.shapes {
+                if let egui::Shape::Text(t) = &cs.shape {
+                    let s = t.galley.text();
+                    if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
+                        nums.push((s.to_string(), t.pos));
+                    }
+                }
+            }
+            out.textures_delta.clear();
+            nums
+        };
+
+        let key = |pressed: bool| -> Vec<egui::Event> {
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Default::default(),
+            }]
+        };
+        let click = egui::pos2(400.0, 100.0);
+
+        let before = run(&mut doc, &mut state, vec![]);
+        assert_eq!(before.len(), 999, "应有 999 个行号数字");
+
+        // 聚焦后回车：999 → 1000 行，跨过位数边界
+        run(
+            &mut doc,
+            &mut state,
+            vec![
+                egui::Event::PointerMoved(click),
+                egui::Event::PointerButton {
+                    pos: click,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        run(
+            &mut doc,
+            &mut state,
+            vec![egui::Event::PointerButton {
+                pos: click,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        run(&mut doc, &mut state, key(true));
+        run(&mut doc, &mut state, key(false));
+
+        let after = run(&mut doc, &mut state, vec![]);
+        assert_eq!(after.len(), 1000, "回车后应有 1000 个行号数字");
+
+        // 所有共有行号右移的距离应等于一个数字位宽（3 位 → 4 位的宽度差）：
+        // 一次性变宽、整体平移，之后在 4 位行数内保持恒定。
+        let digit_w = theme.mono * 0.62;
+        for (text, before_pos) in &before {
+            let matched = after
+                .iter()
+                .find(|(t, _)| t == text)
+                .map(|(_, p)| *p)
+                .expect("回车后原有行号应仍在");
+            let shift = matched.x - before_pos.x;
+            assert!(
+                (shift - digit_w).abs() < 0.5,
+                "行号 {text} 右移 {shift:.2}px，应恰为一个数字位宽 {digit_w:.2}px"
+            );
+        }
+    }
+
+    /// 行号数字必须完整显示：三位行号（999 行文档）的 galley 矩形
+    /// 不得越过 ScrollArea 裁剪区左缘，否则数字被裁得只剩部分。
+    #[test]
+    fn source_mode_line_numbers_not_clipped() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let src: String = (1..=999)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut doc = Document::new(&src, None);
+        let mut state = EditorState::default();
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |root| {
+            egui::CentralPanel::default().show(root, |ui| {
+                let c = ui.ctx().clone();
+                let _ = show_editor(
+                    ui,
+                    &mut doc,
+                    &mut state,
+                    &theme,
+                    &c,
+                    &mut images,
+                    None,
+                    &[],
+                    true,
+                    false,
+                    false,
+                    true,
+                    1,
+                    &mut actions,
+                );
+            });
+        });
+        out.textures_delta.clear();
+
+        let mut checked = 0usize;
+        for cs in &out.shapes {
+            if let egui::Shape::Text(t) = &cs.shape {
+                let s = t.galley.text();
+                if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
+                    // galley 矩形是相对锚点的，屏幕左缘 = pos.x + rect.left()
+                    let screen_left = t.pos.x + t.galley.rect.left();
+                    assert!(
+                        screen_left >= cs.clip_rect.left() - 0.5,
+                        "行号 {s} 左缘 {screen_left:.1} 越过裁剪区左缘 {:.1}，被裁剪",
+                        cs.clip_rect.left()
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked >= 900, "至少应检查 900 个行号，实际 {checked}");
+    }
+
+    /// 应用级悬停验证：混合模式渲染表格后，鼠标悬停在单元格上
+    /// （悬停工具栏出现），表格的行/列分隔线必须一条不少、坐标不变。
+    #[test]
+    fn table_hover_keeps_separator_lines() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut doc = Document::new("前言\n\n甲|乙\n---|---\n一|二\n三|四", None);
+        let mut state = EditorState::default();
+        let ctx = egui::Context::default();
+
+        let mut run = |doc: &mut Document,
+                       state: &mut EditorState,
+                       events: Vec<egui::Event>|
+         -> Vec<(f32, f32, f32, f32, f32)> {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut segs: Vec<(f32, f32, f32, f32, f32)> = Vec::new();
+            let mut out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let c = ui.ctx().clone();
+                    let _ = show_editor(
+                        ui,
+                        doc,
+                        state,
+                        &theme,
+                        &c,
+                        &mut images,
+                        None,
+                        &[],
+                        false,
+                        false,
+                        false,
+                        true,
+                        1,
+                        &mut actions,
+                    );
+                });
+            });
+            for cs in &out.shapes {
+                if let egui::Shape::LineSegment { points, stroke } = &cs.shape {
+                    segs.push((
+                        points[0].x,
+                        points[0].y,
+                        points[1].x,
+                        points[1].y,
+                        stroke.width,
+                    ));
+                }
+            }
+            out.textures_delta.clear();
+            segs
+        };
+
+        let has = |segs: &[(f32, f32, f32, f32, f32)], s: &(f32, f32, f32, f32, f32)| {
+            segs.iter().any(|t| {
+                (t.0 - s.0).abs() < 0.5
+                    && (t.1 - s.1).abs() < 0.5
+                    && (t.2 - s.2).abs() < 0.5
+                    && (t.3 - s.3).abs() < 0.5
+                    && (t.4 - s.4).abs() < 0.1
+            })
+        };
+
+        // 基线帧：两条水平行线 + 一条垂直列线
+        let base = run(&mut doc, &mut state, vec![]);
+        let h1 = (53.2, 914.5, 748.8, 914.5, 1.0);
+        let h2 = (53.2, 940.5, 748.8, 940.5, 1.0);
+        let v1 = (400.0, 890.0, 400.0, 965.0, 1.0);
+        for s in [&h1, &h2, &v1] {
+            assert!(has(&base, s), "基线帧缺少表格分隔线 {s:?}，实际 {base:?}");
+        }
+
+        // 悬停表头单元格（可见区域内）两帧，悬停工具栏出现
+        let hover = egui::pos2(300.0, 895.0);
+        run(&mut doc, &mut state, vec![egui::Event::PointerMoved(hover)]);
+        let hovering = run(&mut doc, &mut state, vec![]);
+
+        // 悬停后：表格 3 条分隔线必须一条不少、坐标分毫未动
+        // （允许悬停工具栏额外新增自己的线段，但不允许表格的线消失或移位）
+        for s in [&h1, &h2, &v1] {
+            assert!(
+                has(&hovering, s),
+                "悬停单元格后表格分隔线消失了：{s:?}，实际 {hovering:?}"
+            );
+        }
+        assert!(
+            hovering.len() > base.len(),
+            "悬停应显示工具栏（出现新增线段），验证悬停确实生效"
+        );
+    }
+
+    /// 代码块编辑态与渲染态的按钮行位置必须一致：
+    /// 点击进入编辑后，"复制"按钮相对盒子顶部的偏移不得变化
+    /// （否则按钮看起来"跳到盒子右上方外"、整块跳动）。
+    /// 注意：文档前面放一个段落，代码块保持渲染态，才能对比两态。
+    #[test]
+    fn code_block_edit_toolbar_stays_inside_box() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut doc = Document::new("前言\n\n```rust\nfn main() {}\n```", None);
+        let mut state = EditorState::default();
+        let ctx = egui::Context::default();
+
+        // 抓取信息：(盒子矩形, "复制"文本锚点位置)
+        let mut run = |doc: &mut Document,
+                       state: &mut EditorState,
+                       events: Vec<egui::Event>|
+         -> Option<(egui::Rect, egui::Pos2)> {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut box_rect: Option<egui::Rect> = None;
+            let mut copy_pos: Option<egui::Pos2> = None;
+            let mut out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let c = ui.ctx().clone();
+                    let _ = show_editor(
+                        ui,
+                        doc,
+                        state,
+                        &theme,
+                        &c,
+                        &mut images,
+                        None,
+                        &[],
+                        false,
+                        false,
+                        false,
+                        true,
+                        1,
+                        &mut actions,
+                    );
+                });
+            });
+            out.textures_delta.clear();
+            for cs in &out.shapes {
+                match &cs.shape {
+                    // 盒子 = 最大的 code_bg 填充矩形
+                    egui::Shape::Rect(r) if r.fill == theme.code_bg && r.rect.width() > 200.0 => {
+                        let area = r.rect.width() * r.rect.height();
+                        let bigger = box_rect.is_none_or(|b| area > b.width() * b.height());
+                        if bigger {
+                            box_rect = Some(r.rect);
+                        }
+                    }
+                    egui::Shape::Text(t) if t.galley.text() == "复制" => {
+                        copy_pos = Some(t.pos);
+                    }
+                    _ => {}
+                }
+            }
+            box_rect.zip(copy_pos)
+        };
+
+        let rel = |r: &Option<(egui::Rect, egui::Pos2)>| -> f32 {
+            let (box_r, copy) = r.as_ref().expect("应渲染出代码块盒子与复制按钮");
+            copy.y - box_r.top()
+        };
+
+        // 渲染态：按钮相对盒子顶部的偏移（active=0 指向段落，代码块渲染）
+        let before = run(&mut doc, &mut state, vec![]);
+        let off_before = rel(&before);
+
+        // 点击代码块（在段落下方）进入编辑态
+        let click = egui::pos2(400.0, 90.0);
+        run(
+            &mut doc,
+            &mut state,
+            vec![
+                egui::Event::PointerMoved(click),
+                egui::Event::PointerButton {
+                    pos: click,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        run(
+            &mut doc,
+            &mut state,
+            vec![egui::Event::PointerButton {
+                pos: click,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        let after = run(&mut doc, &mut state, vec![]);
+        let off_after = rel(&after);
+        assert!(
+            (off_before - off_after).abs() < 2.0,
+            "进入编辑后按钮偏移变了：渲染态 {off_before:.1}px → 编辑态 {off_after:.1}px，按钮跳动了"
+        );
+        // 盒子顶部不得明显移动（TextEdit 与 Label 的响应矩形有 ~2px 的固有差，
+        // 肉眼不可见；之前是行高不一致导致的 5px，已修复）
+        let (b1, _) = before.as_ref().expect("渲染态盒子");
+        let (b2, _) = after.as_ref().expect("编辑态盒子");
+        assert!(
+            (b1.top() - b2.top()).abs() < 3.0,
+            "盒子顶部移动了：渲染态 {:.1} → 编辑态 {:.1}",
+            b1.top(),
+            b2.top()
+        );
+        // 编辑态按钮必须在盒子内部（右缘不超过盒子右缘）
+        let (b2, copy2) = after.as_ref().expect("编辑态盒子");
+        assert!(
+            copy2.y > b2.top() && copy2.y < b2.bottom() && copy2.x < b2.right(),
+            "编辑态按钮 ({:.1},{:.1}) 跑到盒子外 [{:.1},{:.1} {}x{}]",
+            copy2.x,
+            copy2.y,
+            b2.min.x,
+            b2.min.y,
+            b2.width(),
+            b2.height()
+        );
+    }
+
+    /// 跨块选区：在渲染态块上按住拖到另一块 → 选区建立；
+    /// 退格 → 两段（含中间空行）合并成一段。
+    #[test]
+    fn cross_block_drag_select_and_delete() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut doc = Document::new("第一段\n\n第二段\n\n第三段", None);
+        assert_eq!(doc.blocks.len(), 5, "3 段 + 2 空行 = 5 块");
+        let mut state = EditorState::default(); // active=0 段落编辑态
+        let ctx = egui::Context::default();
+
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+
+        // 在"第二段"（渲染态块）按下并拖到"第三段"
+        let start = egui::pos2(400.0, 60.0);
+        let end = egui::pos2(400.0, 100.0);
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        println!("[帧2 按下] actions={actions:?} cross={:?}", state.cross_sel);
+        actions.clear();
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![egui::Event::PointerMoved(end)],
+        );
+        println!("[帧3 移动] actions={actions:?} cross={:?}", state.cross_sel);
+        actions.clear();
+        // egui 的 drag_started 晚一帧生效：再保持一帧按下状态（指针停在块 4），
+        // 让终点块以「选区进行中 + 指针压在本块上」接棒上报选区终点。
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![egui::Event::PointerMoved(end)],
+        );
+        println!("[帧4 保持] actions={actions:?} cross={:?}", state.cross_sel);
+        actions.clear();
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        let sel = state
+            .cross_sel
+            .expect("跨块拖选后应建立选区，实际 None——检查渲染态块的拖选感应");
+        let (lo_b, hi_b) = (sel.0.min(sel.2), sel.0.max(sel.2));
+        assert!(
+            (lo_b, hi_b) == (2, 4),
+            "选区应覆盖第 2 块到第 4 块，实际 {sel:?}"
+        );
+
+        // 退格：删除选区 → 两段合并
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![egui::Event::Key {
+                key: egui::Key::Backspace,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert!(state.cross_sel.is_none(), "删除后选区应清除");
+        assert_eq!(
+            doc.source(),
+            "第一段\n\n第二段",
+            "退格应把选中的第二、三段合并成一段"
+        );
+    }
+
+    /// 跨块选区复制文本：首尾块取片段、中间块取全文、块间空行连接。
+    #[test]
+    fn cross_sel_text_joins_fragments() {
+        let doc = Document::new("第一段\n\n第二段\n\n第三段", None);
+        // 块 2 "第二段" chars 1..3 = "二段"；块 4 "第三段" chars 0..2 = "第三"
+        let text = cross_sel_text(&doc, Some((2, 1, 4, 2))).expect("选区应产生文本");
+        assert_eq!(text, "二段\n\n第三");
+        // 反向（从尾拖回头）
+        let text = cross_sel_text(&doc, Some((4, 2, 2, 1))).expect("反向选区应产生相同文本");
+        assert_eq!(text, "二段\n\n第三");
+        assert!(cross_sel_text(&doc, None).is_none(), "无选区无文本");
+    }
+
+    /// 回归：反向（向上）拖选不能漏块。
+    /// 渲染按块 idx 升序进行；此前起始块的 `resp.dragged()` 也上报 CrossDrag，
+    /// 向上拖时它晚于上方指针块被处理，把选区终点覆盖回起始块——选区只剩
+    /// 起始一块，上方段落看上去没被选中、也复制不到。
+    #[test]
+    fn cross_block_drag_upward_keeps_endpoint() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut doc = Document::new("第一段\n\n第二段\n\n第三段", None);
+        let mut state = EditorState::default();
+        let ctx = egui::Context::default();
+
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+
+        // 在「第三段」（块 4, y=100）按下，向上拖到「第二段」（块 2, y=60）。
+        let start = egui::pos2(400.0, 100.0);
+        let end = egui::pos2(400.0, 60.0);
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        actions.clear();
+        for _ in 0..2 {
+            run_editor_frame(
+                &ctx,
+                &mut doc,
+                &mut state,
+                &theme,
+                &mut images,
+                &mut actions,
+                vec![egui::Event::PointerMoved(end)],
+            );
+            actions.clear();
+        }
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        let sel = state.cross_sel.expect("向上拖选后应建立选区");
+        let (lo_b, hi_b) = (sel.0.min(sel.2), sel.0.max(sel.2));
+        assert_eq!(
+            (lo_b, hi_b),
+            (2, 4),
+            "向上拖选应覆盖第 2 到第 4 块，实际 {sel:?}"
+        );
+    }
+
+    /// 回归：光标所在的空行（空活动块）按下向下拖，必须能选中下方块。
+    /// 活动块用 TextEdit 渲染、没有 text_response 的 CrossDrag 路径，
+    /// 此前从空行起拖锚定不了选区，表现是「什么也选中不了」。
+    #[test]
+    fn cross_drag_from_empty_active_block_selects_downward() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut doc = Document::new("第一段\n\n第二段\n\n第三段", None);
+        let mut state = EditorState::default();
+        state.active = 1; // 块 1 是空行（Blank），且为活动块
+        let ctx = egui::Context::default();
+
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+
+        // 在空行（约 y=40）按下，向下拖到「第三段」（块 4, y=100）。
+        let start = egui::pos2(400.0, 40.0);
+        let end = egui::pos2(400.0, 100.0);
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        actions.clear();
+        for _ in 0..2 {
+            run_editor_frame(
+                &ctx,
+                &mut doc,
+                &mut state,
+                &theme,
+                &mut images,
+                &mut actions,
+                vec![egui::Event::PointerMoved(end)],
+            );
+            actions.clear();
+        }
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        let sel = state
+            .cross_sel
+            .expect("从空行起拖应建立跨块选区，实际 None——检查空活动块的锚定");
+        let (lo_b, hi_b) = (sel.0.min(sel.2), sel.0.max(sel.2));
+        assert_eq!(
+            (lo_b, hi_b),
+            (1, 4),
+            "从空行向下拖选应覆盖第 1 到第 4 块，实际 {sel:?}"
+        );
+    }
+
+    /// 普通点击空行（不拖动）不应残留跨块选区。
+    #[test]
+    fn click_empty_active_block_leaves_no_selection() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut doc = Document::new("第一段\n\n第二段\n\n第三段", None);
+        let mut state = EditorState::default();
+        state.active = 1;
+        let ctx = egui::Context::default();
+
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+        let p = egui::pos2(400.0, 40.0);
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        actions.clear();
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert!(
+            state.cross_sel.is_none(),
+            "普通点击空行不应残留选区，实际 {:?}",
+            state.cross_sel
+        );
+    }
+
+    // 临时探针：定位渲染态/编辑态盒子顶差 5px 的来源
+    #[test]
+    fn probe_code_block_gap() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut doc = Document::new("前言\n\n```rust\nfn main() {}\n```", None);
+        let mut state = EditorState::default();
+        let ctx = egui::Context::default();
+
+        let mut run = |doc: &mut Document,
+                       state: &mut EditorState,
+                       events: Vec<egui::Event>,
+                       tag: &str| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let c = ui.ctx().clone();
+                    let _ = show_editor(
+                        ui,
+                        doc,
+                        state,
+                        &theme,
+                        &c,
+                        &mut images,
+                        None,
+                        &[],
+                        false,
+                        false,
+                        false,
+                        true,
+                        1,
+                        &mut actions,
+                    );
+                });
+            });
+            out.textures_delta.clear();
+            println!("--- [{tag}] ---");
+            for cs in &out.shapes {
+                match &cs.shape {
+                    egui::Shape::Rect(r) if r.fill == theme.code_bg && r.rect.width() > 200.0 => {
+                        println!(
+                            "  code_bg 盒子顶 {:.1} 底 {:.1}",
+                            r.rect.top(),
+                            r.rect.bottom()
+                        );
+                    }
+                    egui::Shape::Text(t) => {
+                        let s = t.galley.text();
+                        if s.contains("前言") || s.contains("main") {
+                            println!(
+                                "  文本 {:?} 顶 {:.1} 底 {:.1}",
+                                s.chars().take(6).collect::<String>(),
+                                t.pos.y + t.galley.rect.top(),
+                                t.pos.y + t.galley.rect.bottom(),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        };
+
+        run(&mut doc, &mut state, vec![], "渲染态");
+        let click = egui::pos2(400.0, 90.0);
+        run(
+            &mut doc,
+            &mut state,
+            vec![
+                egui::Event::PointerMoved(click),
+                egui::Event::PointerButton {
+                    pos: click,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+            "点击按下",
+        );
+        run(
+            &mut doc,
+            &mut state,
+            vec![egui::Event::PointerButton {
+                pos: click,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            "点击抬起",
+        );
+        run(&mut doc, &mut state, vec![], "编辑态");
+    }
+
+    // 临时探针：三段文档的文本块坐标
+    #[test]
+    fn probe_para_positions() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut doc = Document::new("第一段\n\n第二段\n\n第三段", None);
+        let mut state = EditorState::default();
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |root| {
+            egui::CentralPanel::default().show(root, |ui| {
+                let c = ui.ctx().clone();
+                let _ = show_editor(
+                    ui,
+                    &mut doc,
+                    &mut state,
+                    &theme,
+                    &c,
+                    &mut images,
+                    None,
+                    &[],
+                    false,
+                    false,
+                    false,
+                    true,
+                    1,
+                    &mut actions,
+                );
+            });
+        });
+        out.textures_delta.clear();
+        for cs in &out.shapes {
+            if let egui::Shape::Text(t) = &cs.shape {
+                let s: String = t.galley.text().chars().take(6).collect();
+                if !s.trim().is_empty() {
+                    println!(
+                        "文本 {:?} 锚({:.1},{:.1}) rect={:?}",
+                        s, t.pos.x, t.pos.y, t.galley.rect
+                    );
+                }
+            }
+        }
+    }
+
+    /// 任务列表项里按回车应当换行（拆出新块）；普通段落同理。
+    #[test]
+    fn enter_splits_task_item_and_paragraph() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+
+        // 任务列表：光标在「任务一」末尾回车，应产生新的一行
+        let mut doc = Document::new("- [ ] 任务一\n- [ ] 任务二", None);
+        let mut state = EditorState::default();
+        state.active = 0;
+        state.focus_req = Some(0);
+
+        let ctx = egui::Context::default();
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+        // 光标放到第一项文字末尾再回车
+        state.last_cursor = "任务一".chars().count();
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert!(
+            doc.blocks.len() > 2,
+            "任务列表项里回车应换行拆块，实际块数 {}",
+            doc.blocks.len()
+        );
+
+        // 普通段落：光标在中间回车，拆成两段
+        let mut doc = Document::new("第一行内容", None);
+        let mut state = EditorState::default();
+        state.active = 0;
+        state.focus_req = Some(0);
+        let ctx = egui::Context::default();
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![],
+        );
+        state.last_cursor = 3;
+        run_editor_frame(
+            &ctx,
+            &mut doc,
+            &mut state,
+            &theme,
+            &mut images,
+            &mut actions,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert_eq!(
+            doc.blocks.len(),
+            2,
+            "段落里回车应拆成两块，实际块数 {}",
+            doc.blocks.len()
+        );
+    }
+
     /// 大纲跳转：点击标题后应把该块设为活动块，并消费滚动请求
     /// （之前 scroll_req 只写不读，所以点大纲完全不会滚动）。
     /// 行首按退格要把当前块并回上一块（Typora 行为）：
@@ -2569,8 +4237,8 @@ mod tests {
         let mut out = ctx.run_ui(input, |root| {
             egui::CentralPanel::default().show(root, |ui| {
                 let _ = show_editor(
-                    ui, doc, state, theme, ctx, images, None, &outline, false, false, false,
-                    false, 1, actions,
+                    ui, doc, state, theme, ctx, images, None, &outline, false, false, false, false,
+                    1, actions,
                 );
             });
         });

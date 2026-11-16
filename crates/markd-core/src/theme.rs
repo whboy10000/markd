@@ -8,40 +8,26 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeKind {
     #[default]
+    // 旧主题 Github/Sepia 是浅色系，反序列化时归到 Light，避免老配置失效。
+    #[serde(alias = "Github", alias = "Sepia")]
     Light,
+    // 旧主题 Nord/Solarized 是深色系，归到 Dark。
+    #[serde(alias = "Nord", alias = "Solarized")]
     Dark,
-    Github,
-    Sepia,
-    Nord,
-    Solarized,
 }
 
 impl ThemeKind {
-    pub const ALL: [ThemeKind; 6] = [
-        ThemeKind::Light,
-        ThemeKind::Dark,
-        ThemeKind::Github,
-        ThemeKind::Sepia,
-        ThemeKind::Nord,
-        ThemeKind::Solarized,
-    ];
+    pub const ALL: [ThemeKind; 2] = [ThemeKind::Light, ThemeKind::Dark];
 
     pub fn name(self) -> &'static str {
         match self {
-            ThemeKind::Light => "默认 · 浅色",
-            ThemeKind::Dark => "默认 · 深色",
-            ThemeKind::Github => "GitHub",
-            ThemeKind::Sepia => "羊皮纸",
-            ThemeKind::Nord => "Nord",
-            ThemeKind::Solarized => "Solarized",
+            ThemeKind::Light => "浅色",
+            ThemeKind::Dark => "深色",
         }
     }
 
     pub fn is_dark(self) -> bool {
-        matches!(
-            self,
-            ThemeKind::Dark | ThemeKind::Nord | ThemeKind::Solarized
-        )
+        matches!(self, ThemeKind::Dark)
     }
 }
 
@@ -54,6 +40,8 @@ pub struct Theme {
     pub dim: Color32,
     pub accent: Color32,
     pub code_bg: Color32,
+    /// 代码块顶部功能栏背景：比 `code_bg` 深一档，区分「功能栏 / 显示区」。
+    pub code_header: Color32,
     pub border: Color32,
     pub heading: Color32,
     pub link: Color32,
@@ -70,6 +58,28 @@ fn rgb(r: u8, g: u8, b: u8) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
+/// 语法高亮的语言分组：决定用哪套 token 配色，让不同语言有区分度。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LangFamily {
+    Rust,
+    Python,
+    JavaScript,
+    Sql,
+    Generic,
+}
+
+fn lang_family(lang: &str) -> LangFamily {
+    match lang.to_lowercase().as_str() {
+        "rust" | "rs" => LangFamily::Rust,
+        "python" | "py" => LangFamily::Python,
+        "javascript" | "js" | "typescript" | "ts" | "jsx" | "tsx" | "vue" | "svelte" => {
+            LangFamily::JavaScript
+        }
+        "sql" => LangFamily::Sql,
+        _ => LangFamily::Generic,
+    }
+}
+
 impl Theme {
     pub fn get(kind: ThemeKind) -> Self {
         let (
@@ -79,6 +89,7 @@ impl Theme {
             dim,
             accent,
             code_bg,
+            code_header,
             border,
             heading,
             link,
@@ -87,20 +98,21 @@ impl Theme {
             selection,
         ) = match kind {
             // 对齐 VS Code 默认浅色（Light+）：editor #FFFFFF、侧栏 #F3F3F3、链接 #006AB1、选区 #ADD6FF
-            // 代码块背景 #F5F5F5（比正文 #FFFFFF 略深，比侧栏 #F3F3F3 略浅）
+            // 代码块显示区 #FAFAFB，功能栏 #F0F0F2（比显示区深一档）
             ThemeKind::Light => (
                 rgb(255, 255, 255),
                 rgb(243, 243, 243),
                 rgb(0, 0, 0),
                 rgb(139, 139, 139),
                 rgb(0, 106, 177),
-                rgb(245, 245, 245),
+                rgb(250, 250, 251),
+                rgb(240, 240, 242),
                 rgb(229, 229, 229),
                 rgb(0, 0, 0),
                 rgb(0, 106, 177),
                 rgb(106, 115, 125),
-                // 表格标题行 #F8F8F8：比 code_bg(#F5F5F5) 更浅，铺满整个标题行
-                rgb(248, 248, 248),
+                // 表格标题行 #F7F7F7：比数据行（#FFFFFF）略深，铺满整个标题行
+                rgb(247, 247, 247),
                 rgb(173, 214, 255),
             ),
             // 对齐 VS Code 默认深色（Dark+）：editor #1E1E1E、侧栏 #252526、链接 #3794FF、选区 #264F78
@@ -111,68 +123,13 @@ impl Theme {
                 rgb(133, 133, 133),
                 rgb(55, 148, 255),
                 rgb(45, 45, 45),
+                rgb(38, 38, 38),
                 rgb(69, 69, 69),
                 rgb(255, 255, 255),
                 rgb(55, 148, 255),
                 rgb(156, 163, 175),
                 rgb(51, 51, 51),
                 rgb(38, 79, 120),
-            ),
-            ThemeKind::Github => (
-                rgb(255, 255, 255),
-                rgb(246, 248, 250),
-                rgb(36, 41, 47),
-                rgb(110, 118, 129),
-                rgb(9, 105, 218),
-                rgb(246, 248, 250),
-                rgb(208, 215, 222),
-                rgb(27, 31, 36),
-                rgb(9, 105, 218),
-                rgb(89, 99, 110),
-                rgb(232, 237, 241),
-                rgb(181, 213, 255),
-            ),
-            ThemeKind::Sepia => (
-                rgb(244, 236, 216),
-                rgb(236, 226, 203),
-                rgb(76, 60, 42),
-                rgb(150, 132, 105),
-                rgb(155, 82, 44),
-                rgb(236, 226, 205),
-                rgb(214, 199, 172),
-                rgb(66, 48, 32),
-                rgb(155, 82, 44),
-                rgb(133, 112, 85),
-                rgb(238, 229, 208),
-                rgb(210, 190, 152),
-            ),
-            ThemeKind::Nord => (
-                rgb(46, 52, 64),
-                rgb(40, 46, 58),
-                rgb(216, 222, 233),
-                rgb(122, 132, 148),
-                rgb(136, 192, 208),
-                rgb(52, 59, 72),
-                rgb(67, 76, 94),
-                rgb(236, 239, 244),
-                rgb(143, 188, 187),
-                rgb(135, 146, 163),
-                rgb(59, 66, 82),
-                rgb(76, 106, 133),
-            ),
-            ThemeKind::Solarized => (
-                rgb(0, 43, 54),
-                rgb(7, 54, 66),
-                rgb(131, 148, 150),
-                rgb(101, 123, 131),
-                rgb(38, 139, 210),
-                rgb(7, 54, 66),
-                rgb(30, 76, 88),
-                rgb(147, 161, 161),
-                rgb(42, 161, 152),
-                rgb(101, 123, 131),
-                rgb(7, 54, 66),
-                rgb(32, 92, 112),
             ),
         };
         Self {
@@ -183,6 +140,7 @@ impl Theme {
             dim,
             accent,
             code_bg,
+            code_header,
             border,
             heading,
             link,
@@ -206,52 +164,76 @@ impl Theme {
         match self.kind {
             ThemeKind::Light => rgb(180, 83, 9),
             ThemeKind::Dark => rgb(255, 198, 109),
-            ThemeKind::Github => rgb(207, 34, 46),
-            ThemeKind::Sepia => rgb(146, 43, 33),
-            ThemeKind::Nord => rgb(235, 203, 139),
-            ThemeKind::Solarized => rgb(181, 137, 0),
         }
     }
 
     /// 代码高亮配色：关键字 / 字符串 / 数字 / 注释。
-    /// 浅色与深色直接取 VS Code 默认主题的 token 颜色，其它主题按各自色系微调。
-    pub fn syntax(&self) -> [Color32; 4] {
-        match self.kind {
-            ThemeKind::Light => [
-                rgb(0, 0, 255),
-                rgb(163, 21, 21),
-                rgb(9, 134, 88),
-                rgb(0, 128, 0),
+    /// 按语言分组返回不同配色，让不同语言有区分度；浅色与深色各一套。
+    pub fn syntax(&self, lang: &str) -> [Color32; 4] {
+        let family = lang_family(lang);
+        // 参考 VS Code（Light+/Dark+）与 GitHub 配色，保证在代码块背景上清晰协调。
+        match (self.kind, family) {
+            // ---- 浅色 ----
+            (ThemeKind::Light, LangFamily::Rust) => [
+                rgb(111, 66, 193),  // 关键字：紫
+                rgb(3, 47, 98),     // 字符串：深蓝
+                rgb(227, 98, 9),    // 数字：橙
+                rgb(106, 115, 125), // 注释：灰
             ],
-            ThemeKind::Dark => [
-                rgb(86, 156, 214),
-                rgb(206, 145, 120),
-                rgb(181, 206, 168),
-                rgb(106, 153, 85),
+            (ThemeKind::Light, LangFamily::Python) => [
+                rgb(0, 0, 255),     // 关键字：蓝
+                rgb(34, 134, 58),   // 字符串：绿
+                rgb(176, 0, 32),    // 数字：红
+                rgb(112, 128, 144), // 注释：灰蓝
             ],
-            ThemeKind::Github => [
-                rgb(5, 80, 174),
-                rgb(10, 48, 105),
-                rgb(5, 80, 174),
-                rgb(110, 119, 129),
+            (ThemeKind::Light, LangFamily::JavaScript) => [
+                rgb(130, 80, 223),  // 关键字：紫
+                rgb(10, 48, 105),   // 字符串：深蓝
+                rgb(5, 80, 174),    // 数字：蓝
+                rgb(106, 115, 125), // 注释：灰
             ],
-            ThemeKind::Sepia => [
-                rgb(139, 94, 0),
-                rgb(160, 82, 45),
-                rgb(160, 82, 45),
-                rgb(154, 140, 122),
+            (ThemeKind::Light, LangFamily::Sql) => [
+                rgb(5, 80, 174),    // 关键字：蓝
+                rgb(163, 21, 21),   // 字符串：红
+                rgb(0, 128, 128),   // 数字：青
+                rgb(106, 115, 125), // 注释：灰
             ],
-            ThemeKind::Nord => [
-                rgb(129, 161, 193),
-                rgb(163, 190, 140),
-                rgb(180, 142, 173),
-                rgb(97, 110, 136),
+            (ThemeKind::Light, LangFamily::Generic) => [
+                rgb(0, 0, 255),     // 关键字：蓝
+                rgb(163, 21, 21),   // 字符串：红棕
+                rgb(9, 134, 88),    // 数字：绿
+                rgb(106, 115, 125), // 注释：灰
             ],
-            ThemeKind::Solarized => [
-                rgb(133, 153, 0),
-                rgb(42, 161, 152),
-                rgb(211, 54, 130),
-                rgb(88, 110, 117),
+            // ---- 深色 ----
+            (ThemeKind::Dark, LangFamily::Rust) => [
+                rgb(197, 134, 192), // 关键字：紫
+                rgb(206, 145, 120), // 字符串：橙
+                rgb(215, 186, 125), // 数字：黄
+                rgb(106, 153, 85),  // 注释：灰绿
+            ],
+            (ThemeKind::Dark, LangFamily::Python) => [
+                rgb(197, 134, 192), // 关键字：紫
+                rgb(152, 195, 121), // 字符串：绿
+                rgb(86, 182, 194),  // 数字：青
+                rgb(92, 99, 112),   // 注释：灰
+            ],
+            (ThemeKind::Dark, LangFamily::JavaScript) => [
+                rgb(86, 156, 214),  // 关键字：蓝
+                rgb(206, 145, 120), // 字符串：橙
+                rgb(181, 206, 168), // 数字：绿
+                rgb(106, 153, 85),  // 注释：灰绿
+            ],
+            (ThemeKind::Dark, LangFamily::Sql) => [
+                rgb(86, 156, 214),  // 关键字：蓝
+                rgb(206, 145, 120), // 字符串：橙
+                rgb(78, 201, 176),  // 数字：青
+                rgb(106, 153, 85),  // 注释：灰绿
+            ],
+            (ThemeKind::Dark, LangFamily::Generic) => [
+                rgb(86, 156, 214),  // 关键字：蓝
+                rgb(206, 145, 120), // 字符串：橙
+                rgb(181, 206, 168), // 数字：绿
+                rgb(106, 153, 85),  // 注释：灰绿
             ],
         }
     }

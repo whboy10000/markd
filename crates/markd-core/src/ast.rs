@@ -375,11 +375,7 @@ pub fn parse_inline(s: &str) -> Vec<Inline> {
         // 内联 HTML：<strong>正文</strong> 视为加粗（加粗按钮用的就是这套标记）
         if ch == '<' && i + 8 <= c.len() && c[i + 1..i + 8].iter().collect::<String>() == "strong>"
         {
-            if let Some(end) = find_seq(
-                &c,
-                i + 8,
-                &['<', '/', 's', 't', 'r', 'o', 'n', 'g', '>'],
-            ) {
+            if let Some(end) = find_seq(&c, i + 8, &['<', '/', 's', 't', 'r', 'o', 'n', 'g', '>']) {
                 let inner: String = c[i + 8..end].iter().collect();
                 flush!();
                 out.push(Inline::Strong(parse_inline(&inner)));
