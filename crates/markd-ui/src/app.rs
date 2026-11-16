@@ -3202,4 +3202,155 @@ mod tests {
         assert_eq!(tab, SideTab::Outline);
         assert!(outline);
     }
+
+    /// 构造一个最小化的真实 MarkdApp：不装 macOS 原生菜单、不读用户配置和
+    /// 快照目录，其余字段与 MarkdApp::new 相同，用来在测试里驱动
+    /// `eframe::App::ui` 这条真实的完整帧路径（含终端面板 / read_only 逻辑）。
+    fn test_app() -> MarkdApp {
+        let config = Config::default();
+        let mut theme = Theme::get(config.theme);
+        theme.body = config.font_size;
+        theme.mono = (config.font_size * 0.84).max(11.0);
+        let doc = Document::new("", None);
+        let stats_cache = doc.stats();
+        MarkdApp {
+            stats: WritingStats::new(&doc),
+            stats_cache,
+            stats_at: std::time::Instant::now(),
+            doc,
+            config,
+            theme,
+            editor: EditorState::default(),
+            images: crate::render::ImageCache::new(),
+            icons: crate::icons::IconCache::default(),
+            root: None,
+            tree: Vec::new(),
+            expanded: HashSet::new(),
+            outline: Vec::new(),
+            side_tab: SideTab::Files,
+            outline_folded: HashSet::new(),
+            menu: None,
+            workspace_input: String::new(),
+            palette: Palette::default(),
+            search: SearchPanel::default(),
+            find: FindPanel::default(),
+            graph: GraphPanel::default(),
+            snapshots: SnapshotStore {
+                items: Vec::new(),
+                open: false,
+            },
+            status: String::new(),
+            toast: None,
+            about: false,
+            shortcuts: false,
+            table_dialog: false,
+            table_rows: 3,
+            table_cols: 3,
+            link_dialog: Default::default(),
+            link_docs: HashMap::new(),
+            link_rx: None,
+            last_autosave: now_secs(),
+            exit_dialog: false,
+            force_quit: false,
+            theme_dirty: false,
+            menu_guard: false,
+            workspace_dialog: false,
+            quick_cache_dir: String::new(),
+            quick_cache: Vec::new(),
+            menu_queue: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            terminal: Terminal::new(std::env::temp_dir()),
+            settings: Default::default(),
+            home: true,
+            tabs: Vec::new(),
+            active: 0,
+            untitled_seq: 0,
+            next_uid: 1,
+            frame_count: 0,
+        }
+    }
+
+    /// 跑一帧真实 app：1280×800 窗口，所有面板 + 编辑区完整渲染。
+    fn run_real_frame(
+        ctx: &egui::Context,
+        app: &mut MarkdApp,
+        frame: &mut eframe::Frame,
+        events: Vec<egui::Event>,
+    ) {
+        use eframe::App as _;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |root| {
+            let mut root = egui::Ui::new(
+                root.ctx().clone(),
+                egui::Id::unique("markd_test_root"),
+                egui::UiBuilder::new(),
+            );
+            app.ui(&mut root, frame);
+        });
+        out.textures_delta.clear();
+    }
+
+    fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        }
+    }
+
+    /// 真实 app 完整帧路径：新建文档后点编辑区空白，光标必须一直在第一行。
+    /// 这是用户报告 bug 的原始场景；驱动的是 `MarkdApp::ui`，不是仿真面板。
+    #[test]
+    fn real_app_blank_click_after_new_document() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        let mut frame = eframe::Frame::_new_kittest();
+
+        // 首页一帧，然后走「+ 新建」的真实路径
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+        app.new_document();
+        // 让 focus_req=Some(0) 落地：此时光标应已在第一行（用户确认的初始状态）
+        for _ in 0..3 {
+            run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+        }
+        let tab_key = app.tabs[app.active].uid;
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(egui::Id::unique(("block_edit", tab_key, 0))),
+            "新建文档后光标应默认在第一行"
+        );
+
+        // 反复点编辑区空白，每次点完光标都必须还在第一行：
+        // 正文下方 / 左侧页边距 / 正文上方贴着的空白，全部覆盖。
+        for (round, blank) in [
+            (1, egui::pos2(600.0, 400.0)),
+            (2, egui::pos2(240.0, 300.0)),
+            (3, egui::pos2(600.0, 130.0)),
+        ] {
+            run_real_frame(
+                &ctx,
+                &mut app,
+                &mut frame,
+                vec![egui::Event::PointerMoved(blank), pointer_button(blank, true)],
+            );
+            run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(blank, false)]);
+            for _ in 0..3 {
+                run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+            }
+            assert_eq!(
+                ctx.memory(|m| m.focused()),
+                Some(egui::Id::unique(("block_edit", tab_key, 0))),
+                "第 {round} 次点空白后光标必须仍在第一行"
+            );
+            assert_eq!(app.editor.active, 0, "第 {round} 次点空白后活动块应为第一块");
+            assert_eq!(app.editor.last_cursor, 0, "第 {round} 次点空白后光标应在行首");
+        }
+    }
 }

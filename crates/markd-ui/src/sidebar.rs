@@ -40,11 +40,34 @@ pub fn file_tree(
                     .horizontal(|ui| {
                         ui.set_min_width(full_w.max(60.0));
                         ui.add_space(depth as f32 * 14.0);
-                        let arrow = if n.expanded { "▾" } else { "▸" };
-                        ui.add(
-                            egui::Label::new(RichText::new(arrow).small().color(theme.dim))
-                                .selectable(false),
+                        // 展开箭头：自绘三角形，固定占一条与图标同高的窄带，
+                        // 保证箭头始终垂直居中于图标（文字箭头基线不稳、且偏小）。
+                        let (arrow_rect, _) = ui.allocate_exact_size(
+                            egui::vec2(12.0, crate::icons::SIZE),
+                            Sense::hover(),
                         );
+                        let c = arrow_rect.center();
+                        let (dx, dy) = (5.0, 4.0);
+                        let pts: Vec<egui::Pos2> = if n.expanded {
+                            // 向下：上边两个角，下尖一个角
+                            vec![
+                                egui::pos2(c.x - dx, c.y - dy),
+                                egui::pos2(c.x + dx, c.y - dy),
+                                egui::pos2(c.x, c.y + dy),
+                            ]
+                        } else {
+                            // 向右：左边两个角，右尖一个角
+                            vec![
+                                egui::pos2(c.x - dy, c.y - dx),
+                                egui::pos2(c.x - dy, c.y + dx),
+                                egui::pos2(c.x + dy, c.y),
+                            ]
+                        };
+                        ui.painter().add(egui::Shape::convex_polygon(
+                            pts,
+                            theme.dim,
+                            egui::Stroke::NONE,
+                        ));
                         let icon = crate::icons::folder_icon(&n.name, n.expanded);
                         icons.show(ui, &icon, crate::icons::SIZE);
                         ui.add(

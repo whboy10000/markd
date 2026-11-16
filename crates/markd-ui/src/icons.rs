@@ -14,10 +14,10 @@
 use egui::{ColorImage, TextureHandle, TextureOptions, Ui};
 use std::collections::HashMap;
 
-/// 首次显示时栅格化的尺寸。侧栏图标画 32pt，按 3x 渲染保证高分屏边缘不发虚。
+/// 首次显示时栅格化的尺寸。侧栏图标画 28pt，按 ~3.4x 渲染保证高分屏边缘不发虚。
 const PIXELS: u32 = 96;
 /// 侧栏图标的逻辑尺寸（pt）。
-pub const SIZE: f32 = 32.0;
+pub const SIZE: f32 = 28.0;
 /// 内容归一化后允许的最大放大倍数。
 ///
 /// 素材库里既有 16 viewBox 的满幅图标，也有 32/24 viewBox 的图标，画布内留白
