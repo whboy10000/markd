@@ -16,6 +16,10 @@ fn default_sidebar_width() -> f32 {
     240.0
 }
 
+fn default_show_line_numbers() -> bool {
+    true
+}
+
 fn default_show_workspace_bar() -> bool {
     false
 }
@@ -37,6 +41,9 @@ pub struct Config {
     pub sidebar_width: f32,
     #[serde(default = "default_show_workspace_bar")]
     pub show_workspace_bar: bool,
+    /// 编辑区是否显示行号（源码模式整栏行号 + 混合模式逐块行号）。
+    #[serde(default = "default_show_line_numbers")]
+    pub show_line_numbers: bool,
 
     // ---- 设置弹窗里的可调项（全部带 serde 默认值，兼容旧配置） ----
     #[serde(default = "default_true")]
@@ -111,6 +118,7 @@ impl Default for Config {
             show_sidebar_header: true,
             sidebar_width: 240.0,
             show_workspace_bar: false,
+            show_line_numbers: true,
             auto_pair: true,
             tab_size: 2,
             highlight_code: true,

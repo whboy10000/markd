@@ -172,6 +172,12 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
         "打字机模式",
         Command::ToggleTypewriter,
     );
+    let m_line_numbers = mk(
+        &mut map,
+        "line_numbers",
+        "显示/隐藏行号",
+        Command::ToggleLineNumbers,
+    );
     let m_sidebar = mk(
         &mut map,
         "sidebar",
@@ -207,6 +213,7 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
             &m_source,
             &m_focus,
             &m_typewriter,
+            &m_line_numbers,
             &m_sidebar,
             &m_outline,
             &m_header,

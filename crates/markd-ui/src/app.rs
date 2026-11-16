@@ -471,6 +471,7 @@ fn menu_commands(k: MenuKind) -> Vec<Command> {
             Command::ToggleSource,
             Command::ToggleFocus,
             Command::ToggleTypewriter,
+            Command::ToggleLineNumbers,
             Command::ToggleSidebar,
             Command::ToggleOutline,
             Command::ToggleSidebarHeader,
@@ -1366,6 +1367,10 @@ impl MarkdApp {
                     self.config.source_mode = false;
                     self.config.focus_mode = false;
                 }
+                self.config.save();
+            }
+            Command::ToggleLineNumbers => {
+                self.config.show_line_numbers = !self.config.show_line_numbers;
                 self.config.save();
             }
             Command::ToggleSidebar => {
@@ -2999,6 +3004,7 @@ impl eframe::App for MarkdApp {
                     self.config.source_mode,
                     self.config.focus_mode,
                     self.config.typewriter,
+                    self.config.show_line_numbers,
                     tab_key,
                     &mut actions,
                 );

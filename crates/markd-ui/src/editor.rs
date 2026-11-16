@@ -557,6 +557,8 @@ pub fn show_editor(
     source_mode: bool,
     focus_mode: bool,
     typewriter: bool,
+    // 是否显示行号（配置里的 show_line_numbers）。
+    show_line_numbers: bool,
     // 标签唯一编号：拼进 TextEdit 的 Id，光标/选中状态才不会被别的标签复用。
     tab_key: u64,
     actions: &mut Vec<Action>,
@@ -568,19 +570,90 @@ pub fn show_editor(
         // 表现就是源码模式下鼠标滚不动；必须像下方混合模式一样包一层 ScrollArea。
         let mut changed = false;
         let mut editor_rect = egui::Rect::NOTHING;
+        // 行号栏宽度：按最大行号的位数估。等宽字体行高用同一个 FontId 测量，
+        // 与编辑框逐行对齐。
+        let line_count = src.split('\n').count();
+        let digit_w = theme.mono * 0.62;
+        let gutter_w = if show_line_numbers {
+            (line_count.to_string().len().max(2) as f32) * digit_w + 18.0
+        } else {
+            0.0
+        };
+        // 每个源码行首字符的下标（CCursor 按 char 计数）。
+        let line_starts: Vec<usize> = {
+            let mut v = vec![0usize];
+            let mut cnt = 0usize;
+            for c in src.chars() {
+                if c == '\n' {
+                    v.push(cnt + 1);
+                }
+                cnt += 1;
+            }
+            v
+        };
         let scroll = egui::ScrollArea::vertical()
             .id_salt("source_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let out = TextEdit::multiline(&mut src)
-                    .id(Id::new(("source_editor", tab_key)))
-                    .font(egui::TextStyle::Monospace)
-                    .desired_width(ui.available_width())
-                    .frame(egui::Frame::NONE)
-                    .code_editor()
-                    .show(ui);
+                let mut gutter_rect = egui::Rect::NOTHING;
+                let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+                    let mut job = egui::text::LayoutJob::default();
+                    job.append(buf.as_str(), 0.0, theme.mono_fmt());
+                    job.wrap.max_width = wrap;
+                    ui.fonts_mut(|f| f.layout_job(job))
+                };
+                let out = ui.horizontal(|ui| {
+                    if show_line_numbers {
+                        // 高度给 0：行高由 TextEdit 决定，数字在 show 之后照 galley 精确补画。
+                        let (g, _) = ui.allocate_exact_size(
+                            egui::Vec2::new(gutter_w, 0.0),
+                            Sense::hover(),
+                        );
+                        gutter_rect = g;
+                    }
+                    let te = TextEdit::multiline(&mut src)
+                        .id(Id::new(("source_editor", tab_key)))
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(ui.available_width() - gutter_w)
+                        .frame(egui::Frame::NONE)
+                        .margin(egui::Margin::ZERO)
+                        .layouter(&mut layouter)
+                        .code_editor();
+                    te.show(ui)
+                });
+                let out = out.inner;
+                // 单遍扫描视觉行 → 源码行：行号画在每行第一个视觉行的位置，
+                // 长行换行后其余视觉行不重复标号（对齐 Typora/VS Code 语义）。
+                if show_line_numbers {
+                    let mut per_line: Vec<Option<f32>> = vec![None; line_starts.len() + 1];
+                    let mut acc = 0usize;
+                    for row in &out.galley.rows {
+                        let start_char = acc;
+                        acc += row.char_count_including_newline().0;
+                        let line_no = match line_starts.binary_search(&start_char) {
+                            Ok(i) => i + 1,
+                            Err(i) => i.min(line_starts.len()),
+                        };
+                        if per_line.get(line_no).map_or(false, |s| s.is_none()) {
+                            per_line[line_no] = Some(row.pos.y + row.row.size.y * 0.5);
+                        }
+                    }
+                    let p = ui.painter();
+                    for (line_no, y) in per_line.iter().enumerate().skip(1) {
+                        if let Some(y) = y {
+                            p.text(
+                                egui::Pos2::new(gutter_rect.right() - 8.0, out.galley_pos.y + y),
+                                egui::Align2::RIGHT_CENTER,
+                                &line_no.to_string(),
+                                egui::FontId::monospace(theme.mono * 0.85),
+                                theme.dim.gamma_multiply(0.7),
+                            );
+                        }
+                    }
+                }
                 changed = out.response.changed();
                 editor_rect = out.response.rect;
+                out
             });
         // 源码模式同样支持「点空白落光标」：点在编辑框外（页边距/正文下方）时，
         // 把光标移到文档末尾（最后一行）并立刻聚焦，行为与混合模式一致。
@@ -690,6 +763,14 @@ pub fn show_editor(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let blocks = &doc.blocks;
+            // 每个块起始的源码行号（Document::source 以 \n 连接各块源码）。
+            // 用于编辑区左侧的行号显示。
+            let mut block_start_lines = Vec::with_capacity(blocks.len());
+            let mut line_acc = 1usize;
+            for b in blocks.iter() {
+                block_start_lines.push(line_acc);
+                line_acc += b.source().split('\n').count();
+            }
             // 正文宽度随窗口浮动，固定占可用宽度的约 90%；不设死宽度，
             // 所有块都按这个宽度换行，窄窗口下也不会把长段落横向裁掉。
             let outer_w = ui.available_width();
@@ -1092,6 +1173,23 @@ pub fn show_editor(
                             };
                             render::render_block(ui, idx, block, &mut env, focus_mode)
                         };
+                        // 行号：画在块左缘的页边距里，对齐块的第一行。
+                        // 左侧空间不足（窗口太窄）时不画，避免盖住正文。
+                        if show_line_numbers {
+                            let num_x = resp.rect.left() - 10.0;
+                            if num_x - theme.body > ui.clip_rect().left() {
+                                ui.painter().text(
+                                    egui::Pos2::new(
+                                        num_x,
+                                        resp.rect.top() + theme.body * 0.5,
+                                    ),
+                                    egui::Align2::RIGHT_CENTER,
+                                    &block_start_lines[idx].to_string(),
+                                    egui::FontId::proportional(theme.body * 0.7),
+                                    theme.dim.gamma_multiply(0.75),
+                                );
+                            }
+                        }
                         if resp.rect.is_positive() {
                             block_rects.push((idx, resp.rect));
                         }
@@ -1433,8 +1531,8 @@ mod tests {
             egui::CentralPanel::default().show(root, |ui| {
                 let c = ui.ctx().clone();
                 let _ = show_editor(
-                    ui, doc, state, theme, &c, images, None, outline, false, false, false, 1,
-                    actions,
+                    ui, doc, state, theme, &c, images, None, outline, false, false, false,
+                    false, 1, actions,
                 );
             });
         });
@@ -1863,8 +1961,8 @@ mod tests {
                 .frame(egui::Frame::new().inner_margin(8))
                 .show(&mut root, |ui| {
                     let _ = show_editor(
-                        ui, doc, state, theme, ctx, images, None, &outline, false, false, false, 1,
-                        actions,
+                        ui, doc, state, theme, ctx, images, None, &outline, false, false,
+                        false, false, 1, actions,
                     );
                 });
         });
@@ -2017,6 +2115,7 @@ mod tests {
                         None,
                         outline,
                         true,
+                        false,
                         false,
                         false,
                         1,
@@ -2187,8 +2286,8 @@ mod tests {
         let mut out = ctx.run_ui(input, |root| {
             egui::CentralPanel::default().show(root, |ui| {
                 let _ = show_editor(
-                    ui, doc, state, theme, ctx, images, None, &outline, false, false, false, 1,
-                    actions,
+                    ui, doc, state, theme, ctx, images, None, &outline, false, false, false,
+                    false, 1, actions,
                 );
             });
         });
@@ -2226,6 +2325,7 @@ mod tests {
                 &mut images,
                 None,
                 &outline,
+                false,
                 false,
                 false,
                 false,
@@ -2289,6 +2389,7 @@ mod tests {
                     &mut images,
                     None,
                     &outline,
+                    false,
                     false,
                     false,
                     false,
@@ -2502,6 +2603,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    false,
                     1,
                     &mut actions,
                 );
@@ -2522,6 +2624,7 @@ mod tests {
                     &mut images,
                     None,
                     &outline,
+                    false,
                     false,
                     false,
                     false,
