@@ -23,6 +23,9 @@ pub enum Action {
     SetLang(usize, String),
     /// 点击了某个块：块下标 + 点击位置（相对块左上角），用于把光标放到点击处。
     Caret(usize, egui::Vec2),
+    /// 点击了表格单元格：(行, 列, 光标是否在文字末尾)。
+    /// 进入编辑态时聚焦该单元格，光标落在点击位置附近而不是固定跳到第一格。
+    TableCellClick(usize, usize, bool),
 }
 
 /// 代码块可选语言，覆盖常见前端/后端/脚本/配置/标记语言。
@@ -36,7 +39,7 @@ pub fn language_combo(
 ) -> Option<String> {
     let id = egui::Id::new(id_salt);
     let mut picked: Option<String> = None;
-    egui::ComboBox::from_id_salt(id)
+    let inner = egui::ComboBox::from_id_salt(id)
         .selected_text(if current.is_empty() {
             "纯文本".to_string()
         } else {
@@ -45,7 +48,7 @@ pub fn language_combo(
         .width(118.0)
         // 默认 CloseOnClick 会在弹层内任意点击（包括点搜索框）时关闭整个下拉，
         // 表现就是「一点搜索框就消失、没法搜索」；改成只在外部点击时关闭，
-        // 选中语言后再手动收起。
+        // 选中语言后再在 show_ui 返回之后手动收起。
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show_ui(ui, |ui| {
             let filter_id = id.with("filter");
@@ -73,15 +76,37 @@ pub fn language_combo(
                         let label = if l.is_empty() { "纯文本" } else { l };
                         if ui.selectable_label(current == l, label).clicked() {
                             picked = Some(l.to_string());
-                            // 选好了就收起下拉（CloseOnClickOutside 模式下不会自动关）。
-                            // ComboBox::widget_to_popup_id 是私有的，其实现就是 widget_id.with("popup")。
-                            egui::Popup::close_id(ui.ctx(), id.with("popup"));
                         }
                     }
                 });
         });
+    // 选好了就收起下拉（CloseOnClickOutside 模式下不会自动关）。
+    // 弹层 id 必须从 egui 自己返回的按钮响应派生（Popup::default_response_id）：
+    // 之前手算 button_id.with("popup")，但 ComboBox 内部先把 id_salt 转成
+    // IdSalt 再 make_persistent_id，与直接传 Id 的哈希路径不同，算出来的
+    // id 和真实弹层对不上，close_id 是空操作——表现为选完语言下拉还挂在屏幕上。
+    let popup_id = egui::Popup::default_response_id(&inner.response);
+    if picked.is_some() {
+        egui::Popup::close_id(ui.ctx(), popup_id);
+    }
+    #[cfg(test)]
+    if let Ok(mut trace) = COMBO_TRACE.lock() {
+        trace.push((
+            inner.response.rect,
+            popup_id,
+            inner.response.clicked(),
+            egui::Popup::is_id_open(ui.ctx(), popup_id),
+        ));
+    }
     picked
 }
+
+/// 测试支持：language_combo 每帧记录（按钮矩形, popup id, 本帧是否被点, 弹层是否开）。
+/// 供真实帧测试定位点击坐标与断言弹层状态。仅测试构建存在。
+#[cfg(test)]
+pub(crate) static COMBO_TRACE: std::sync::Mutex<
+    Vec<(egui::Rect, egui::Id, bool, bool)>,
+> = std::sync::Mutex::new(Vec::new());
 
 pub const LANGUAGES: &[&str] = &[
     "",
@@ -1457,6 +1482,8 @@ pub fn render_block(
             Block::Table { head, rows, .. } => {
                 // 表格随窗口浮动：列宽平分可用宽度（扣除内边距与列间距），
                 // 窗口变宽表就变宽；窄窗口下自动收窄并让单元格内文字换行。
+                // 列宽公式与编辑态（editor.rs 表格编辑分支）完全一致，
+                // 保证点击进入编辑时列宽不变、表格不跳。
                 let cols = head.len().max(1);
                 let avail = (ui.available_width() - 12.0).max(120.0);
                 let gap = ui.spacing().item_spacing.x * cols.saturating_sub(1) as f32;
@@ -1465,7 +1492,7 @@ pub fn render_block(
                 let mut row_rects: Vec<Vec<egui::Rect>> = Vec::new();
                 let r = egui::Frame::NONE
                     .fill(theme.bg)
-                    .stroke(Stroke::new(1.0, theme.border))
+                    .stroke(Stroke::new(1.0, theme.table_line))
                     .corner_radius(4.0)
                     .inner_margin(6.0)
                     .show(ui, |ui| {
@@ -1481,7 +1508,7 @@ pub fn render_block(
                                         .fill(theme.table_head)
                                         .inner_margin(3.0)
                                         .show(ui, |ui| {
-                                            ui.set_min_width(col_w - 12.0);
+                                            ui.set_min_width(col_w - 6.0);
                                             wrapped_label(
                                                 ui,
                                                 build_layout(
@@ -1491,7 +1518,7 @@ pub fn render_block(
                                                     theme.heading,
                                                     true,
                                                 ),
-                                                col_w,
+                                                col_w - 6.0,
                                                 Sense::hover(),
                                             );
                                         });
@@ -1507,7 +1534,7 @@ pub fn render_block(
                                             .fill(theme.bg)
                                             .inner_margin(3.0)
                                             .show(ui, |ui| {
-                                                ui.set_min_width(col_w - 12.0);
+                                                ui.set_min_width(col_w - 6.0);
                                                 wrapped_label(
                                                     ui,
                                                     build_layout(
@@ -1517,7 +1544,7 @@ pub fn render_block(
                                                         color,
                                                         false,
                                                     ),
-                                                    col_w,
+                                                    col_w - 6.0,
                                                     Sense::hover(),
                                                 );
                                             });
@@ -1528,10 +1555,53 @@ pub fn render_block(
                                 }
                             });
                     });
-                // 分隔线：行与行、列与列之间只画一条线（不是每个单元格一个盒子）
-                let content = r.response.rect.shrink2(egui::vec2(12.0, 12.0));
-                let stroke = Stroke::new(1.0, theme.border);
+                // 分隔线：行与行、列与列之间只画一条线（不是每个单元格一个盒子）。
+                // 注意 shrink2 是「每边减去全额」：frame 内边距 6px，这里必须用 6
+                // 才是真正的内容区；之前误用 12 导致所有分隔线整体内移 6px，
+                // 列分隔线切进第二列的文字（文字与单元格"融合"的元凶）。
+                let content = r.response.rect.shrink2(egui::vec2(6.0, 6.0));
+                let stroke = Stroke::new(1.0, theme.table_line);
                 let p = ui.painter();
+                // 标题行底色铺满整行：单元格之间（item_spacing）和两端露出的缝隙
+                // 用标题色补齐，只盖缝隙不盖文字。
+                if let Some(row) = row_rects.first()
+                    && row.len() == cols
+                {
+                    let top = row.iter().map(|x| x.top()).fold(f32::MAX, f32::min);
+                    let bottom = row.iter().map(|x| x.bottom()).fold(f32::MIN, f32::max);
+                    for k in 1..cols {
+                        let left = row[k - 1].right();
+                        let right = row[k].left();
+                        if right > left {
+                            p.rect_filled(
+                                Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, bottom)),
+                                0.0,
+                                theme.table_head,
+                            );
+                        }
+                    }
+                    // 行两端的缝隙：对齐分隔线用的 content 宽度
+                    if content.left() < row[0].left() {
+                        p.rect_filled(
+                            Rect::from_min_max(
+                                Pos2::new(content.left(), top),
+                                Pos2::new(row[0].left(), bottom),
+                            ),
+                            0.0,
+                            theme.table_head,
+                        );
+                    }
+                    if content.right() > row[cols - 1].right() {
+                        p.rect_filled(
+                            Rect::from_min_max(
+                                Pos2::new(row[cols - 1].right(), top),
+                                Pos2::new(content.right(), bottom),
+                            ),
+                            0.0,
+                            theme.table_head,
+                        );
+                    }
+                }
                 for i in 1..row_rects.len() {
                     let next_top = row_rects[i].first().map(|x| x.top());
                     let prev_bottom = row_rects[i - 1]
@@ -1552,6 +1622,19 @@ pub fn render_block(
                         [Pos2::new(x, content.top()), Pos2::new(x, content.bottom())],
                         stroke,
                     );
+                }
+                // 点击了哪个单元格：进入编辑态时直接聚焦那一格，光标落在
+                // 点击位置附近（点在文字右半边 → 光标到末尾），不再固定跳到第一格。
+                if r.response.clicked()
+                    && let Some(p) = ui.input(|i| i.pointer.interact_pos())
+                {
+                    for (ri, rects) in row_rects.iter().enumerate() {
+                        if let Some(ci) = rects.iter().position(|x| x.contains(p)) {
+                            let end = p.x > rects[ci].center().x;
+                            env.actions.push(Action::TableCellClick(ri, ci, end));
+                            break;
+                        }
+                    }
                 }
                 r.response.interact(Sense::click())
             }

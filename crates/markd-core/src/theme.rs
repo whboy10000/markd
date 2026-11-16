@@ -59,6 +59,8 @@ pub struct Theme {
     pub link: Color32,
     pub quote: Color32,
     pub table_head: Color32,
+    /// 表格线（外框 + 行列分隔线）。浅色主题固定 #F3F3F3，比通用 border 更浅一档。
+    pub table_line: Color32,
     pub selection: Color32,
     pub body: f32,
     pub mono: f32,
@@ -97,7 +99,8 @@ impl Theme {
                 rgb(0, 0, 0),
                 rgb(0, 106, 177),
                 rgb(106, 115, 125),
-                rgb(231, 231, 231),
+                // 表格标题行 #F8F8F8：比 code_bg(#F5F5F5) 更浅，铺满整个标题行
+                rgb(248, 248, 248),
                 rgb(173, 214, 255),
             ),
             // 对齐 VS Code 默认深色（Dark+）：editor #1E1E1E、侧栏 #252526、链接 #3794FF、选区 #264F78
@@ -188,6 +191,12 @@ impl Theme {
             selection,
             body: 16.0,
             mono: 13.5,
+            table_line: if kind == ThemeKind::Light {
+                // 表格线统一用 #F3F3F3（与侧栏同色），比通用 border 更浅
+                rgb(243, 243, 243)
+            } else {
+                border
+            },
         }
     }
 

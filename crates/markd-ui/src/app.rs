@@ -2987,6 +2987,12 @@ impl eframe::App for MarkdApp {
                     self.editor.focus_req = Some(i);
                     self.editor.pending_caret = Some(off);
                 }
+                Action::TableCellClick(ri, ci, end) => {
+                    // 渲染态点了表格某个单元格：进入编辑态时直接聚焦那一格，
+                    // 光标按点击位置落到文字开头或末尾。
+                    self.editor.table_focus = Some((ri, ci));
+                    self.editor.table_caret_end = end;
+                }
                 Action::SetLang(i, lang) => {
                     let rebuilt = match self.doc.blocks.get(i) {
                         Some(crate::ast::Block::Code { code, source, .. }) => {
@@ -3352,5 +3358,84 @@ mod tests {
             assert_eq!(app.editor.active, 0, "第 {round} 次点空白后活动块应为第一块");
             assert_eq!(app.editor.last_cursor, 0, "第 {round} 次点空白后光标应在行首");
         }
+    }
+
+    /// 代码块编辑态换语言必须一次点击完成：
+    /// 光标在代码块内（TextEdit 持有焦点）→ 点一次语言下拉（弹层打开）→
+    /// 点一次语言项（语言改掉、弹层收起）。这是用户报告的「需要点两次」bug 的原始场景。
+    #[test]
+    fn real_app_code_lang_combo_one_click() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        let mut frame = eframe::Frame::_new_kittest();
+
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+        app.new_document();
+        // 把第一块做成代码块并聚焦，让 TextEdit 持有焦点（= 光标在代码块里）
+        app.doc.edit_block(0, "```rust\nfn main() {}\n```");
+        app.editor.active = 0;
+        app.editor.focus_req = Some(0);
+        for _ in 0..3 {
+            run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+        }
+        let tab_key = app.tabs[app.active].uid;
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(egui::Id::unique(("block_edit", tab_key, 0))),
+            "前置条件：光标应在代码块的编辑框里"
+        );
+
+        // 从测试钩子里拿到语言下拉按钮的矩形与弹层 id
+        let (rect, popup_id, ..) = *crate::render::COMBO_TRACE
+            .lock()
+            .unwrap()
+            .last()
+            .expect("代码块编辑态应渲染语言下拉");
+        crate::render::COMBO_TRACE.lock().unwrap().clear();
+
+        // 单击一次语言下拉（按下/松开分两帧），弹层必须打开
+        run_real_frame(
+            &ctx,
+            &mut app,
+            &mut frame,
+            vec![
+                egui::Event::PointerMoved(rect.center()),
+                pointer_button(rect.center(), true),
+            ],
+        );
+        run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(rect.center(), false)]);
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+        assert!(
+            egui::Popup::is_id_open(&ctx, popup_id),
+            "一次点击后语言下拉弹层应打开"
+        );
+
+        // 弹层里点第一个语言项（列表 A→Z，「纯文本」排最前）
+        let popup_rect = ctx
+            .read_response(popup_id)
+            .map(|r| r.rect)
+            .expect("弹层应已渲染出响应矩形");
+        let item_pos = egui::pos2(popup_rect.left() + 30.0, popup_rect.top() + 45.0);
+        run_real_frame(
+            &ctx,
+            &mut app,
+            &mut frame,
+            vec![egui::Event::PointerMoved(item_pos), pointer_button(item_pos, true)],
+        );
+        run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(item_pos, false)]);
+        for _ in 0..3 {
+            run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+        }
+
+        // 语言必须已改掉（rust → 其它），且一次点击就生效
+        let lang = match app.doc.blocks.first() {
+            Some(crate::ast::Block::Code { lang, .. }) => lang.clone(),
+            other => panic!("第一块应仍是代码块，实际 {other:?}"),
+        };
+        assert_ne!(lang, "rust", "点一次语言项后语言应已改变");
+        assert!(
+            !egui::Popup::is_id_open(&ctx, popup_id),
+            "选完语言后弹层应收起"
+        );
     }
 }

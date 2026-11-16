@@ -20,6 +20,8 @@ pub struct EditorState {
     pub sel: Option<(usize, usize)>,
     /// 表格刚成为活动块时要聚焦的单元格：(行, 列)，用一次就清。
     pub table_focus: Option<(usize, usize)>,
+    /// 聚焦表格单元格时光标是否落到文字末尾（点击文字右半边进入编辑时为 true）。
+    pub table_caret_end: bool,
     /// 最近一次有效选区：(块下标, 起, 止)。点工具条按钮时编辑框已经失焦、`sel` 被清空，
     /// 加粗/斜体/行内代码这些按钮靠它才能作用在刚选中的文字上。
     pub last_sel: Option<(usize, usize, usize)>,
@@ -700,14 +702,18 @@ pub fn show_editor(
                                         );
                                     }
                                     state.table_draft = Some((idx, grid, align.clone()));
-                                    // 首次进入编辑：光标放到第一个单元格，点一下就能打字
-                                    state.table_focus = Some((0, 0));
+                                    // 首次进入编辑：默认聚焦第一个单元格。若渲染态刚
+                                    // 报上来 TableCellClick，app 已把 table_focus 设为
+                                    // 点击的格子，这里不要覆盖它。
+                                    if state.table_focus.is_none() {
+                                        state.table_focus = Some((0, 0));
+                                    }
                                 }
                             }
                             let mut edited = false;
                             let frame = egui::Frame::NONE
                                 .fill(theme.bg)
-                                .stroke(egui::Stroke::new(1.0, theme.border))
+                                .stroke(egui::Stroke::new(1.0, theme.table_line))
                                 .corner_radius(4.0)
                                 .inner_margin(6.0);
                             let inner = frame.show(ui, |ui| {
@@ -721,31 +727,58 @@ pub fn show_editor(
                                         / cols as f32)
                                         .max(56.0);
                                     ui.set_min_width(col_w * cols as f32 + gap);
+                                    // 表头行各单元格的矩形：Grid 之后用标题色把间隙补满
+                                    let mut head_rects: Vec<egui::Rect> = Vec::new();
                                     egui::Grid::new(("table_edit", idx))
                                         .min_col_width(col_w)
                                         .max_col_width(col_w)
                                         .show(ui, |ui| {
                                             for (ri, row) in grid.iter_mut().enumerate() {
-                                                for cell in row.iter_mut() {
-                                                    // 编辑态与渲染态同一套配色：只有表头行
-                                                    // （第一行）用 table_head，数据行保持正文底色
-                                                    let fill = if ri == 0 {
-                                                        theme.table_head
+                                                for (ci, cell) in row.iter_mut().enumerate() {
+                                                    // 编辑态与渲染态同一套配色与字号（body*0.95）：
+                                                    // 行高一致，点击进入编辑时表格才不会跳。
+                                                    let (fill, color) = if ri == 0 {
+                                                        (theme.table_head, theme.heading)
                                                     } else {
-                                                        theme.bg
+                                                        (theme.bg, theme.text)
                                                     };
-                                                    ui.set_min_width(col_w - 6.0);
                                                     let r = ui.add(
                                                         egui::TextEdit::singleline(cell)
-                                                            .desired_width(col_w - 12.0)
+                                                            .desired_width(col_w)
+                                                            .font(egui::FontId::new(
+                                                                theme.body * 0.95,
+                                                                egui::FontFamily::Proportional,
+                                                            ))
+                                                            .text_color(color)
                                                             .frame(
                                                                 egui::Frame::NONE
                                                                     .fill(fill)
                                                                     .inner_margin(3.0),
                                                             ),
                                                     );
-                                                    if state.table_focus == Some((ri, 0)) {
+                                                    if ri == 0 {
+                                                        head_rects.push(r.rect);
+                                                    }
+                                                    // 渲染态点击了哪个单元格，这里就聚焦哪一格，
+                                                    // 光标落在点击位置附近（右半边 → 文字末尾）。
+                                                    if state.table_focus == Some((ri, ci)) {
                                                         state.table_focus = None;
+                                                        let mut ts = egui::TextEdit::load_state(
+                                                            ui.ctx(),
+                                                            r.id,
+                                                        )
+                                                        .unwrap_or_default();
+                                                        let pos = if state.table_caret_end {
+                                                            cell.chars().count()
+                                                        } else {
+                                                            0
+                                                        };
+                                                        ts.cursor.set_char_range(Some(
+                                                            egui::text::CCursorRange::one(
+                                                                egui::text::CCursor::new(pos),
+                                                            ),
+                                                        ));
+                                                        ts.store(ui.ctx(), r.id);
                                                         r.request_focus();
                                                     }
                                                     if r.changed() {
@@ -755,6 +788,32 @@ pub fn show_editor(
                                                 ui.end_row();
                                             }
                                         });
+                                    // 与渲染态一致：标题行底色铺满整行，盖住单元格之间的缝隙
+                                    if head_rects.len() == cols {
+                                        let top = head_rects
+                                            .iter()
+                                            .map(|x| x.top())
+                                            .fold(f32::MAX, f32::min);
+                                        let bottom = head_rects
+                                            .iter()
+                                            .map(|x| x.bottom())
+                                            .fold(f32::MIN, f32::max);
+                                        let p = ui.painter();
+                                        for k in 1..cols {
+                                            let left = head_rects[k - 1].right();
+                                            let right = head_rects[k].left();
+                                            if right > left {
+                                                p.rect_filled(
+                                                    egui::Rect::from_min_max(
+                                                        egui::Pos2::new(left, top),
+                                                        egui::Pos2::new(right, bottom),
+                                                    ),
+                                                    0.0,
+                                                    theme.table_head,
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             });
                             if edited {
@@ -796,11 +855,17 @@ pub fn show_editor(
                                     ctx.copy_text(active_buf.clone());
                                     actions.push(Action::Notify("复制成功".to_string()));
                                 }
+                                // 与渲染态对齐：工具行和代码区之间留同样的 3px 空隙，
+                                // 否则点击进入编辑时这一行会差 3px，整块往下跳一下。
+                                ui.add_space(3.0);
                             }
                             let id = Id::new(("block_edit", tab_key, idx));
                             // 标题只编辑文字、代码块只编辑代码（不含围栏），像 Typora 一样直接改。
+                            // 代码块的行数 + 1 对齐渲染态：渲染态的 code_job 会在末尾
+                            // 补一个换行（多一行视觉空行），编辑态用 desired_rows 预留
+                            // 同样高度，点击进入/退出编辑时内容不跳。
                             let rows = if matches!(edit_kind, EditKind::Code(_)) {
-                                3
+                                active_buf.lines().count().max(1) + 1
                             } else if block.is_multiline() {
                                 2
                             } else {
