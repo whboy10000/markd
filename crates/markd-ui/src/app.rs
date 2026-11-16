@@ -371,6 +371,47 @@ fn table_template(rows: usize, cols: usize) -> String {
     s.trim_end().to_string()
 }
 
+/// Mermaid 下拉的图类型与标准模板。渲染器支持流程图/时序图/饼图；
+/// 其余类型插入后暂以代码块形式保真显示，不会乱画。
+static MERMAID_TEMPLATES: &[(&str, &str)] = &[
+    (
+        "流程图",
+        "```mermaid\nflowchart TD\n  A[开始] --> B{判断}\n  B -->|是| C[结束]\n  B -->|否| D[重试]\n```",
+    ),
+    (
+        "时序图",
+        "```mermaid\nsequenceDiagram\n  participant C as 客户端\n  participant S as 服务端\n  C->>S: 请求\n  S-->>C: 响应\n  Note over C,S: 一次往返\n```",
+    ),
+    (
+        "饼图",
+        "```mermaid\npie title 示例图表\n  \"分类一\" : 42\n  \"分类二\" : 31\n  \"分类三\" : 27\n```",
+    ),
+    (
+        "类图",
+        "```mermaid\nclassDiagram\n  class Animal {\n    +String name\n    +eat()\n  }\n  Animal <|-- Dog\n```",
+    ),
+    (
+        "状态图",
+        "```mermaid\nstateDiagram-v2\n  [*] --> 空闲\n  空闲 --> 运行中: 开始\n  运行中 --> [*]: 停止\n```",
+    ),
+    (
+        "ER 图",
+        "```mermaid\nerDiagram\n  USER ||--o{ ORDER : 拥有\n  USER {\n    string name\n  }\n```",
+    ),
+    (
+        "甘特图",
+        "```mermaid\ngantt\n  title 项目计划\n  section 一阶段\n  设计 :a1, 2026-01-01, 30d\n  开发 :after a1, 20d\n```",
+    ),
+    (
+        "旅程图",
+        "```mermaid\njourney\n  title 用户旅程\n  section 使用\n  打开文档: 5: 用户\n  编辑保存: 3: 用户\n```",
+    ),
+    (
+        "Git 图",
+        "```mermaid\ngitGraph\n  commit\n  branch dev\n  commit\n  checkout main\n  merge dev\n```",
+    ),
+];
+
 /// 菜单栏结构对齐 Typora：文件 / 编辑 / 段落 / 格式 / 视图 / 主题 / 窗口 / 帮助。
 /// 段落 = 块级结构（标题、列表、表格、代码块、公式块…），格式 = 行内样式（加粗、斜体、链接…）。
 fn menu_commands(k: MenuKind) -> Vec<Command> {
@@ -1723,6 +1764,7 @@ impl MarkdApp {
     fn toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.style_mut().interaction.selectable_labels = false;
         let mut chosen: Option<Command> = None;
+        let mut chosen_tpl: Option<&'static str> = None;
         // 按钮较多（13 个）：窗口变窄时换行，而不是把最右边的「搜索」挤到看不见。
         ui.horizontal_wrapped(|ui| {
             ui.add_space(6.0);
@@ -1838,6 +1880,16 @@ impl MarkdApp {
                     }
                 }
             });
+            // Mermaid 下拉：插入各类图表的标准模板，与「插入」按钮并排。
+            // 渲染器支持流程图/时序图/饼图；其余类型以代码块形式保真显示。
+            ui.menu_button("Mermaid", |ui| {
+                for (label, template) in MERMAID_TEMPLATES {
+                    if ui.button(*label).clicked() {
+                        chosen_tpl = Some(*template);
+                        ui.close();
+                    }
+                }
+            });
             ui.separator();
             for (label, cmd) in [
                 ("快照", Command::Snapshot),
@@ -1860,6 +1912,9 @@ impl MarkdApp {
         });
         if let Some(c) = chosen {
             self.execute(c, ctx);
+        }
+        if let Some(tpl) = chosen_tpl {
+            editor::insert_template(&mut self.doc, &mut self.editor, tpl);
         }
     }
 

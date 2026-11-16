@@ -424,6 +424,13 @@ enum EditKind {
     Code(String),
     /// 图表块（mermaid 等）：编辑时隐藏 ``` 围栏，只编辑图形描述代码。
     Diagram(String),
+    /// 列表项（含任务列表）：编辑时隐藏行首标记（- / 1. / [ ]），只编辑正文，
+    /// 复选框/圆点/编号照渲染态显示，所见即所得。
+    List {
+        indent: usize,
+        marker: String,
+        checked: Option<bool>,
+    },
 }
 
 impl EditKind {
@@ -432,6 +439,11 @@ impl EditKind {
             Block::Heading { level, .. } => EditKind::Heading(*level),
             Block::Code { lang, .. } => EditKind::Code(lang.clone()),
             Block::Diagram { .. } => EditKind::Diagram("mermaid".to_string()),
+            Block::ListItem { item, .. } => EditKind::List {
+                indent: item.indent,
+                marker: item.marker.clone(),
+                checked: item.checked,
+            },
             _ => EditKind::Source,
         }
     }
@@ -461,6 +473,16 @@ impl EditKind {
                 // 空行会在写回后丢失。
                 s.push('\n');
                 s.push_str("```");
+                s
+            }
+            EditKind::List { indent, marker, .. } => {
+                // 任务项的 marker 本身就是 "- [ ]"（解析器把勾选框并入 marker），
+                // 普通项是 "-" / "1."，勾选状态变化由 ToggleTask 直接改源码，
+                // 这里只补回缩进、标记与一个空格。
+                let mut s = " ".repeat(*indent);
+                s.push_str(marker);
+                s.push(' ');
+                s.push_str(text);
                 s
             }
         }
@@ -927,7 +949,7 @@ pub fn show_editor(
                                             .inner_margin(12.0)
                                             .corner_radius(6.0),
                                     ),
-                                EditKind::Source => te
+                                EditKind::Source | EditKind::List { .. } => te
                                     .font(egui::FontId::new(
                                         theme.body,
                                         egui::FontFamily::Proportional,
@@ -936,7 +958,52 @@ pub fn show_editor(
                                     .return_key(Option::<egui::KeyboardShortcut>::None)
                                     .layouter(&mut layouter),
                             };
-                            let out = te.show(ui);
+                            // 列表项编辑态：行首标记与渲染态完全同款（复选框可点、
+                            // 圆点/编号淡色显示），TextEdit 只编辑正文——所见即所得，
+                            // 不再显示 "- [ ] 文字" 这样的源码。
+                            let (out, row_resp) = if let EditKind::List {
+                                indent,
+                                marker,
+                                checked,
+                            } = &edit_kind
+                            {
+                                let indent_px = (*indent).min(12) as f32 * 8.0;
+                                let hr = ui.horizontal(|ui| {
+                                    ui.add_space(indent_px);
+                                    match checked {
+                                        Some(c) => {
+                                            let mut cb_state = *c;
+                                            let cb = ui.checkbox(&mut cb_state, "");
+                                            if cb.clicked() {
+                                                actions.push(render::Action::ToggleTask(idx));
+                                            }
+                                        }
+                                        None => {
+                                            let m = if marker.ends_with('.')
+                                                || marker.ends_with(')')
+                                            {
+                                                format!("{}  ", marker)
+                                            } else {
+                                                "•  ".to_string()
+                                            };
+                                            let mut f = theme.fmt(theme.body);
+                                            f.color = theme.dim;
+                                            let mut job = egui::text::LayoutJob::default();
+                                            job.append(&m, 0.0, f);
+                                            ui.label(job);
+                                        }
+                                    }
+                                    let te = te.desired_width(
+                                        (ui.available_width() - 8.0).max(80.0),
+                                    );
+                                    te.show(ui)
+                                });
+                                (hr.inner, hr.response)
+                            } else {
+                                let out = te.show(ui);
+                                let row = out.response.response.clone();
+                                (out, row)
+                            };
                             // 编辑态里单击链接也直接打开：用户刚插好链接就想点一下验证，
                             // 这时块还处于编辑态，不能只把光标放进链接文字里。
                             // 仍可用方向键把光标移进链接标签修改文字。
@@ -1010,7 +1077,9 @@ pub fn show_editor(
                                     resp.request_focus();
                                 }
                             }
-                            resp.response
+                            // 整行响应 = TextEdit ∪ 行首标记区：点复选框/圆点不算
+                            // 「点在空白」，否则空白点击会把活动块切到文档末尾。
+                            resp.response.union(row_resp)
                         } else {
                             let mut env = RenderEnv {
                                 theme,
@@ -1558,6 +1627,36 @@ mod tests {
         st.last_cursor = 2;
         wrap(&mut doc, &mut st, "[", "](https://)", false);
         assert_eq!(doc.source(), "正文[](https://)一段");
+    }
+
+    /// 列表项的所见即所得编辑：编辑缓冲只含正文（不含 "- [ ]" 等行首标记），
+    /// 写回时由 rebuild 补回标记，源码无损往返。
+    #[test]
+    fn list_item_edit_roundtrip() {
+        for src in [
+            "- [ ] 未完成任务",
+            "- [x] 已完成任务",
+            "* 普通列表项",
+            "1. 编号一项",
+            "  - 缩进列表项",
+        ] {
+            let doc = Document::new(src, None);
+            match doc.blocks.first() {
+                Some(b) => {
+                    assert!(
+                        matches!(EditKind::of(b), EditKind::List { .. }),
+                        "{src} 应识别为 List 编辑类型"
+                    );
+                    let buf = block_buffer(b);
+                    assert!(
+                        !buf.contains("- [") && !buf.starts_with('-') && !buf.starts_with('1'),
+                        "编辑缓冲不应含行首标记: {src} -> {buf:?}"
+                    );
+                    assert_eq!(rebuild_source(b, &buf), src, "往返必须无损: {src}");
+                }
+                other => panic!("{src} 应解析为列表块，实际 {other:?}"),
+            }
+        }
     }
 
     /// 选中文字后打开链接弹窗：确认时用记住的选区写回，选中文字必须保留。
