@@ -383,7 +383,92 @@ pub fn toggle_task(doc: &mut Document, idx: usize) {
 }
 
 /// 由单元格内容还原出 Markdown 表格源码。
-fn table_source(grid: &[Vec<String>], align: &[crate::ast::Align]) -> String {
+/// 表格工具栏的操作。行/列下标按「含表头」计：0 = 表头行，数据行从 1 起。
+#[derive(Clone, Copy, Debug)]
+pub enum TableOp {
+    /// 在指定行下方插入空行（指定表头行 0 时插到数据区最前）
+    InsertRow(usize),
+    /// 删除指定数据行（表头行 0 不可删）
+    DeleteRow(usize),
+    /// 在指定列右侧插入空列
+    InsertCol(usize),
+    /// 删除指定列（至少保留一列）
+    DeleteCol(usize),
+    /// 整表所有列设置为同一种对齐
+    SetAlign(crate::ast::Align),
+    /// 删除整张表格（变成空段落）
+    Delete,
+}
+
+/// 对第 idx 块（表格）执行结构操作：解析块、改结构、重建源码写回。
+pub fn apply_table_op(doc: &mut Document, idx: usize, op: TableOp) {
+    use crate::ast::{Align, Block};
+    let Some(Block::Table { head, rows, align, .. }) = doc.blocks.get(idx) else {
+        return;
+    };
+    let mut head = head.clone();
+    let mut rows = rows.clone();
+    let mut align = align.clone();
+    if let TableOp::Delete = op {
+        doc.record();
+        doc.edit_block(idx, "");
+        return;
+    }
+    match op {
+        TableOp::InsertRow(r) => {
+            let cols = head.len().max(1);
+            let at = if r == 0 { 0 } else { r.min(rows.len()) };
+            rows.insert(at, vec![Vec::new(); cols]);
+        }
+        TableOp::DeleteRow(r) => {
+            if r >= 1 && rows.len() > 1 {
+                rows.remove((r - 1).min(rows.len() - 1));
+            }
+        }
+        TableOp::InsertCol(c) => {
+            let at = (c + 1).min(head.len());
+            head.insert(at, Vec::new());
+            align.insert(at.min(align.len()), Align::Left);
+            for row in rows.iter_mut() {
+                row.insert(at.min(row.len()), Vec::new());
+            }
+        }
+        TableOp::DeleteCol(c) => {
+            if head.len() > 1 {
+                let at = c.min(head.len() - 1);
+                head.remove(at);
+                if at < align.len() {
+                    align.remove(at);
+                }
+                for row in rows.iter_mut() {
+                    if at < row.len() {
+                        row.remove(at);
+                    }
+                }
+            }
+        }
+        TableOp::SetAlign(a) => {
+            for al in align.iter_mut() {
+                *al = a;
+            }
+        }
+        TableOp::Delete => unreachable!(),
+    }
+    // 单元格是 Vec<Inline>：写回前转成纯文本，再由 table_source 重建管道源码。
+    let mut grid: Vec<Vec<String>> = vec![head
+        .iter()
+        .map(|c| crate::ast::inline_plain(c))
+        .collect()];
+    grid.extend(rows.iter().map(|r| {
+        r.iter()
+            .map(|c| crate::ast::inline_plain(c))
+            .collect::<Vec<String>>()
+    }));
+    doc.record();
+    doc.edit_block(idx, &table_source(&grid, &align));
+}
+
+pub(crate) fn table_source(grid: &[Vec<String>], align: &[crate::ast::Align]) -> String {
     use crate::ast::Align;
     let cols = grid.iter().map(|r| r.len()).max().unwrap_or(0);
     let mut s = String::new();
@@ -591,30 +676,97 @@ pub fn show_editor(
             }
             v
         };
-        let scroll = egui::ScrollArea::vertical()
+        // 上一帧的视觉行映射 (源码行号, 行顶 y, 行高)：光标行底色要垫在文字
+        // 下层，必须在 TextEdit 之前画，只能用上一帧的数据（误差一帧，不可见）。
+        let rows_state: std::cell::RefCell<Vec<(usize, f32, f32)>> =
+            std::cell::RefCell::new(Vec::new());
+        // 当前光标所在的源码行（1 起）。
+        let cur_line = {
+            let cur = state.last_cursor.min(src.chars().count());
+            match line_starts.binary_search(&cur) {
+                Ok(i) => i + 1,
+                Err(i) => i.min(line_starts.len()).max(1),
+            }
+        };
+        // 纵向 + 横向都要滚：长行不换行，超出视口的部分靠横向滚动露出
+        //（光标移动时 TextEdit 会调 scroll_to_rect，ScrollArea 跟随平移）。
+        let scroll = egui::ScrollArea::both()
             .id_salt("source_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let mut gutter_rect = egui::Rect::NOTHING;
-                let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
-                    let mut job = egui::text::LayoutJob::default();
-                    job.append(buf.as_str(), 0.0, theme.mono_fmt());
-                    job.wrap.max_width = wrap;
-                    ui.fonts_mut(|f| f.layout_job(job))
-                };
+                // 行号列与光标行底色的 x 边界：必须用 ScrollArea 自己的裁剪区。
+                // 之前用外层 ui 的 clip_rect，其左缘在 ScrollArea 内容裁剪区之左，
+                // 数字几乎全被裁掉，只剩最右侧一个"点"。
+                let vpl = ui.clip_rect().left();
+                let vpr = ui.clip_rect().right();
+                // 不换行：一行源码 = 一个视觉行。换行会让一个源码行占多行，
+                // 行号随之忽上忽下（用户反馈的"跳动"）。
+                let mut layouter =
+                    |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
+                        let mut job = egui::text::LayoutJob::default();
+                        job.append(buf.as_str(), 0.0, theme.mono_fmt());
+                        job.wrap.max_width = f32::INFINITY;
+                        let galley = ui.fonts_mut(|f| f.layout_job(job));
+                        rows_state.borrow_mut().clear();
+                        let mut acc = 0usize;
+                        for row in &galley.rows {
+                            let start_char = acc;
+                            acc += row.char_count_including_newline().0;
+                            let line_no = match line_starts.binary_search(&start_char) {
+                                Ok(i) => i + 1,
+                                Err(i) => i.min(line_starts.len()).max(1),
+                            };
+                            rows_state
+                                .borrow_mut()
+                                .push((line_no, row.pos.y, row.row.size.y));
+                            let _ = start_char;
+                        }
+                        galley
+                    };
+                // 长行宽度估算（ASCII 半宽、CJK 全宽）：编辑框按最长行撑宽，
+                // 配合横向滚动；窄于视口时照常占满。
+                let content_w = src
+                    .lines()
+                    .map(|l| {
+                        let w: f32 = l
+                            .chars()
+                            .map(|c| if c.is_ascii() { 0.62 } else { 1.25 })
+                            .sum();
+                        w * theme.mono
+                    })
+                    .fold(0.0f32, f32::max);
+                let edit_w = (ui.available_width() - gutter_w).max(content_w);
+
+                // 当前光标行的整行淡色底：必须在 TextEdit 之前画才能垫在文字下层。
+                if show_line_numbers {
+                    let band = rows_state
+                        .borrow()
+                        .iter()
+                        .find(|(l, _, _)| *l == cur_line)
+                        .map(|(_, y, h)| (*y, *h));
+                    if let Some((y, h)) = band {
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_max(
+                                egui::Pos2::new(vpl, ui.cursor().top() + y),
+                                egui::Pos2::new(vpr, ui.cursor().top() + y + h),
+                            ),
+                            0.0,
+                            theme.table_head,
+                        );
+                    }
+                }
                 let out = ui.horizontal(|ui| {
                     if show_line_numbers {
-                        // 高度给 0：行高由 TextEdit 决定，数字在 show 之后照 galley 精确补画。
-                        let (g, _) = ui.allocate_exact_size(
+                        // 占位让正文右移；数字本身在 show 之后按视口固定 x 补画。
+                        ui.allocate_exact_size(
                             egui::Vec2::new(gutter_w, 0.0),
                             Sense::hover(),
                         );
-                        gutter_rect = g;
                     }
                     let te = TextEdit::multiline(&mut src)
                         .id(Id::new(("source_editor", tab_key)))
                         .font(egui::TextStyle::Monospace)
-                        .desired_width(ui.available_width() - gutter_w)
+                        .desired_width(edit_w)
                         .frame(egui::Frame::NONE)
                         .margin(egui::Margin::ZERO)
                         .layouter(&mut layouter)
@@ -622,8 +774,8 @@ pub fn show_editor(
                     te.show(ui)
                 });
                 let out = out.inner;
-                // 单遍扫描视觉行 → 源码行：行号画在每行第一个视觉行的位置，
-                // 长行换行后其余视觉行不重复标号（对齐 Typora/VS Code 语义）。
+                // 行号：当帧 galley 单遍扫描，固定画在视口左缘（不随横向滚动移动）；
+                // 光标所在行的行号用主题色高亮。
                 if show_line_numbers {
                     let mut per_line: Vec<Option<f32>> = vec![None; line_starts.len() + 1];
                     let mut acc = 0usize;
@@ -641,12 +793,17 @@ pub fn show_editor(
                     let p = ui.painter();
                     for (line_no, y) in per_line.iter().enumerate().skip(1) {
                         if let Some(y) = y {
+                            let color = if line_no == cur_line {
+                                theme.accent
+                            } else {
+                                theme.dim.gamma_multiply(0.7)
+                            };
                             p.text(
-                                egui::Pos2::new(gutter_rect.right() - 8.0, out.galley_pos.y + y),
+                                egui::Pos2::new(vpl + 10.0, out.galley_pos.y + y),
                                 egui::Align2::RIGHT_CENTER,
                                 &line_no.to_string(),
                                 egui::FontId::monospace(theme.mono),
-                                theme.dim.gamma_multiply(0.7),
+                                color,
                             );
                         }
                     }
