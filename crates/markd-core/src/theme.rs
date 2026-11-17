@@ -179,6 +179,24 @@ impl Theme {
         }
     }
 
+    /// 行内代码背景：浅色用略深的冷灰、深色用比编辑器底色亮一档的灰，
+    /// 与正文背景有区分但不抢眼，和链接蓝、引用灰搭配协调。
+    pub fn inline_code_bg(&self) -> Color32 {
+        match self.kind {
+            ThemeKind::Light => rgb(240, 242, 245),
+            ThemeKind::Dark => rgb(52, 54, 58),
+        }
+    }
+
+    /// 行内代码文字色：跟随正文的柔和黑/白，靠背景形成「代码片」，
+    /// 不用高饱和彩色，避免一整段文字里四处跳色。
+    pub fn inline_code_fg(&self) -> Color32 {
+        match self.kind {
+            ThemeKind::Light => rgb(36, 41, 46),
+            ThemeKind::Dark => rgb(221, 221, 221),
+        }
+    }
+
     /// 代码高亮配色：[关键字, 字符串, 数字, 注释, 函数名, 类型/标签/属性名]。
     /// 按语言族返回不同配色，浅色对齐 VS Code Light+、深色对齐 Dark+，
     /// 保证每种语言在代码块背景上清晰协调、彼此有区分度。

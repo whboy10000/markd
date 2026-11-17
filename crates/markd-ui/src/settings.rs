@@ -31,6 +31,9 @@ const TABS: [(Tab, &str); 7] = [
 pub struct Settings {
     pub open: bool,
     tab: Option<Tab>,
+    /// 每次打开递增，用作窗口 Id：让窗口重新使用默认尺寸与居中位置，
+    /// 而不是沿用上次拖动/拉伸后持久化下来的旧几何。
+    open_seq: u64,
 }
 
 impl Settings {
@@ -39,6 +42,8 @@ impl Settings {
         if self.tab.is_none() {
             self.tab = Some(Tab::General);
         }
+        // 每次打开都重新居中并恢复默认大小。
+        self.open_seq = self.open_seq.wrapping_add(1);
     }
 
     /// 画设置窗口。返回 (是否有改动, 是否点了「恢复默认」)。
@@ -52,15 +57,30 @@ impl Settings {
         let mut close = false;
         let mut tab = self.tab.unwrap_or(Tab::General);
 
+        // 尺寸随可用窗口自适应：默认 720×520，小窗口时留出边距后收缩，
+        // 保证弹窗完整可见且比例合适。
+        let screen = ctx.content_rect();
+        let size = egui::vec2(
+            720.0_f32.min((screen.width() - 48.0).max(420.0)),
+            520.0_f32.min((screen.height() - 48.0).max(300.0)),
+        );
+        // 居中显示；窗口 Id 每次打开都是新的，所以默认位置总会生效。
+        let pos = screen.center() - size * 0.5;
+
         egui::Window::new("设置")
+            .id(egui::Id::unique(("settings_window", self.open_seq)))
             .open(&mut open)
             .collapsible(false)
-            .resizable(true)
-            // 700×500 的固定初始尺寸，标题栏可拖动，四边可继续拉伸。
+            // 固定为合适的外框尺寸：内容按这个尺寸排版，避免内容把窗口越撑越大。
+            .fixed_size(size)
+            // 标题栏拖动移动窗口，窗口保持在其他内容之上。
             .movable(true)
-            .default_width(700.0)
-            .default_height(500.0)
+            .drag_area(egui::WindowDrag::TitleBar)
+            .default_pos(pos)
             .show(ctx, |ui| {
+                // 预留底部按钮行，剩余高度给右侧滚动区。
+                let content_h = (ui.available_height() - 48.0).max(120.0);
+                let right_w = (ui.available_width() - 156.0).max(280.0);
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
                         ui.set_width(132.0);
@@ -77,9 +97,10 @@ impl Settings {
                     });
                     ui.separator();
                     ui.vertical(|ui| {
-                        ui.set_width(560.0);
+                        ui.set_width(right_w);
                         egui::ScrollArea::vertical()
-                            .max_height(430.0)
+                            .auto_shrink([false, false])
+                            .max_height(content_h)
                             .show(ui, |ui| {
                                 changed |= Self::body(ui, tab, cfg, theme);
                             });

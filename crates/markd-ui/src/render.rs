@@ -41,6 +41,8 @@ pub enum Action {
     BlockSel(usize),
     /// Shift+点击：从光标/选区锚点到点击位置全部选中。
     ShiftClick(usize, usize),
+    /// 拖动图片右下角缩放：(块下标, 图片序号, 新宽度像素)。
+    ResizeImage(usize, usize, u32),
 }
 
 /// 代码块可选语言，覆盖常见前端/后端/脚本/配置/标记语言。
@@ -322,9 +324,13 @@ fn append_inline(
             }
         }
         Inline::Code(t) => {
-            let mut f = theme.mono_fmt();
-            f.color = theme.accent;
-            f.background = theme.code_bg;
+            // 行内代码与正文同字号（等宽字体视觉上略小，但字号一致），
+            // 用专属的浅灰/深灰背景做成「代码片」，不再用刺眼的主题蓝。
+            let mut f = theme.fmt(size);
+            f.font_id = FontId::new(size, FontFamily::Monospace);
+            f.color = theme.inline_code_fg();
+            f.background = theme.inline_code_bg();
+            f.expand_bg = 2.5;
             job.append(t, 0.0, f);
         }
         Inline::Link { label, .. } => {
@@ -334,7 +340,7 @@ fn append_inline(
                 );
             }
         }
-        Inline::Image { alt, url } => {
+        Inline::Image { alt, url, .. } => {
             let txt = if alt.is_empty() { url } else { alt };
             let mut f = theme.fmt(size * 0.88);
             f.color = theme.dim;
@@ -378,6 +384,140 @@ pub fn build_layout(
         job.append(" ", 0.0, theme.fmt(size));
     }
     job
+}
+
+/// 本块被跨块选区覆盖的字符区间（未按文本长度钳制）。
+/// 返回 None 表示本块不在选区内。
+fn block_sel_chars(
+    sel: Option<(usize, usize, usize, usize)>,
+    idx: usize,
+) -> Option<(usize, usize)> {
+    let (a, ac, b, bc) = sel?;
+    let (s, sc, e, ec) = if (a, ac) <= (b, bc) {
+        (a, ac, b, bc)
+    } else {
+        (b, bc, a, ac)
+    };
+    if idx < s || idx > e {
+        return None;
+    }
+    let t0 = if idx == s { sc } else { 0 };
+    let t1 = if idx == e { ec } else { usize::MAX };
+    (t0 < t1).then_some((t0, t1))
+}
+
+/// 选区覆盖到行内代码时，把代码片底色换成本身是选区色。
+///
+/// 代码片背景和字形在同一个 TextShape 里绘制（先铺底、再画字），而选区蓝底
+/// 是垫在 TextShape 下面的独立形状，所以代码片的灰底会把选区盖住——看起来
+/// 就像这段行内代码没被选中。把底色直接换成选区色后，两者严丝合缝。
+fn tint_selected_code_bg(job: &mut LayoutJob, theme: &Theme, sel: Option<(usize, usize)>) {
+    let Some((a, b)) = sel else { return };
+    if a >= b {
+        return;
+    }
+    let code_bg = theme.inline_code_bg();
+    let text = job.text.clone();
+    for sec in &mut job.sections {
+        if sec.format.background != code_bg {
+            continue;
+        }
+        let start = text[..sec.byte_range.start.0].chars().count();
+        let end = start
+            + text[sec.byte_range.start.0..sec.byte_range.end.0]
+                .chars()
+                .count();
+        if start < b && a < end {
+            sec.format.background = theme.selection;
+        }
+    }
+}
+
+/// 列表的嵌套层级：按前导空格估算（2 空格一层，1 空格也算一层）。
+/// 用于让子列表的标记和父列表不同。
+pub fn list_level(indent: usize) -> usize {
+    indent.div_ceil(2)
+}
+
+/// 有序列表的显示标记：顶层保留源文件里的数字（`1.`），子层级依次显示
+/// 小写字母（`a.`）、小写罗马数字（`i.`），再往下循环。数字取自源标记，
+/// 所以子列表自身的 1、2、3 会变成 a、b、c。
+pub fn ordered_list_marker(marker: &str, level: usize) -> String {
+    if level % 3 == 0 {
+        return marker.to_string();
+    }
+    let tail = marker
+        .chars()
+        .last()
+        .filter(|c| *c == '.' || *c == ')')
+        .unwrap_or('.');
+    let digits: String = marker.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let n: usize = digits.parse().unwrap_or(1).max(1);
+    let body = if level % 3 == 1 {
+        alpha_label(n)
+    } else {
+        roman_label(n)
+    };
+    format!("{body}{tail}")
+}
+
+/// 1 → a、26 → z、27 → aa。
+fn alpha_label(n: usize) -> String {
+    let mut n = n;
+    let mut out = Vec::new();
+    while n > 0 {
+        let r = (n - 1) % 26;
+        out.push((b'a' + r as u8) as char);
+        n = (n - 1) / 26;
+    }
+    out.iter().rev().collect()
+}
+
+/// 1 → i、4 → iv、9 → ix、14 → xiv。
+fn roman_label(n: usize) -> String {
+    const TABLE: &[(usize, &str)] = &[
+        (1000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    ];
+    let mut n = n;
+    let mut s = String::new();
+    for (v, r) in TABLE {
+        while n >= *v {
+            s.push_str(r);
+            n -= v;
+        }
+    }
+    s
+}
+
+/// 无序列表标记：按层级在实心圆 / 空心圆 / 小方块之间循环，
+/// 这样子列表一眼就能和父列表区分开。
+pub fn draw_list_bullet(ui: &mut egui::Ui, level: usize, color: Color32, d: f32) {
+    let (r, _) = ui.allocate_exact_size(Vec2::splat(d + 2.0), Sense::hover());
+    let p = ui.painter();
+    let c = r.center();
+    match level % 3 {
+        0 => {
+            p.circle_filled(c, d * 0.5, color);
+        }
+        1 => {
+            p.circle_stroke(c, d * 0.42, Stroke::new(1.6, color));
+        }
+        _ => {
+            p.rect_filled(Rect::from_center_size(c, Vec2::splat(d * 0.6)), 1.5, color);
+        }
+    }
 }
 
 pub fn math_pretty(tex: &str) -> String {
@@ -432,7 +572,7 @@ fn collect_link_ranges(inlines: &[Inline], out: &mut Vec<(usize, usize, String)>
                 collect_link_ranges(label, out, pos);
                 out.push((start, *pos, url.clone()));
             }
-            Inline::Image { alt, url } => {
+            Inline::Image { alt, url, .. } => {
                 let txt = if alt.is_empty() { url } else { alt };
                 *pos += format!("[图片: {}]", txt).chars().count();
             }
@@ -501,6 +641,9 @@ pub fn inline_job(
     color: Color32,
     wrap_width: f32,
     cursor: Option<usize>,
+    // 当前文本选区（缓冲区字符下标）：选中行内代码时把代码片底色换成选区色，
+    // 否则代码片的灰底会盖住 TextEdit 画的选区，看起来像没选中。
+    sel: Option<(usize, usize)>,
 ) -> LayoutJob {
     let marker = TextFormat {
         font_id: FontId::new(0.1, FontFamily::Proportional),
@@ -519,14 +662,18 @@ pub fn inline_job(
     // 预扫描行内标记 run：星号按「粗体 run(n>=2) / 斜体 run(n==1)」分组，
     // 波浪号、反引号各自一组。组内成对的标记隐藏渲染；落单的（手打的 *、
     // 敲了一半的 **、未闭合的反引号）按普通文字显示——否则打字时看不见刚
-    // 敲的星号，像按键没生效。只按「是否落单」判断，不看光标距离：光标紧挨
-    // 已配对的标记时也必须隐藏，否则鼠标一点这块就露出了源码标记。
+    // 敲的星号，像按键没生效。斜体/删除线的配对标记始终隐藏；加粗和行内代码
+    // 在光标进入其内部时露出这一对标记（部分源码模式），方便看清哪些字加了
+    // 格式、哪些没加、以及标记落点。
     let mut lone: Vec<usize> = Vec::new();
+    // 所有反引号位置，用于判断光标是否落在某个行内代码内部。
+    let mut tick: Vec<usize> = Vec::new();
+    // 成对加粗 run 的起始下标（每两个一组：开标记、闭标记）。
+    let bold_runs: Vec<usize>;
     {
         let mut ital: Vec<usize> = Vec::new();
         let mut bold: Vec<usize> = Vec::new();
         let mut tilde: Vec<usize> = Vec::new();
-        let mut tick: Vec<usize> = Vec::new();
         let mut i = 0usize;
         while i < chars.len() {
             match chars[i] {
@@ -560,16 +707,36 @@ pub fn inline_job(
         mark_lone(&bold, &mut lone);
         mark_lone(&tilde, &mut lone);
         mark_lone(&tick, &mut lone);
+        bold_runs = bold;
     }
-    let _ = cursor; // 光标位置不再影响标记显隐（保留参数以兼容调用方）
+    // 光标落在某对反引号之间（含两反引号中间的空代码）→ 露出这一对反引号。
+    // 加粗同理：光标在 `**粗体**` 内部时露出这一对 `**`。
+    let mut reveal_tick: Vec<usize> = Vec::new();
+    let mut reveal_bold: Vec<usize> = Vec::new();
+    if let Some(c) = cursor {
+        for pair in tick.chunks_exact(2) {
+            let (a, b) = (pair[0], pair[1]);
+            if a < c && c <= b {
+                reveal_tick.push(a);
+                reveal_tick.push(b);
+            }
+        }
+        for pair in bold_runs.chunks_exact(2) {
+            let (a, b) = (pair[0], pair[1]);
+            if a < c && c <= b {
+                reveal_bold.push(a);
+                reveal_bold.push(b);
+            }
+        }
+    }
 
     let fmt_now = |code: bool, italic: bool, bold: bool, strike: bool| {
         if code {
             TextFormat {
                 font_id: FontId::new(size, FontFamily::Monospace),
-                color: theme.quote,
-                background: theme.code_bg,
-                expand_bg: 0.0,
+                color: theme.inline_code_fg(),
+                background: theme.inline_code_bg(),
+                expand_bg: 2.5,
                 line_height: None,
                 ..Default::default()
             }
@@ -673,9 +840,12 @@ pub fn inline_job(
             continue;
         }
         if c == '`' {
-            let visible = lone.contains(&i);
-            let f = if visible {
+            let f = if lone.contains(&i) {
                 fmt_now(code, italic, bold, strike)
+            } else if reveal_tick.contains(&i) {
+                // 光标在代码内：这一对反引号按代码样式显示，和正文连成一片，
+                // 用户可以直接删改这段源码。
+                fmt_now(true, italic, bold, strike)
             } else {
                 marker.clone()
             };
@@ -686,9 +856,12 @@ pub fn inline_job(
         }
         if c == '*' {
             let n = chars[i..].iter().take_while(|&&x| x == '*').count();
-            let visible = lone.contains(&i);
-            let f = if visible {
+            let f = if lone.contains(&i) {
                 fmt_now(code, italic, bold, strike)
+            } else if reveal_bold.contains(&i) {
+                // 光标在加粗范围内：露出这一对 **（普通字重，避免闭合标记
+                // 跟着变粗、看起来像多敲了一个星号）。
+                fmt_now(code, italic, false, strike)
             } else {
                 marker.clone()
             };
@@ -722,7 +895,6 @@ pub fn inline_job(
                 if close + 1 < chars.len() && chars[close + 1] == '(' {
                     if let Some(rel) = chars[close + 1..].iter().position(|ch| *ch == ')') {
                         let end = close + 1 + rel;
-                        push(&mut job, '[', &marker);
                         let link_fmt = TextFormat {
                             font_id: FontId::new(size, FontFamily::Proportional),
                             color: theme.link,
@@ -730,11 +902,35 @@ pub fn inline_job(
                             line_height: None,
                             ..Default::default()
                         };
-                        for k in i + 1..close {
-                            push(&mut job, chars[k], &link_fmt);
-                        }
-                        for k in close..=end {
-                            push(&mut job, chars[k], &marker);
+                        // 光标在这个链接的源码范围内（标签或地址）→ 露出
+                        // `[标签](地址)`，进入可编辑的源码模式。
+                        let revealed = cursor.is_some_and(|c| i < c && c <= end);
+                        if revealed {
+                            let plain = fmt_now(false, italic, bold, strike);
+                            let url_fmt = TextFormat {
+                                font_id: FontId::new(size, FontFamily::Proportional),
+                                color: theme.link,
+                                line_height: None,
+                                ..Default::default()
+                            };
+                            push(&mut job, chars[i], &plain); // '['
+                            for k in i + 1..close {
+                                push(&mut job, chars[k], &plain);
+                            }
+                            push(&mut job, chars[close], &plain); // ']'
+                            push(&mut job, chars[close + 1], &plain); // '('
+                            for k in close + 2..end {
+                                push(&mut job, chars[k], &url_fmt);
+                            }
+                            push(&mut job, chars[end], &plain); // ')'
+                        } else {
+                            push(&mut job, '[', &marker);
+                            for k in i + 1..close {
+                                push(&mut job, chars[k], &link_fmt);
+                            }
+                            for k in close..=end {
+                                push(&mut job, chars[k], &marker);
+                            }
                         }
                         i = end + 1;
                         continue;
@@ -747,6 +943,7 @@ pub fn inline_job(
         push(&mut job, c, &fmt);
         i += 1;
     }
+    tint_selected_code_bg(&mut job, theme, sel);
     job
 }
 
@@ -810,7 +1007,9 @@ fn text_response(
     env: &mut RenderEnv<'_>,
     idx: usize,
 ) -> egui::Response {
-    let job = build_layout(inlines, theme, size, color, bold);
+    let mut job = build_layout(inlines, theme, size, color, bold);
+    // 选区覆盖到本块的行内代码时，代码片底色改成选区色，避免灰底盖住选区蓝底。
+    tint_selected_code_bg(&mut job, theme, block_sel_chars(env.cross_sel, idx));
     // 先占一个绘制槽：跨块选区底色必须垫在文字下层（在 Label 之前画），
     // 否则蓝色矩形会盖住文字，看起来像"字没了"。
     let bg_slot = ui.painter().add(egui::Shape::Noop);
@@ -839,23 +1038,39 @@ fn text_response(
     // egui 把 drag 归给按下的起始块，拖动期间它每帧都上报；块按 idx 升序渲染，
     // 向上拖时起始块的上报晚于指针所在块，聚合时会把终点覆盖回起始块——
     // 表现为选区漏掉指针上方的段落（看上去没选中、也复制不到）。
-    let pointer = ui.input(|i| i.pointer.interact_pos());
+    let raw_pointer = ui.input(|i| i.pointer.interact_pos());
+    // 拖选时把越界指针钳进视口：鼠标甩到可视区域外时，越界点往往落在块与块
+    // 之间的空档（或文档末尾之后），没有块能命中，选区就不再延伸。钳到视口
+    // 边缘后，配合 show_editor 的越界自动滚动，滚到哪儿就选到哪儿。
+    //
+    // 但「按下」不能钳：点工具条/菜单时指针在视口上方，钳下来会落到最上面的
+    // 块上，凭空建立 (0, 7) 这种零长度选区，把用户真正的拖选覆盖掉——表现就是
+    // 拖选好文字再点「引用/列表」等按钮，格式加到了错误的位置。
+    let clip = ui.clip_rect();
+    let in_viewport = raw_pointer.is_some_and(|p| clip.contains(p));
+    let pointer = raw_pointer.map(|p| {
+        if in_viewport {
+            p
+        } else {
+            Pos2::new(p.x, p.y.clamp(clip.top() + 1.0, clip.bottom() - 1.0))
+        }
+    });
     let pointer_down = ui.input(|i| i.pointer.primary_down());
     let pressed_now = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
     let over_this = pointer.is_some_and(|p| resp.rect.contains(p));
-    if pressed_now && over_this {
+    if pressed_now && in_viewport && over_this {
         if let Some(p) = pointer {
             let local = p - resp.rect.min;
             let c = galley.cursor_from_pos(local).index.0;
             env.actions.push(Action::CrossDrag(idx, c, true));
         }
-    } else if env.cross_sel.is_some() && pointer_down && over_this {
+    } else if !pressed_now && env.cross_sel.is_some() && pointer_down && over_this {
         if let Some(p) = pointer {
             let local = p - resp.rect.min;
             let c = galley.cursor_from_pos(local).index.0;
             env.actions.push(Action::CrossDrag(idx, c, false));
         }
-    } else if pointer_down && over_this {
+    } else if !pressed_now && pointer_down && in_viewport && over_this {
         // 拖动起点不在渲染态块上（最常见：起点在活动块的 TextEdit 里，被它
         // 吃掉了按下事件），拖到本块时才建立跨块选区：以活动块的光标为锚点。
         // 没有这条，从编辑态段落往下拖就完全选不中（用户反馈的"断断续续"）。
@@ -959,9 +1174,11 @@ fn text_response(
             let local = p - resp.rect.min;
             let cursor = galley.cursor_from_pos(local);
             let char_idx = cursor.index.0;
-            // 点到链接文字：直接打开，不再把这个块切成编辑态。
-            // 点在普通文字上仍然是「把光标放到点击处」。
-            if let Some(url) = link_at(inlines, char_idx) {
+            // 链接：Cmd/Ctrl+点击才跳转；普通点击只激活编辑并露出该链接的
+            // Markdown 源码（见 inline_job），方便直接改地址。
+            if let Some(url) = link_at(inlines, char_idx)
+                && ui.input(|i| i.modifiers.command || i.modifiers.ctrl)
+            {
                 env.actions.push(Action::OpenLink(url));
                 return resp;
             }
@@ -995,33 +1212,115 @@ fn word_bounds(text: &[char], pos: usize) -> (usize, usize) {
     }
 }
 
-fn image_response(
+/// 图片预览：限宽限高、居中、带细边框；右下角可拖动缩放。
+///
+/// 返回 `(响应, 拖动产生的新宽度)`：调用方把新宽度写回文档的
+/// `{width=N}` 属性，下一帧就按新宽度显示。
+pub fn image_preview(
     ui: &mut egui::Ui,
     alt: &str,
     url: &str,
-    env: &mut RenderEnv<'_>,
-) -> egui::Response {
-    if let Some(path) = workspace::resolve(env.base_dir, url) {
-        if let Some(tex) = env.images.texture(env.ctx, &path) {
-            let sz = tex.size_vec2();
+    theme: &Theme,
+    ctx: &egui::Context,
+    images: &mut ImageCache,
+    base_dir: Option<&Path>,
+    width_attr: Option<u32>,
+    grip: (usize, usize),
+) -> (egui::Response, Option<u32>) {
+    if let Some(path) = workspace::resolve(base_dir, url) {
+        if let Some(tex) = images.texture(ctx, &path) {
+            let natural = tex.size_vec2();
             let max_w = ui.available_width().max(80.0);
-            let scale = (max_w / sz.x.max(1.0)).min(1.0);
-            let (rect, resp) =
-                ui.allocate_exact_size(Vec2::new(sz.x * scale, sz.y * scale), Sense::click());
-            ui.painter().image(
+            // 预览不铺满整屏：宽度不超正文，高度最多占视口的六成。
+            let max_h = (ui.clip_rect().height() * 0.6).max(160.0);
+            let aspect = (natural.x / natural.y.max(1.0)).max(0.01);
+            // 默认按原始尺寸；有 width 属性（拖动缩放写回的）就按属性显示。
+            let target_w = width_attr.map(|w| w as f32).unwrap_or(natural.x);
+            let mut scale = (target_w / natural.x.max(1.0))
+                .min(max_w / natural.x.max(1.0))
+                .min(max_h / natural.y.max(1.0));
+            // 最小宽度 48，但不要为了这个下限突破视口限制。
+            let min_scale = (48.0 / natural.x.max(1.0))
+                .min(max_w / natural.x.max(1.0))
+                .min(max_h / natural.y.max(1.0));
+            scale = scale.max(min_scale);
+            let size = Vec2::new((natural.x * scale).max(16.0), (natural.y * scale).max(16.0));
+            // 整行占满正文宽度，图片在行内居中：插图后不会孤零零贴在左边。
+            let (row, resp) = ui.allocate_exact_size(Vec2::new(max_w, size.y), Sense::click());
+            let rect = Rect::from_center_size(row.center(), size);
+            let painter = ui.painter();
+            painter.image(
                 tex.id(),
                 rect,
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                 Color32::WHITE,
             );
-            return resp;
+            // 细边框：白色/浅色截图在浅色主题下不会和背景糊在一起。
+            painter.rect_stroke(
+                rect,
+                2.0,
+                egui::Stroke::new(1.0, theme.border),
+                egui::StrokeKind::Inside,
+            );
+            // 右下角缩放手柄：只在悬停（或正在拖）时显示，不打扰正常阅读。
+            let grip_center = rect.max - Vec2::splat(9.0);
+            let grip_rect = Rect::from_center_size(grip_center, Vec2::splat(18.0));
+            let grip_resp = ui
+                .interact(
+                    grip_rect,
+                    egui::Id::new(("img_grip", grip.0, grip.1)),
+                    Sense::drag(),
+                )
+                .on_hover_cursor(egui::CursorIcon::ResizeNwSe);
+            if resp.hovered() || grip_resp.hovered() || grip_resp.dragged() {
+                let p = ui.painter();
+                for k in 0..3 {
+                    let off = 2.0 + k as f32 * 3.5;
+                    p.line_segment(
+                        [
+                            Pos2::new(grip_center.x - 6.0 + off, grip_center.y + 6.0),
+                            Pos2::new(grip_center.x + 6.0, grip_center.y + 6.0 - off),
+                        ],
+                        Stroke::new(1.4, theme.dim),
+                    );
+                }
+            }
+            let mut resized = None;
+            if grip_resp.dragged() {
+                if let Some(p) = grip_resp.interact_pointer_pos() {
+                    // 图片水平居中：以中心为轴，指针到中心的距离 ×2 就是目标宽度。
+                    let want = (p.x - row.center().x) * 2.0;
+                    let limit = max_w.min(max_h * aspect).max(48.0);
+                    let w = want.clamp(48.0, limit).round() as u32;
+                    if width_attr != Some(w) {
+                        resized = Some(w);
+                    }
+                }
+            }
+            return (resp.on_hover_text(url), resized);
         }
     }
-    let mut f = env.theme.fmt(env.theme.body * 0.9);
-    f.color = env.theme.dim;
-    let mut job = LayoutJob::default();
-    job.append(&format!("[图片: {} — {}]", alt, url), 0.0, f);
-    ui.add(egui::Label::new(job).sense(Sense::click()))
+    // 图片找不到（路径写错/文件被删）时给一个可点击的占位框，
+    // 比一行灰字更容易认出这里原本是图片。
+    let name = if alt.is_empty() { url } else { alt };
+    let (row, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 56.0), Sense::click());
+    let painter = ui.painter();
+    painter.rect_filled(row, 4.0, theme.code_bg);
+    painter.rect_stroke(
+        row,
+        4.0,
+        egui::Stroke::new(1.0, theme.border),
+        egui::StrokeKind::Inside,
+    );
+    let f = theme.fmt(theme.body * 0.9);
+    painter.text(
+        row.center(),
+        egui::Align2::CENTER_CENTER,
+        format!("图片未找到：{name}"),
+        f.font_id,
+        theme.dim,
+    );
+    (resp.on_hover_text(url), None)
 }
 
 /// 轻量词法着色，覆盖常见语言，不依赖 syntect。
@@ -3325,21 +3624,78 @@ pub fn render_block(
             }
             Block::Paragraph { content, .. } => {
                 if content.len() == 1 {
-                    if let Inline::Image { alt, url } = &content[0] {
-                        return image_response(ui, alt, url, env);
+                    if let Inline::Image { alt, url, width } = &content[0] {
+                        let (resp, resized) = image_preview(
+                            ui,
+                            alt,
+                            url,
+                            theme,
+                            env.ctx,
+                            env.images,
+                            env.base_dir,
+                            *width,
+                            (idx, 0),
+                        );
+                        if let Some(w) = resized {
+                            env.actions.push(Action::ResizeImage(idx, 0, w));
+                        }
+                        return resp;
                     }
+                }
+                // 连续多行图片（中间没有空行）会被解析成同一个段落：
+                // 逐张渲染成图片预览，否则会退化成一行行「[图片: …]」占位文字。
+                if content.iter().any(|i| matches!(i, Inline::Image { .. }))
+                    && content
+                        .iter()
+                        .all(|i| matches!(i, Inline::Image { .. } | Inline::Break))
+                {
+                    let mut merged: Option<egui::Response> = None;
+                    let mut no = 0usize;
+                    for inl in content {
+                        if let Inline::Image { alt, url, width } = inl {
+                            let (r, resized) = image_preview(
+                                ui,
+                                alt,
+                                url,
+                                theme,
+                                env.ctx,
+                                env.images,
+                                env.base_dir,
+                                *width,
+                                (idx, no),
+                            );
+                            if let Some(w) = resized {
+                                env.actions.push(Action::ResizeImage(idx, no, w));
+                            }
+                            no += 1;
+                            merged = Some(match merged.take() {
+                                Some(prev) => prev.union(r),
+                                None => r,
+                            });
+                        }
+                    }
+                    return merged.expect("段落里至少有一张图片");
                 }
                 text_response(ui, content, theme, theme.body, color, false, env, idx)
             }
             Block::Quote { level, content, .. } => {
                 ui.horizontal(|ui| {
-                    for _ in 0..(*level).min(4) {
-                        ui.add_space(8.0);
-                    }
-                    let (r, _) = ui.allocate_exact_size(Vec2::new(3.0, 18.0), Sense::hover());
-                    ui.painter().rect_filled(r, 1.0, theme.accent);
-                    ui.add_space(8.0);
-                    text_response(ui, content, theme, theme.body, theme.quote, true, env, idx)
+                    ui.add_space((*level).min(4) as f32 * 8.0);
+                    // 竖线不再预先占一个固定高度的矩形：先给正文留出「线宽 + 间距」，
+                    // 拿到文字实际高度后再补画竖线，软换行后的每一行都能被竖线贯穿。
+                    ui.add_space(11.0);
+                    let resp =
+                        text_response(ui, content, theme, theme.body, theme.quote, true, env, idx);
+                    let r = resp.rect;
+                    ui.painter().rect_filled(
+                        Rect::from_min_max(
+                            Pos2::new(r.left() - 11.0, r.top()),
+                            Pos2::new(r.left() - 8.0, r.bottom()),
+                        ),
+                        1.0,
+                        theme.accent,
+                    );
+                    resp
                 })
                 .inner
             }
@@ -3347,8 +3703,19 @@ pub fn render_block(
                 let indent = (item.indent.min(12) as f32) * 8.0;
                 ui.horizontal(|ui| {
                     ui.add_space(indent);
+                    // 标记与正文更紧凑：默认 item_spacing 是 8px，列表看着离得太远。
+                    ui.spacing_mut().item_spacing.x = 5.0;
                     match item.checked {
                         Some(checked) => {
+                            // 任务列表复选框放大一档（默认 14px 偏小），并加深方框描边，
+                            // 否则浅色主题下白底白框几乎看不见。
+                            ui.spacing_mut().icon_width = 19.0;
+                            ui.spacing_mut().icon_width_inner = 11.0;
+                            ui.spacing_mut().icon_spacing = 3.0;
+                            let v = &mut ui.visuals_mut().widgets;
+                            v.inactive.bg_stroke = egui::Stroke::new(1.0, theme.dim);
+                            v.hovered.bg_stroke = egui::Stroke::new(1.0, theme.accent);
+                            v.active.bg_stroke = egui::Stroke::new(1.0, theme.accent);
                             let mut c = checked;
                             let cb = ui.checkbox(&mut c, "");
                             if cb.clicked() {
@@ -3356,24 +3723,29 @@ pub fn render_block(
                             }
                         }
                         None => {
-                            let marker = if item.marker.ends_with('.') || item.marker.ends_with(')')
-                            {
-                                format!("{}  ", item.marker)
+                            let level = list_level(item.indent);
+                            if item.marker.ends_with('.') || item.marker.ends_with(')') {
+                                // 有序列表：顶层数字，子层依次用 a. / i.（与父列表区分）。
+                                let mut f = theme.fmt(theme.body);
+                                f.color = theme.dim;
+                                let mut job = LayoutJob::default();
+                                job.append(&ordered_list_marker(&item.marker, level), 0.0, f);
+                                ui.label(job);
                             } else {
-                                "•  ".to_string()
-                            };
-                            let mut f = theme.fmt(theme.body);
-                            f.color = theme.dim;
-                            let mut job = LayoutJob::default();
-                            job.append(&marker, 0.0, f);
-                            ui.label(job);
+                                // 无序列表：标记形状随层级变化（实心圆 → 空心圆 → 小方块）。
+                                let d = (theme.body * 0.6).clamp(7.0, 14.0);
+                                let color = theme.dim.lerp_to_gamma(theme.text, 0.55);
+                                draw_list_bullet(ui, level, color, d);
+                            }
                         }
                     }
                     text_response(ui, &item.content, theme, theme.body, color, false, env, idx)
                 })
                 .inner
             }
-            Block::Code { lang, code, .. } => {
+            Block::Code {
+                lang, code, quote, ..
+            } => {
                 let folded = env.folded.contains(&idx);
                 // 折叠动画：1=完全展开、0=完全折叠，中间平滑过渡。
                 let openness = env.ctx.animate_value_with_time(
@@ -3384,88 +3756,123 @@ pub fn render_block(
                 let lines = code.lines().count();
                 let mut copied = false;
                 let mut new_lang: Option<String> = None;
-                let r = panel_frame(theme).show(ui, |ui| {
-                    // 功能栏：左语言 + 右操作按钮（code_header 背景色块）
-                    code_header_frame(theme).show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if let Some(l) = language_combo(ui, ("code_lang", idx), lang) {
-                                new_lang = Some(l);
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    // 最右：折叠/展开；其次删除（弹确认窗）；再复制
-                                    let fold_label = if folded { "展开" } else { "折叠" };
-                                    if ui
-                                        .button(
-                                            egui::RichText::new(fold_label).size(theme.body * 0.85),
-                                        )
-                                        .on_hover_cursor(egui::CursorIcon::Default)
-                                        .clicked()
-                                    {
-                                        env.actions.push(Action::FoldToggle(idx));
-                                    }
-                                    if !folded {
-                                        if ui
-                                            .button(
-                                                egui::RichText::new("删除").size(theme.body * 0.85),
-                                            )
-                                            .on_hover_cursor(egui::CursorIcon::Default)
-                                            .clicked()
-                                        {
-                                            env.actions.push(Action::AskDeleteBlock(idx));
-                                        }
-                                        if ui
-                                            .button(
-                                                egui::RichText::new("复制").size(theme.body * 0.85),
-                                            )
-                                            .on_hover_cursor(egui::CursorIcon::Default)
-                                            .clicked()
-                                        {
-                                            copied = true;
-                                        }
-                                    }
-                                },
-                            );
-                        });
-                    });
-                    ui.add_space(6.0);
-                    code_divider(ui, theme);
-                    ui.add_space(6.0);
-                    // 代码区：完全折叠只留提示；过渡中代码淡出、提示淡入。
-                    if openness <= 0.0 {
-                        ui.label(
-                            egui::RichText::new(format!("已折叠 {lines} 行代码"))
-                                .size(theme.body * 0.9)
-                                .italics()
-                                .color(theme.dim),
-                        )
-                    } else {
-                        let code_resp = ui
-                            .scope(|ui| {
-                                ui.set_opacity(openness);
-                                wrapped_label(
-                                    ui,
-                                    code_job(code, lang, theme),
-                                    env.max_width,
-                                    Sense::hover(),
-                                )
-                            })
-                            .inner;
-                        if openness < 1.0 {
-                            ui.scope(|ui| {
-                                ui.set_opacity(1.0 - openness);
-                                ui.label(
-                                    egui::RichText::new(format!("已折叠 {lines} 行代码"))
-                                        .size(theme.body * 0.9)
-                                        .italics()
-                                        .color(theme.dim),
-                                );
-                            });
-                        }
-                        code_resp
+                // 引用内的代码块：左侧留出缩进 + 竖线位置，代码面板整体右移，
+                // 竖线按面板实际高度画，和引用文字连成一条。
+                let hr = ui.horizontal(|ui| {
+                    if *quote > 0 {
+                        ui.add_space((*quote).min(4) as f32 * 8.0 + 11.0);
                     }
+                    // 外层横向布局会传染给面板内容：显式回到纵向，否则功能栏
+                    // 和代码会被并排放置、代码列被挤成一条很窄的竖条。
+                    let r = ui
+                        .vertical(|ui| {
+                            panel_frame(theme).show(ui, |ui| {
+                                // 功能栏：左语言 + 右操作按钮（code_header 背景色块）
+                                code_header_frame(theme).show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        if let Some(l) =
+                                            language_combo(ui, ("code_lang", idx), lang)
+                                        {
+                                            new_lang = Some(l);
+                                        }
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                // 最右：折叠/展开；其次删除（弹确认窗）；再复制
+                                                let fold_label =
+                                                    if folded { "展开" } else { "折叠" };
+                                                if ui
+                                                    .button(
+                                                        egui::RichText::new(fold_label)
+                                                            .size(theme.body * 0.85),
+                                                    )
+                                                    .on_hover_cursor(egui::CursorIcon::Default)
+                                                    .clicked()
+                                                {
+                                                    env.actions.push(Action::FoldToggle(idx));
+                                                }
+                                                if !folded {
+                                                    if ui
+                                                        .button(
+                                                            egui::RichText::new("删除")
+                                                                .size(theme.body * 0.85),
+                                                        )
+                                                        .on_hover_cursor(egui::CursorIcon::Default)
+                                                        .clicked()
+                                                    {
+                                                        env.actions
+                                                            .push(Action::AskDeleteBlock(idx));
+                                                    }
+                                                    if ui
+                                                        .button(
+                                                            egui::RichText::new("复制")
+                                                                .size(theme.body * 0.85),
+                                                        )
+                                                        .on_hover_cursor(egui::CursorIcon::Default)
+                                                        .clicked()
+                                                    {
+                                                        copied = true;
+                                                    }
+                                                }
+                                            },
+                                        );
+                                    });
+                                });
+                                ui.add_space(6.0);
+                                code_divider(ui, theme);
+                                ui.add_space(6.0);
+                                // 代码区：完全折叠只留提示；过渡中代码淡出、提示淡入。
+                                if openness <= 0.0 {
+                                    ui.label(
+                                        egui::RichText::new(format!("已折叠 {lines} 行代码"))
+                                            .size(theme.body * 0.9)
+                                            .italics()
+                                            .color(theme.dim),
+                                    )
+                                } else {
+                                    let code_resp = ui
+                                        .scope(|ui| {
+                                            ui.set_opacity(openness);
+                                            wrapped_label(
+                                                ui,
+                                                code_job(code, lang, theme),
+                                                env.max_width,
+                                                Sense::hover(),
+                                            )
+                                        })
+                                        .inner;
+                                    if openness < 1.0 {
+                                        ui.scope(|ui| {
+                                            ui.set_opacity(1.0 - openness);
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "已折叠 {lines} 行代码"
+                                                ))
+                                                .size(theme.body * 0.9)
+                                                .italics()
+                                                .color(theme.dim),
+                                            );
+                                        });
+                                    }
+                                    code_resp
+                                }
+                            })
+                        })
+                        .inner;
+                    if *quote > 0 {
+                        let rect = r.response.rect;
+                        ui.painter().rect_filled(
+                            Rect::from_min_max(
+                                Pos2::new(rect.left() - 11.0, rect.top()),
+                                Pos2::new(rect.left() - 8.0, rect.bottom()),
+                            ),
+                            1.0,
+                            theme.accent,
+                        );
+                    }
+                    r
                 });
+                let r = hr.inner;
                 if copied {
                     env.ctx.copy_text(code.clone());
                     env.actions.push(Action::Notify("复制成功".to_string()));
@@ -3474,7 +3881,10 @@ pub fn render_block(
                     env.actions.push(Action::SetLang(idx, l));
                 }
                 // 只用代码文本区域做块定位，避免覆盖层挡住右上角的复制按钮。
-                r.inner.interact(Sense::click())
+                // 矩形扩到整个面板（含功能栏）：跨块拖选时整块叠一层选区色，
+                // 不会只给代码文字画一个大小不一的蓝框。
+                let content = r.inner.interact(Sense::click());
+                content.union(r.response)
             }
             Block::Table {
                 head,
@@ -3923,7 +4333,9 @@ pub fn render_block(
                     env.actions.push(Action::SetLang(idx, l));
                 }
                 // 只用图表内容区域做块定位，避免覆盖层挡住右上角的折叠/复制按钮。
-                r.inner.interact(Sense::click())
+                // 矩形扩到整个面板，跨块拖选时整块叠一层选区色。
+                let content = r.inner.interact(Sense::click());
+                content.union(r.response)
             }
             Block::FrontMatter { yaml, .. } => {
                 let r = panel_frame(theme).show(ui, |ui| {
@@ -4340,7 +4752,7 @@ mod tests {
     fn inline_job_keeps_raw_text() {
         let theme = Theme::get(ThemeKind::Light);
         let src = "**粗** *斜* `码` ~~删~~ [链](https://e.com) 普通文字";
-        let job = inline_job(src, &theme, 16.0, theme.text, 400.0, None);
+        let job = inline_job(src, &theme, 16.0, theme.text, 400.0, None, None);
         assert_eq!(job.text, src, "排版后的文本必须与缓冲区完全一致");
     }
 
@@ -4354,7 +4766,7 @@ mod tests {
         let bold_family = egui::FontFamily::Name("markd-bold".into());
 
         // 编辑态：**粗** 的正文段（egui 0.37 LayoutSection 无 text 字段，按 byte_range 取）
-        let edit = inline_job("**粗体**", &theme, 16.0, theme.text, 400.0, None);
+        let edit = inline_job("**粗体**", &theme, 16.0, theme.text, 400.0, None, None);
         let edit_bold = edit
             .sections
             .iter()
@@ -4389,22 +4801,60 @@ mod tests {
         );
     }
 
-    /// 回归：光标紧挨已配对的标记时，标记必须保持隐藏。
-    /// 之前 near_caret 会让紧挨光标的标记显现，表现是「鼠标一点这块就变成源码」。
+    /// 光标在加粗范围内时露出这一对 `**`（部分源码模式），方便看清哪段加粗、
+    /// 哪段没有；光标在加粗外仍隐藏。斜体/删除线保持“配对标记始终隐藏”。
     #[test]
-    fn inline_job_hides_paired_markers_next_to_cursor() {
+    fn inline_job_reveals_paired_bold_markers_inside_span() {
         let theme = Theme::get(ThemeKind::Light);
-        // (样例, 紧挨首标记之后的 cursor 下标)
-        let cases: [(&str, usize); 4] = [
-            ("**粗**", 2), // 加粗
-            ("~~删~~", 2), // 删除线
-            ("*斜*", 1),   // 斜体
-            ("`码`", 1),   // 行内代码
-        ];
-        for (src, cursor) in cases {
-            let job = inline_job(src, &theme, 16.0, theme.text, 400.0, Some(cursor));
-            // 首尾 section 即开头/结尾的标记。标记用 0.1px 透明字体隐藏；
-            // 若显现则是正常 16px 字体。
+        // "**粗**"：*0 *1 粗2 *3 *4；加粗 span = (0, 3)
+        for cursor in [1, 2, 3] {
+            let job = inline_job(
+                "**粗**",
+                &theme,
+                16.0,
+                theme.text,
+                400.0,
+                Some(cursor),
+                None,
+            );
+            // 首尾 section 即开头/结尾的标记：显现时是正常 16px 字体，
+            // 隐藏时是 0.1px 透明字体。
+            let first = job.sections.first().expect("应有排版段");
+            let last = job.sections.last().expect("应有排版段");
+            assert!(
+                first.format.font_id.size >= 15.0 && last.format.font_id.size >= 15.0,
+                "cursor={cursor} 时加粗标记应显现，实际 {job:?}"
+            );
+            // 露出的标记用普通字重，不能跟着加粗。
+            assert_eq!(
+                first.format.font_id.family,
+                FontFamily::Proportional,
+                "露出的 ** 应是普通字重"
+            );
+        }
+
+        // 光标在加粗范围之外（标记前/闭标记之后）→ 仍隐藏。
+        for cursor in [0, 4, 5] {
+            let job = inline_job(
+                "**粗**",
+                &theme,
+                16.0,
+                theme.text,
+                400.0,
+                Some(cursor),
+                None,
+            );
+            let first = job.sections.first().expect("应有排版段");
+            let last = job.sections.last().expect("应有排版段");
+            assert!(
+                first.format.font_id.size < 1.0 && last.format.font_id.size < 1.0,
+                "cursor={cursor} 时加粗标记应隐藏，实际 {job:?}"
+            );
+        }
+
+        // 斜体/删除线的配对标记仍保持隐藏（只对加粗做源码露出）。
+        for (src, cursor) in [("~~删~~", 2), ("*斜*", 1)] {
+            let job = inline_job(src, &theme, 16.0, theme.text, 400.0, Some(cursor), None);
             let first = job.sections.first().expect("应有排版段");
             let last = job.sections.last().expect("应有排版段");
             assert!(
@@ -4414,11 +4864,206 @@ mod tests {
         }
     }
 
+    /// 行内代码例外：光标进入反引号内部时露出这一对反引号（源码模式），
+    /// 光标在代码外时仍然隐藏；字号与正文一致，背景使用行内代码专属配色。
+    #[test]
+    fn inline_job_reveals_code_ticks_inside_span() {
+        let theme = Theme::get(ThemeKind::Light);
+
+        // 光标在内容里（插入点在首反引号之后、尾反引号之前）→ 露出。
+        for cursor in [1, 2] {
+            let job = inline_job("`码`", &theme, 16.0, theme.text, 400.0, Some(cursor), None);
+            let first = job.sections.first().expect("应有排版段");
+            let last = job.sections.last().expect("应有排版段");
+            assert!(
+                first.format.font_id.size >= 15.0 && last.format.font_id.size >= 15.0,
+                "cursor={cursor} 时行内代码的反引号应显现，实际 {job:?}"
+            );
+            assert_eq!(
+                first.format.background,
+                theme.inline_code_bg(),
+                "露出的反引号也应有代码背景"
+            );
+        }
+
+        // 光标在代码外 → 仍隐藏。
+        for cursor in [0, 3] {
+            let job = inline_job("`码`", &theme, 16.0, theme.text, 400.0, Some(cursor), None);
+            let first = job.sections.first().expect("应有排版段");
+            assert!(
+                first.format.font_id.size < 1.0,
+                "cursor={cursor} 时代码外的反引号应隐藏"
+            );
+        }
+
+        // 正文与反引号同字号，且文字/背景使用行内代码配色。
+        let job = inline_job("`码`", &theme, 16.0, theme.text, 400.0, Some(1), None);
+        for section in &job.sections {
+            assert_eq!(
+                section.format.font_id.size, 16.0,
+                "行内代码字号应与正文一致"
+            );
+            assert_eq!(section.format.background, theme.inline_code_bg());
+            assert_eq!(section.format.color, theme.inline_code_fg());
+        }
+    }
+
+    /// 光标落在链接源码范围内时露出 `[标签](地址)`（URL 用链接色），
+    /// 光标在链接外时仍隐藏标记、只显示带下划线的标签。
+    #[test]
+    fn inline_job_reveals_link_source_inside_span() {
+        let theme = Theme::get(ThemeKind::Light);
+        let src = "[点我](https://e.com)";
+
+        // 光标在标签/地址里 → 露出完整源码，全部字符都是正常字号。
+        for cursor in [1, 2, 5, 18] {
+            let job = inline_job(src, &theme, 16.0, theme.text, 600.0, Some(cursor), None);
+            assert!(
+                job.sections.iter().all(|s| s.format.font_id.size >= 15.0),
+                "cursor={cursor} 时链接源码应显现: {job:?}"
+            );
+        }
+
+        // 露出的 URL 用链接色，方便辨认和修改（标签文字仍是正文色）。
+        let job = inline_job(src, &theme, 16.0, theme.text, 600.0, Some(1), None);
+        let url_section = job
+            .sections
+            .iter()
+            .find(|s| s.format.color == theme.link && s.format.font_id.size >= 15.0)
+            .expect("应能找到 URL 的排版段");
+        assert_eq!(
+            url_section.format.color, theme.link,
+            "露出的 URL 应用链接色: {job:?}"
+        );
+
+        // 光标在链接外 → 方括号/圆括号仍隐藏，只剩标签文字。
+        for cursor in [0, 19] {
+            let job = inline_job(src, &theme, 16.0, theme.text, 600.0, Some(cursor), None);
+            let first = job.sections.first().expect("应有排版段");
+            let last = job.sections.last().expect("应有排版段");
+            assert!(
+                first.format.font_id.size < 1.0 && last.format.font_id.size < 1.0,
+                "cursor={cursor} 时链接标记应隐藏: {job:?}"
+            );
+        }
+    }
+
+    /// 选区覆盖行内代码时，代码片背景应换成选区色——否则代码片灰底会盖住
+    /// 垫在文字下层的选区蓝底，看起来像这段代码没被选中。
+    #[test]
+    fn selected_inline_code_bg_uses_selection_color() {
+        let theme = Theme::get(ThemeKind::Light);
+        // "前 `码` 后"：前0 空格1 `2 码3 `4 → 代码内容在字符 3
+        let sel = Some((2usize, 5usize));
+
+        let job = inline_job("前 `码` 后", &theme, 16.0, theme.text, 400.0, None, sel);
+        let chip = job
+            .sections
+            .iter()
+            .find(|s| s.format.background == theme.selection)
+            .expect("被选中的行内代码底色应换成选区色");
+        assert_eq!(
+            chip.format.color,
+            theme.inline_code_fg(),
+            "换底色不应影响代码文字颜色"
+        );
+
+        // 选区不在代码上时保持原代码片底色。
+        let job = inline_job(
+            "前 `码` 后",
+            &theme,
+            16.0,
+            theme.text,
+            400.0,
+            None,
+            Some((0, 1)),
+        );
+        assert!(
+            job.sections
+                .iter()
+                .any(|s| s.format.background == theme.inline_code_bg()),
+            "未选中代码时应保持代码片底色"
+        );
+
+        // 渲染态走同一套染色。
+        let inlines = crate::ast::parse_inline("前 `码` 后");
+        let mut job = build_layout(&inlines, &theme, 16.0, theme.text, false);
+        tint_selected_code_bg(&mut job, &theme, sel);
+        assert!(
+            job.sections
+                .iter()
+                .any(|s| s.format.background == theme.selection),
+            "渲染态选中的行内代码也应换成选区色"
+        );
+    }
+
+    /// 子列表标记要和父列表不同：无序变形状，有序变编号样式。
+    #[test]
+    fn nested_list_markers_differ_by_level() {
+        // 层级换算（默认 2 空格一层）
+        assert_eq!(list_level(0), 0);
+        assert_eq!(list_level(1), 1);
+        assert_eq!(list_level(2), 1);
+        assert_eq!(list_level(3), 2);
+        assert_eq!(list_level(4), 2);
+        assert_eq!(list_level(5), 3);
+        assert_eq!(list_level(6), 3);
+
+        // 顶层保留源数字与后缀
+        assert_eq!(ordered_list_marker("1.", 0), "1.");
+        assert_eq!(ordered_list_marker("2)", 0), "2)");
+        // 一层：小写字母；二层：小写罗马数字
+        assert_eq!(ordered_list_marker("1.", 1), "a.");
+        assert_eq!(ordered_list_marker("2)", 1), "b)");
+        assert_eq!(ordered_list_marker("3.", 2), "iii.");
+        // 三层循环回数字样式
+        assert_eq!(ordered_list_marker("1.", 3), "1.");
+        // 超过 26 的字母
+        assert_eq!(ordered_list_marker("27.", 1), "aa.");
+    }
+
+    /// 无序列表的圆点在子层级必须换形状：实心圆 → 空心圆 → 小方块。
+    #[test]
+    fn unordered_bullet_shape_changes_with_level() {
+        let theme = Theme::get(ThemeKind::Light);
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 300.0));
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    for level in 0..3 {
+                        draw_list_bullet(ui, level, theme.text, 10.0);
+                        ui.add_space(16.0);
+                    }
+                });
+            },
+        );
+        out.textures_delta.clear();
+        let mut filled = 0;
+        let mut hollow = 0;
+        let mut square = 0;
+        for cs in &out.shapes {
+            match &cs.shape {
+                egui::Shape::Circle(c) if c.fill != Color32::TRANSPARENT => filled += 1,
+                egui::Shape::Circle(c) if c.stroke.width > 0.0 => hollow += 1,
+                egui::Shape::Rect(r) if r.fill == theme.text => square += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(filled, 1, "顶层应是实心圆");
+        assert_eq!(hollow, 1, "第二层应是空心圆");
+        assert_eq!(square, 1, "第三层应是小方块");
+    }
+
     /// 落单的标记（用户正在输入、尚未闭合）仍要显现，否则按键像没生效。
     #[test]
     fn inline_job_shows_lone_bold_marker() {
         let theme = Theme::get(ThemeKind::Light);
-        let job = inline_job("**粗体", &theme, 16.0, theme.text, 400.0, Some(2));
+        let job = inline_job("**粗体", &theme, 16.0, theme.text, 400.0, Some(2), None);
         let first = job.sections.first().expect("应有排版段");
         assert!(
             first.format.font_id.size >= 15.0,
@@ -4562,82 +5207,110 @@ mod tests {
         });
     }
 
-    /// 单击链接文字直接打开链接；单击普通文字仍然只是把光标放到点击处。
+    /// 单击链接不跳转，只把光标放进链接（随后露出源码供修改）；
+    /// 只有 Cmd 或 Ctrl+单击才真正打开链接。
     #[test]
-    fn clicking_link_opens_it() {
+    fn clicking_link_requires_command_or_ctrl() {
         let theme = Theme::get(ThemeKind::Light);
         let outline: Vec<OutlineItem> = Vec::new();
-        let ctx = egui::Context::default();
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 400.0));
-        let run = |block: &Block,
-                   events: Vec<egui::Event>,
-                   images: &mut ImageCache,
-                   actions: &mut Vec<Action>|
-         -> egui::Rect {
-            let mut rect = egui::Rect::NOTHING;
-            let mut out = ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(screen),
-                    events,
-                    ..Default::default()
-                },
-                |root| {
-                    egui::CentralPanel::default().show(root, |ui| {
-                        let ctx = ui.ctx().clone();
-                        let folded: HashSet<usize> = HashSet::new();
-                        let mut env = RenderEnv {
-                            theme: &theme,
-                            ctx: &ctx,
-                            images,
-                            base_dir: None,
-                            outline: &outline,
-                            actions,
-                            max_width: 700.0,
-                            cross_sel: None,
-                            folded: &folded,
-                        };
-                        rect = render_block(ui, 0, block, &mut env, false).rect;
-                    });
-                },
-            );
-            out.textures_delta.clear();
-            rect
-        };
-        let press = |pos: egui::Pos2, down: bool| -> Vec<egui::Event> {
+        let press = |pos: egui::Pos2, down: bool, modifiers: egui::Modifiers| -> Vec<egui::Event> {
             let mut events = Vec::new();
             if down {
                 events.push(egui::Event::PointerMoved(pos));
             }
+            // RawInput 没有 modifiers 字段；修饰键只能通过 ModifiersChanged 事件传入。
+            events.push(egui::Event::ModifiersChanged(modifiers));
             events.push(egui::Event::PointerButton {
                 pos,
                 button: egui::PointerButton::Primary,
                 pressed: down,
-                modifiers: egui::Modifiers::default(),
+                modifiers,
             });
             events
         };
 
-        let link = Block::Paragraph {
-            content: crate::ast::parse_inline("[点我](https://e.com)"),
-            source: "[点我](https://e.com)".to_string(),
+        // 每个场景用独立的 Context：共享 Context 时第二次点击会被判成双击而提前 return。
+        let click = |modifiers: egui::Modifiers| -> (egui::Rect, Vec<Action>) {
+            let ctx = egui::Context::default();
+            let link = Block::Paragraph {
+                content: crate::ast::parse_inline("[点我](https://e.com)"),
+                source: "[点我](https://e.com)".to_string(),
+            };
+            let mut images = ImageCache::new();
+            let mut actions: Vec<Action> = Vec::new();
+            let mut run = |events: Vec<egui::Event>, actions: &mut Vec<Action>| -> egui::Rect {
+                let mut rect = egui::Rect::NOTHING;
+                let mut out = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(screen),
+                        events,
+                        ..Default::default()
+                    },
+                    |root| {
+                        egui::CentralPanel::default().show(root, |ui| {
+                            let ctx = ui.ctx().clone();
+                            let folded: HashSet<usize> = HashSet::new();
+                            let mut env = RenderEnv {
+                                theme: &theme,
+                                ctx: &ctx,
+                                images: &mut images,
+                                base_dir: None,
+                                outline: &outline,
+                                actions,
+                                max_width: 700.0,
+                                cross_sel: None,
+                                folded: &folded,
+                            };
+                            rect = render_block(ui, 0, &link, &mut env, false).rect;
+                        });
+                    },
+                );
+                out.textures_delta.clear();
+                rect
+            };
+            let rect = run(vec![], &mut actions);
+            let pos = rect.center();
+            let _ = run(press(pos, true, modifiers), &mut actions);
+            let _ = run(press(pos, false, modifiers), &mut actions);
+            (rect, actions)
         };
-        let mut images = ImageCache::new();
-        let mut actions: Vec<Action> = Vec::new();
-        let rect = run(&link, vec![], &mut images, &mut actions);
+
+        // 普通单击：只激活编辑，不打开链接。
+        let (rect, actions) = click(egui::Modifiers::default());
         assert!(!rect.is_negative());
-        let pos = rect.center();
-        let _ = run(&link, press(pos, true), &mut images, &mut actions);
-        let _ = run(&link, press(pos, false), &mut images, &mut actions);
         assert!(
-            actions
-                .iter()
-                .any(|a| matches!(a, Action::OpenLink(u) if u == "https://e.com")),
-            "单击链接必须打开: {actions:?}"
+            actions.iter().any(|a| matches!(a, Action::Caret(..))),
+            "普通单击链接应把光标放进链接: {actions:?}"
         );
         assert!(
-            !actions.iter().any(|a| matches!(a, Action::Caret(..))),
-            "点链接不应同时激活编辑块: {actions:?}"
+            !actions.iter().any(|a| matches!(a, Action::OpenLink(_))),
+            "普通单击不应打开链接: {actions:?}"
         );
+
+        // Cmd / Ctrl+单击：打开链接，不再触发编辑光标。
+        for modifiers in [
+            egui::Modifiers {
+                command: true,
+                ..Default::default()
+            },
+            egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        ] {
+            let (_, actions) = click(modifiers);
+            assert!(
+                actions
+                    .iter()
+                    .any(|a| matches!(a, Action::OpenLink(u) if u == "https://e.com")),
+                "{modifiers:?} + 单击应打开链接: {actions:?}"
+            );
+            assert!(
+                !actions.iter().any(|a| matches!(a, Action::Caret(..))),
+                "{modifiers:?} + 单击不应同时激活编辑块: {actions:?}"
+            );
+        }
     }
 
     /// 单击普通文字应放置光标（独立 ctx，避免与链接点击连成双击）。
@@ -4795,6 +5468,73 @@ mod tests {
         );
     }
 
+    /// 图片预览：大图压到视口高度的六成以内，小图保持原尺寸不放大。
+    #[test]
+    fn image_preview_is_capped_to_viewport() {
+        let theme = Theme::get(ThemeKind::Light);
+        let dir = std::env::temp_dir().join(format!("markd-img-preview-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbaImage::from_pixel(200, 1200, image::Rgba([200, 30, 30, 255]))
+            .save(dir.join("tall.png"))
+            .unwrap();
+        image::RgbaImage::from_pixel(50, 40, image::Rgba([30, 30, 200, 255]))
+            .save(dir.join("small.png"))
+            .unwrap();
+        let outline: Vec<OutlineItem> = Vec::new();
+        let folded: HashSet<usize> = HashSet::new();
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let mut images = ImageCache::new();
+        let mut actions: Vec<Action> = Vec::new();
+        let mut heights = [0.0f32; 2];
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let c = ui.ctx().clone();
+                    let mut env = RenderEnv {
+                        theme: &theme,
+                        ctx: &c,
+                        images: &mut images,
+                        base_dir: Some(&dir),
+                        outline: &outline,
+                        actions: &mut actions,
+                        max_width: 700.0,
+                        cross_sel: None,
+                        folded: &folded,
+                    };
+                    for (i, url) in ["tall.png", "small.png"].iter().enumerate() {
+                        let block = Block::Paragraph {
+                            content: vec![Inline::Image {
+                                alt: "图".to_string(),
+                                url: url.to_string(),
+                                width: None,
+                            }],
+                            source: format!("![图]({url})"),
+                        };
+                        heights[i] = render_block(ui, i, &block, &mut env, false).rect.height();
+                    }
+                });
+            },
+        );
+        out.textures_delta.clear();
+        assert!(heights[0] > 300.0, "大图应有一定高度：{}", heights[0]);
+        assert!(
+            heights[0] <= 361.0,
+            "大图预览应压到视口高度的六成以内，实际 {}",
+            heights[0]
+        );
+        assert!(
+            (heights[1] - 40.0).abs() < 1.5,
+            "小图应保持原尺寸不放大，实际 {}",
+            heights[1]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 渲染一个代码块（含右上角复制按钮），确认控件树可正常构建、
     /// 且未点击时不会产生任何 action（避免误触发复制）。
     #[test]
@@ -4806,6 +5546,7 @@ mod tests {
             lang: "rust".to_string(),
             code: "fn main() {}".to_string(),
             source: "```rust\nfn main() {}\n```".to_string(),
+            quote: 0,
         };
         egui::__run_test_ui(|ui| {
             let ctx = ui.ctx().clone();
@@ -4836,6 +5577,7 @@ mod tests {
             lang: "rust".to_string(),
             code: "fn main() {}\nfn foo() {}\nfn bar() {}\nfn baz() {}".to_string(),
             source: "```rust\nfn main() {}\nfn foo() {}\nfn bar() {}\nfn baz() {}\n```".to_string(),
+            quote: 0,
         };
         // 展开/折叠各用独立 ctx：折叠动画跨帧，共享 ctx 会让「折叠态」仍处于
         // 动画起点（openness≈1），看起来像没折叠。
@@ -4898,6 +5640,7 @@ mod tests {
             lang: "rust".to_string(),
             code: "fn main() {}".to_string(),
             source: "```rust\nfn main() {}\n```".to_string(),
+            quote: 0,
         };
         let outline: Vec<OutlineItem> = Vec::new();
         let folded: HashSet<usize> = HashSet::new();

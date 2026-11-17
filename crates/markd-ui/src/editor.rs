@@ -191,9 +191,38 @@ fn inherited_marker(s: &str) -> String {
     String::new()
 }
 
+/// 识别有序列表前缀里的起始序号与符号："1. " → (1, '.')，"3) " → (3, ')')。
+fn ordered_prefix(prefix: &str) -> Option<(u64, char)> {
+    let t = prefix.trim();
+    let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    match t[digits.len()..].trim_end() {
+        "." => Some((digits.parse().ok()?, '.')),
+        ")" => Some((digits.parse().ok()?, ')')),
+        _ => None,
+    }
+}
+
 /// 任务项标记 `- [x]` → `- [ ]`（回车新建的任务项从不勾选状态开始）。
 fn replace_task_checkbox(marker: &str) -> String {
     marker.replace("[x]", "[ ]").replace("[X]", "[ ]")
+}
+
+/// 有序列表回车新建下一项时的序号：`3.` → `4.`，`9)` → `10)`。
+/// 非有序标记原样返回。
+fn next_ordered_marker(marker: &str) -> String {
+    let digits: String = marker.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return marker.to_string();
+    }
+    let tail = &marker[digits.len()..];
+    if tail != "." && tail != ")" {
+        return marker.to_string();
+    }
+    let n: u64 = digits.parse().unwrap_or(0);
+    format!("{}{}", n + 1, tail)
 }
 
 fn pair_close(t: &str) -> Option<&'static str> {
@@ -219,8 +248,82 @@ pub fn insert_template(doc: &mut Document, state: &mut EditorState, template: &s
     state.last_cursor = template.chars().count();
 }
 
+/// 插入一张图片：图片块本身不留在编辑态（否则预览里显示的是 `![](...)` 源码），
+/// 而是在图片后面补一个空段落并把光标移过去——图片立刻以渲染态显示。
+pub fn insert_image(doc: &mut Document, state: &mut EditorState, markdown: &str) {
+    doc.record();
+    let idx = state.active;
+    let n = crate::ast::parse(markdown).len().max(1);
+    doc.insert_block_after(idx, markdown);
+    doc.insert_block_after(idx + n, "");
+    state.active = idx + n + 1;
+    state.focus_req = Some(state.active);
+    state.scroll_req = Some(state.active);
+    state.scroll_top = false;
+    state.last_cursor = 0;
+    state.sel = None;
+    state.last_sel = None;
+}
+
 /// 给活动块设置/替换行首前缀（标题、引用、列表等）。
 pub fn apply_prefix(doc: &mut Document, state: &mut EditorState, prefix: &str) {
+    // 引用按钮是开关：目标块已经是引用时再点一次，去掉 `>` 还原成普通段落。
+    if prefix == "> " && unquote_blocks(doc, state) {
+        return;
+    }
+    // 鼠标拖选（可跨块）：把选区覆盖的每一段都转成同一种块级格式，
+    // 而不是只改「上一个活动块」——否则选好文字再点列表按钮会看起来没反应。
+    if let Some(sel) = state.cross_sel.take() {
+        let (s, _, e, _) = cross_sel_range(sel);
+        let n = doc.blocks.len();
+        if s >= n || e >= n {
+            return;
+        }
+        let ordered = ordered_prefix(prefix);
+        let mut num = ordered.map(|(n, _)| n);
+        let mut first_edited: Option<usize> = None;
+        let mut edits: Vec<(usize, String)> = Vec::new();
+        for i in s..=e {
+            let Some(b) = doc.blocks.get(i) else { continue };
+            let cleaned = strip_block_prefix(b.source());
+            // 选区里的空行保持原样，避免生成一串空列表项。
+            if cleaned.trim().is_empty() {
+                continue;
+            }
+            let p = match (ordered, &mut num) {
+                (Some((_, tail)), Some(k)) => {
+                    let out = format!("{k}{tail} ");
+                    *k += 1;
+                    out
+                }
+                _ => prefix.to_string(),
+            };
+            if first_edited.is_none() {
+                first_edited = Some(i);
+            }
+            edits.push((i, format!("{p}{cleaned}")));
+        }
+        if edits.is_empty() {
+            return;
+        }
+        doc.record();
+        for (i, src) in edits {
+            doc.edit_block(i, &src);
+        }
+        // 转换后把光标放到第一段末尾，后续输入/回车延续该列表。
+        let first = first_edited.unwrap_or(s);
+        state.active = first;
+        state.focus_req = Some(first);
+        state.last_cursor = doc
+            .blocks
+            .get(first)
+            .map(|b| block_buffer(b).chars().count())
+            .unwrap_or(0);
+        state.sel = None;
+        state.last_sel = None;
+        return;
+    }
+
     let idx = state.active;
     let Some(b) = doc.blocks.get(idx) else {
         return;
@@ -229,6 +332,103 @@ pub fn apply_prefix(doc: &mut Document, state: &mut EditorState, prefix: &str) {
     doc.record();
     doc.edit_block(idx, &format!("{}{}", prefix, cleaned));
     state.last_cursor = (prefix.chars().count() + cleaned.chars().count()).min(usize::MAX);
+}
+
+/// 插入代码块。活动块是引用时，围栏连同 `>` 前缀一起插到引用内部，
+/// 代码块继续显示引用竖线，而不是把引用拆成两段。
+pub fn insert_code_block(doc: &mut Document, state: &mut EditorState) {
+    let level = match doc.blocks.get(state.active) {
+        Some(Block::Quote { level, .. }) => *level,
+        Some(Block::Code { quote, .. }) if *quote > 0 => *quote,
+        _ => 0,
+    };
+    if level == 0 {
+        insert_template(doc, state, "```\n\n```");
+        return;
+    }
+    let p = ">".repeat(level);
+    let tpl = format!("{p} ```\n{p} \n{p} ```");
+    doc.record();
+    let idx = state.active;
+    doc.insert_block_after(idx, &tpl);
+    state.active = idx + 1;
+    state.focus_req = Some(state.active);
+    state.scroll_req = Some(state.active);
+    state.scroll_top = false;
+    state.last_cursor = 0;
+    state.sel = None;
+    state.last_sel = None;
+}
+
+/// 引用按钮的「再点一次取消」：目标块（跨块选区覆盖的块，或当前活动块）
+/// 全部是引用时，去掉行首所有 `>` 还原成普通段落，返回 true。
+fn unquote_blocks(doc: &mut Document, state: &mut EditorState) -> bool {
+    let targets: Vec<usize> = match state.cross_sel {
+        Some(sel) => {
+            let (s, _, e, _) = cross_sel_range(sel);
+            (s..=e).collect()
+        }
+        None => vec![state.active],
+    };
+    // 选区里的空行（块间空档）不参与判断，也不改。
+    let targets: Vec<usize> = targets
+        .into_iter()
+        .filter(|&i| {
+            doc.blocks
+                .get(i)
+                .is_some_and(|b| !b.source().trim().is_empty())
+        })
+        .collect();
+    if targets.is_empty()
+        || !targets.iter().all(|&i| {
+            doc.blocks
+                .get(i)
+                .is_some_and(|b| quote_level_of(b).is_some())
+        })
+    {
+        return false;
+    }
+    doc.record();
+    for &i in &targets {
+        let level = doc.blocks.get(i).and_then(quote_level_of).unwrap_or(1);
+        let src = strip_quote_lines(doc.blocks[i].source(), level);
+        doc.edit_block(i, &src);
+    }
+    let first = targets[0];
+    state.cross_sel = None;
+    state.active = first;
+    state.focus_req = Some(first);
+    state.last_cursor = doc
+        .blocks
+        .get(first)
+        .map(|b| block_buffer(b).chars().count())
+        .unwrap_or(0);
+    state.sel = None;
+    state.last_sel = None;
+    true
+}
+
+/// 去掉每一行开头的 `>` 前缀与紧随的一个空格（正文自身的缩进要保留）。
+fn strip_quote_lines(src: &str, level: usize) -> String {
+    src.split('\n')
+        .map(|line| {
+            let mut s = line;
+            for _ in 0..level.max(1) {
+                s = s.strip_prefix('>').unwrap_or(s);
+            }
+            s.strip_prefix(' ').unwrap_or(s).to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 块是否带引用竖线：引用段落，或写在引用里的代码块（`> ```…`）。
+fn quote_level_of(b: &Block) -> Option<usize> {
+    match b {
+        Block::Quote { level, .. } => Some(*level),
+        Block::Code { quote, .. } if *quote > 0 => Some(*quote),
+        _ => None,
+    }
 }
 
 /// 去掉块级标记：#、>、-、*、+、有序列表（1. / 1)）、[ ] 任务标记、前导空格。
@@ -746,7 +946,12 @@ pub(crate) fn table_source(grid: &[Vec<String>], align: &[crate::ast::Align]) ->
 enum EditKind {
     Source,
     Heading(u8),
-    Code(String),
+    /// 代码块：`quote` 表示它写在引用内部（源码每行带 `>` 前缀），
+    /// 写回时要逐行补回前缀，编辑时左侧照渲染态显示引用竖线。
+    Code {
+        lang: String,
+        quote: usize,
+    },
     /// 图表块（mermaid 等）：编辑时隐藏 ``` 围栏，只编辑图形描述代码。
     Diagram(String),
     /// 列表项（含任务列表）：编辑时隐藏行首标记（- / 1. / [ ]），只编辑正文，
@@ -756,14 +961,22 @@ enum EditKind {
         marker: String,
         checked: Option<bool>,
     },
+    /// 引用块：编辑时隐藏 `>` 标记，只编辑正文，左侧引用竖线照常显示。
+    Quote {
+        level: usize,
+    },
 }
 
 impl EditKind {
     fn of(b: &Block) -> Self {
         match b {
             Block::Heading { level, .. } => EditKind::Heading(*level),
-            Block::Code { lang, .. } => EditKind::Code(lang.clone()),
+            Block::Code { lang, quote, .. } => EditKind::Code {
+                lang: lang.clone(),
+                quote: *quote,
+            },
             Block::Diagram { .. } => EditKind::Diagram("mermaid".to_string()),
+            Block::Quote { level, .. } => EditKind::Quote { level: *level },
             Block::ListItem { item, .. } => EditKind::List {
                 indent: item.indent,
                 marker: item.marker.clone(),
@@ -785,7 +998,7 @@ impl EditKind {
                 )
             }
             // 图表块与代码块同构：都补回 ```lang 围栏，往返一致。
-            EditKind::Code(lang) | EditKind::Diagram(lang) => {
+            EditKind::Diagram(lang) => {
                 let mut s = String::with_capacity(text.len() + lang.len() + 8);
                 s.push_str("```");
                 s.push_str(lang);
@@ -800,6 +1013,36 @@ impl EditKind {
                 s.push_str("```");
                 s
             }
+            EditKind::Code { lang, quote } => {
+                let mut s = String::with_capacity(text.len() + lang.len() + 16);
+                if *quote == 0 {
+                    s.push_str("```");
+                    s.push_str(lang);
+                    s.push('\n');
+                    s.push_str(text);
+                    s.push('\n');
+                    s.push_str("```");
+                    return s;
+                }
+                // 引用内的代码块：围栏和每一行正文都要带引用前缀，
+                // 否则写回后代码块会「跑出」引用（解析器按行首 `>` 判断归属）。
+                let p = ">".repeat(*quote);
+                s.push_str(&p);
+                s.push_str(" ```");
+                s.push_str(lang);
+                s.push('\n');
+                for line in text.split('\n') {
+                    s.push_str(&p);
+                    if !line.is_empty() {
+                        s.push(' ');
+                        s.push_str(line);
+                    }
+                    s.push('\n');
+                }
+                s.push_str(&p);
+                s.push_str(" ```");
+                s
+            }
             EditKind::List { indent, marker, .. } => {
                 // 任务项的 marker 本身就是 "- [ ]"（解析器把勾选框并入 marker），
                 // 普通项是 "-" / "1."，勾选状态变化由 ToggleTask 直接改源码，
@@ -809,6 +1052,10 @@ impl EditKind {
                 s.push(' ');
                 s.push_str(text);
                 s
+            }
+            EditKind::Quote { level } => {
+                // 引用层级用连续 `>` 表示，解析器只认行首连续 `>`。
+                format!("{} {}", ">".repeat((*level).max(1)), text.trim_end())
             }
         }
     }
@@ -840,13 +1087,28 @@ fn merge_into_previous_block(doc: &mut Document, state: &mut EditorState, cur: &
     state.sel = None;
 }
 
+/// 引用块的编辑缓冲：去掉行首连续 `>` 与紧随的空格，保留行内 Markdown 标记，
+/// 这样编辑时看不到源码标记、写回时又不会丢掉加粗/链接等格式。
+fn quote_editable_text(src: &str) -> String {
+    src.trim_end()
+        .trim_start_matches('>')
+        .trim_start_matches(' ')
+        .to_string()
+}
+
+/// 块的可编辑文本：引用只隐藏 `>`、标题/列表等只保留文字，其余块就是 Markdown 源码。
+fn block_editable_text(b: &Block) -> String {
+    match EditKind::of(b) {
+        EditKind::Source => b.source().to_string(),
+        EditKind::Quote { .. } => quote_editable_text(b.source()),
+        _ => b.plain(),
+    }
+}
+
 /// 块的「可编辑文本」：标题只含文字、代码块只含代码，其余块就是 Markdown 源码。
 /// 查找/替换都基于这份文本，替换后再用 rebuild_source 还原成源码写回。
 pub(crate) fn block_buffer(b: &Block) -> String {
-    match EditKind::of(b) {
-        EditKind::Source => b.source().to_string(),
-        _ => b.plain(),
-    }
+    block_editable_text(b)
 }
 
 /// 把改过的可编辑文本还原成块的 Markdown 源码（标题补 #、代码块补围栏）。
@@ -854,22 +1116,20 @@ pub(crate) fn rebuild_source(b: &Block, text: &str) -> String {
     EditKind::of(b).rebuild(text)
 }
 
-/// 行号栏（gutter）的固定宽度，三种模式（源码 / 混合 / 专注）共用同一个值。
+/// 行号栏（gutter）的固定宽度：70px，三种模式（源码 / 混合 / 专注）共用。
 ///
-/// 设计要点：宽度不随行数位数（3→4 位）跳变、不随窗口大小变化、不随模式变化。
-/// 按 4 位数字预留（覆盖绝大多数文档 ≤9999 行），数字宽用等宽字体估算，
-/// 再加固定的左边距与「行号↔正文」间距。超过 4 位的超大文档行号会略微
-/// 挤占左边距，但不会引起正文横移跳动。
-fn gutter_width(theme: &Theme, show: bool) -> f32 {
-    if !show {
-        return 0.0;
-    }
-    let digit_w = theme.mono * 0.62;
-    4.0 * digit_w + 36.0
+/// 设计要点：宽度是常量，不随窗口大小、字体字号、行数位数或模式变化，
+/// 也不参与版心居中 —— 行号栏始终锚定在编辑区最左侧，正文紧接其后。
+/// 超过 4 位的超大文档行号会挤占行号栏左侧留白，但不会改变栏宽。
+const GUTTER_WIDTH: f32 = 70.0;
+
+fn gutter_width(show: bool) -> f32 {
+    if show { GUTTER_WIDTH } else { 0.0 }
 }
 
 /// 行号数字右缘相对 gutter 右缘的缩进（行号与正文之间的间距），三种模式共用。
-const GUTTER_PAD: f32 = 28.0;
+/// 固定 70px 栏宽下留 12px，保证最大字号（26pt）的 4 位行号仍能完整显示。
+const GUTTER_PAD: f32 = 12.0;
 
 /// 滚动条所在的那条窄带：点这里应该交给滚动条，不能当成空白点击。
 fn scroll_bar_zone(ui: &egui::Ui, inner_rect: egui::Rect, content_height: f32) -> egui::Rect {
@@ -901,22 +1161,61 @@ fn cross_sel_range(sel: (usize, usize, usize, usize)) -> (usize, usize, usize, u
     }
 }
 
+/// 渲染态用 text_response 自己画文字选区的块。
+/// 其余块（代码块、图表、表格、公式…）没有可映射的字符位置，拖选时按「整块」处理。
+fn text_selection_block(b: &Block) -> bool {
+    matches!(
+        b,
+        Block::Heading { .. }
+            | Block::Paragraph { .. }
+            | Block::Quote { .. }
+            | Block::ListItem { .. }
+            | Block::Footnote { .. }
+    )
+}
+
+/// 非文本块是否被跨块选区整块覆盖：在两端之间，或作为端点。
+/// 这类块（代码块/图表/表格…）是原子的：只要选区碰到它，就整块计入。
+fn atomic_block_selected(sel: Option<(usize, usize, usize, usize)>, idx: usize) -> bool {
+    let Some(sel) = sel else { return false };
+    let (s, sc, e, ec) = cross_sel_range(sel);
+    // 只有按下、还没拖出范围：不画整块底色。
+    if (s, sc) == (e, ec) {
+        return false;
+    }
+    s <= idx && idx <= e
+}
+
 /// 跨块选区的文本（Cmd+C 复制用）：首尾块取选中片段，中间块取全文，
 /// 块与块之间用空行连接（所见文本）。
 pub fn cross_sel_text(doc: &Document, sel: Option<(usize, usize, usize, usize)>) -> Option<String> {
     let (s, sc, e, ec) = cross_sel_range(sel?);
+    // 只有按下、还没拖出范围：视为没有选区。
+    if (s, sc) == (e, ec) {
+        return None;
+    }
     let mut out: Vec<String> = Vec::new();
     for i in s..=e {
         let Some(b) = doc.blocks.get(i) else { continue };
         let plain = b.plain();
         let len = plain.chars().count();
-        let t0 = if i == s { sc.min(len) } else { 0 };
-        let t1 = if i == e { ec.min(len) } else { len };
+        // 代码块/图表/表格这类非文本块是原子的：作为两端时整块计入，
+        // 不按字符位置截取（拖选时它们的端点字符只是「块首/块尾」的标记）。
+        let atomic = (i == s || i == e) && !text_selection_block(b);
+        let t0 = if i == s && !atomic { sc.min(len) } else { 0 };
+        let t1 = if i == e && !atomic { ec.min(len) } else { len };
         if t0 < t1 {
             out.push(plain.chars().skip(t0).take(t1 - t0).collect());
         }
     }
     (!out.is_empty()).then(|| out.join("\n\n"))
+}
+
+/// 剪切跨块选区：返回应写入剪贴板的文本，并把选中内容从文档里删掉。
+/// 返回 None 表示当前没有跨块选区（交给 TextEdit 原生剪切）。
+pub fn cut_cross_sel(doc: &mut Document, state: &mut EditorState) -> Option<String> {
+    let text = cross_sel_text(doc, state.cross_sel)?;
+    apply_cross_sel_edit(doc, state, None).then_some(text)
 }
 
 /// 把跨块选区替换为 `insert`（None = 纯删除）：
@@ -984,7 +1283,7 @@ pub fn show_editor(
         let mut changed = false;
         let mut editor_rect = egui::Rect::NOTHING;
         // 行号栏宽度固定（三种模式共用），不随行数位数、窗口、模式变化。
-        let gutter_w = gutter_width(&theme, show_line_numbers);
+        let gutter_w = gutter_width(show_line_numbers);
         // 每个源码行首字符的下标（CCursor 按 char 计数）。
         let line_starts: Vec<usize> = {
             let mut v = vec![0usize];
@@ -1081,8 +1380,10 @@ pub fn show_editor(
                 }
                 let out = ui.horizontal(|ui| {
                     if show_line_numbers {
-                        // 占位让正文右移；数字本身在 show 之后按视口固定 x 补画。
-                        ui.allocate_exact_size(egui::Vec2::new(gutter_w, 0.0), Sense::hover());
+                        // 固定 70px 行号栏：扣掉水平 item_spacing，正文左缘正好落在
+                        // 行号栏右缘；数字本身在下面按视口固定 x 补画。
+                        let spacing = ui.spacing().item_spacing.x;
+                        ui.add_space((gutter_w - spacing).max(0.0));
                     }
                     let te = TextEdit::multiline(&mut src)
                         .id(Id::new(("source_editor", tab_key)))
@@ -1218,8 +1519,7 @@ pub fn show_editor(
         .map(EditKind::of)
         .unwrap_or(EditKind::Source);
     let mut active_buf = match doc.blocks.get(active) {
-        Some(b) if !matches!(edit_kind, EditKind::Source) => b.plain(),
-        Some(b) => b.source().to_string(),
+        Some(b) => block_editable_text(b),
         None => String::new(),
     };
     // 空块行首退格要并回上一块：这个判断必须基于「按键之前」的缓冲区，
@@ -1241,6 +1541,12 @@ pub fn show_editor(
     let mut lang_change: Option<String> = None;
     // 本帧每个块实际占用的矩形：(块下标, 矩形)。空白点击靠它区分「点在块上」和「点在留白」。
     let mut block_rects: Vec<(usize, egui::Rect)> = Vec::new();
+    // 引用块左侧竖线的矩形：编辑态与渲染态返回的 resp.rect 基准不同
+    // （编辑态是整个横向区域、渲染态只是文字），在这里统一换算成竖线本身，
+    // 帧末用它把相邻引用块的竖线补接起来。
+    let mut quote_bars: Vec<(usize, egui::Rect)> = Vec::new();
+    // 列表项编辑态按下 Tab / Shift+Tab：记下方向，帧末统一调整缩进层级。
+    let mut list_tab: Option<bool> = None;
 
     let scroll_out = egui::ScrollArea::vertical()
         .id_salt("editor_scroll")
@@ -1257,29 +1563,67 @@ pub fn show_editor(
             }
             // 正文宽度随窗口浮动，固定占可用宽度的约 90%；不设死宽度，
             // 所有块都按这个宽度换行，窄窗口下也不会把长段落横向裁掉。
-            // gutter 宽度固定（与源码模式共用），正文区左缘为其预留位置，
-            // 这样三种模式的行号栏宽度完全一致、不随窗口/行数变化。
+            // 行号栏固定锚定在编辑区最左侧（70px，与源码模式共用），不参与版心
+            // 居中，因此全窗口 / 部分窗口、源码 / 混合 / 专注模式下栏宽都恒定。
             let outer_w = ui.available_width();
             let page_w = (outer_w * 0.9).max(200.0);
-            let gutter_w = gutter_width(&theme, show_line_numbers);
+            let gutter_w = gutter_width(show_line_numbers);
+            let viewport_left = ui.clip_rect().left();
             ui.horizontal_top(|ui| {
-                let pad = ((outer_w - page_w) / 2.0).max(0.0);
-                ui.add_space(pad + gutter_w);
+                // 显示行号时行号栏从最左侧开始，正文紧随其后；关闭行号时保持版心居中。
+                let pad = if show_line_numbers {
+                    0.0
+                } else {
+                    ((outer_w - page_w) / 2.0).max(0.0)
+                };
+                // 扣掉水平 item_spacing，让正文左缘正好落在行号栏右缘。
+                let spacing = ui.spacing().item_spacing.x;
+                ui.add_space((pad + gutter_w - spacing).max(0.0));
                 ui.vertical(|ui| {
                     ui.set_width(page_w - gutter_w);
-                    // 页左缘（正文左缘）：gutter 在它左侧，行号画在 pad 区。
-                    // 不能用 resp.rect.left() 推：列表/任务项的 resp 是去掉行首
-                    // 缩进与标记（复选框/圆点/编号）后的内容 Label，按它会算出
-                    // 落在正文里的 x，行号就叠进任务列表了。
-                    let page_left = ui.cursor().left();
+                    // 拖选时把越界指针钳进视口（与 render.rs 的 text_response 一致）：
+                    // 鼠标甩到可视区域外时，越界点可能落在块间空档，钳到边缘才能
+                    // 持续命中块、让选区跟着自动滚动一直延伸。但按下的点必须在
+                    // 视口内，否则点工具条会被钳成「点了最上面的代码块」。
+                    let raw_pos = ctx.input(|i| i.pointer.interact_pos());
+                    let clip = ui.clip_rect();
+                    let in_viewport = raw_pos.is_some_and(|p| clip.contains(p));
+                    let drag_pos = raw_pos.map(|p| {
+                        if in_viewport {
+                            p
+                        } else {
+                            egui::Pos2::new(p.x, p.y.clamp(clip.top() + 1.0, clip.bottom() - 1.0))
+                        }
+                    });
+                    // 行号统一画在编辑区左侧固定列里，正文左缘不可用 resp.rect.left()
+                    // 推：列表/任务项的 resp 是去掉行首缩进与标记（复选框/圆点/编号）
+                    // 后的内容 Label，按它会算出落在正文里的 x，行号就叠进任务列表了。
                     for idx in 0..blocks.len() {
                         let block = &blocks[idx];
                         let compact = matches!(block, Block::ListItem { .. } | Block::Blank { .. });
+                        // 连续引用行之间只留最小间距，左侧竖线才能连成一条。
+                        // 引用里的代码块同样算作引用行，竖线保持连续。
+                        let quote_run = quote_level_of(block).is_some()
+                            && blocks
+                                .get(idx + 1)
+                                .is_some_and(|b| quote_level_of(b).is_some());
                         let is_active = idx == active;
                         // 跨块选区进行中时，活动块也按渲染态绘制：否则它渲染成
                         // TextEdit、既不能作为拖选终点、也不参与选区高亮，
                         // 表现为「选区在这一块断掉」。
                         let editing = is_active && !state.read_only && state.cross_sel.is_none();
+
+                        // 代码块/图表/表格等不经过 text_response，没有自己的文字
+                        // 选区高亮。它们多半画在不透明面板里（panel_frame 自带底色），
+                        // 垫在下面的蓝底会被面板底色盖住，所以改为在块内容之上叠加
+                        // 一层半透明选区色——文字依然清晰，又能看出这块被选中了。
+                        let sel_overlay = (!editing
+                            && !text_selection_block(block)
+                            && atomic_block_selected(state.cross_sel, idx))
+                        .then(|| {
+                            let c = theme.selection;
+                            egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 110)
+                        });
 
                         let resp = if editing && matches!(block, Block::Table { .. }) {
                             // 表格：像 Typora 一样直接在表格单元格里编辑，不看管道源码。
@@ -1452,6 +1796,27 @@ pub fn show_editor(
                                                     let r = ui.add(
                                                         egui::TextEdit::singleline(cell)
                                                             .desired_width(col_w)
+                                                            // 按表格对齐方式排版单元格文字：之前编辑态的
+                                                            // 单元格永远左对齐，点「居中/右对齐」看不到
+                                                            // 任何变化，像是按钮失效（实际上源码已改）。
+                                                            .align(
+                                                                match aligns
+                                                                    .get(ci)
+                                                                    .copied()
+                                                                    .unwrap_or(
+                                                                        crate::ast::Align::Left,
+                                                                    ) {
+                                                                    crate::ast::Align::Left => {
+                                                                        egui::Align2::LEFT_TOP
+                                                                    }
+                                                                    crate::ast::Align::Center => {
+                                                                        egui::Align2::CENTER_TOP
+                                                                    }
+                                                                    crate::ast::Align::Right => {
+                                                                        egui::Align2::RIGHT_TOP
+                                                                    }
+                                                                },
+                                                            )
                                                             .font(egui::FontId::new(
                                                                 theme.body * 0.95,
                                                                 egui::FontFamily::Proportional,
@@ -1599,18 +1964,53 @@ pub fn show_editor(
                             // 代码块的行数 + 1 对齐渲染态：渲染态的 code_job 会在末尾
                             // 补一个换行（多一行视觉空行），编辑态用 desired_rows 预留
                             // 同样高度，点击进入/退出编辑时内容不跳。
-                            let rows = if matches!(edit_kind, EditKind::Code(_)) {
+                            let rows = if matches!(edit_kind, EditKind::Code { .. }) {
                                 active_buf.lines().count().max(1) + 1
                             } else if block.is_multiline() {
                                 2
                             } else {
                                 1
                             };
+                            // 整段只有图片（一张或多张连续图片）时，编辑态在上方
+                            // 原样露出 `![文件名](路径)` 源码、下方保留图片预览；
+                            // 点击别处就退出编辑，只剩图片。
+                            let image_blocks: Option<Vec<(String, String, Option<u32>)>> =
+                                match block {
+                                    Block::Paragraph { content, .. } => {
+                                        let has_image = content
+                                            .iter()
+                                            .any(|i| matches!(i, crate::ast::Inline::Image { .. }));
+                                        let only_images = has_image
+                                            && content.iter().all(|i| {
+                                                matches!(
+                                                    i,
+                                                    crate::ast::Inline::Image { .. }
+                                                        | crate::ast::Inline::Break
+                                                )
+                                            });
+                                        only_images.then(|| {
+                                            content
+                                                .iter()
+                                                .filter_map(|i| match i {
+                                                    crate::ast::Inline::Image {
+                                                        alt,
+                                                        url,
+                                                        width,
+                                                    } => Some((alt.clone(), url.clone(), *width)),
+                                                    _ => None,
+                                                })
+                                                .collect()
+                                        })
+                                    }
+                                    _ => None,
+                                };
                             // 编辑态行内排版：缓冲区还是原始 Markdown，但标记被隐藏，
                             // 看起来就是渲染后的富文本，而不是源码。
                             // 光标位置传给排版器：紧挨光标的标记要显示出来，
                             // 不然在加粗文字旁边按 Shift+8 打的星号会看不见。
                             let caret = state.last_cursor;
+                            // 上一帧的选区：行内代码被选中时用它把代码片底色换成选区色。
+                            let sel = state.sel;
                             let mut layouter =
                                 |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
                                     let job = render::inline_job(
@@ -1620,13 +2020,14 @@ pub fn show_editor(
                                         theme.text,
                                         wrap,
                                         Some(caret),
+                                        sel,
                                     );
                                     ui.fonts_mut(|f| f.layout_job(job))
                                 };
                             // 代码块编辑时也走高亮排版：缓冲区是纯代码，用同一套词法着色，
                             // 边打字边能看到关键字/字符串的颜色，而不是退化成一片纯文本。
                             let code_lang = match &edit_kind {
-                                EditKind::Code(l) | EditKind::Diagram(l) => l.as_str(),
+                                EditKind::Code { lang: l, .. } | EditKind::Diagram(l) => l.as_str(),
                                 _ => "",
                             };
                             let mut code_layouter =
@@ -1652,7 +2053,7 @@ pub fn show_editor(
                                 // 代码块：外层 panel_frame 提供盒子（按钮行 + 代码同盒，
                                 // 与渲染态一致），TextEdit 自身不再带底色边距。
                                 // 宽度对齐渲染态：盒子内可用宽 = page_w - 两侧边距 24。
-                                EditKind::Code(_) => te
+                                EditKind::Code { .. } => te
                                     .font(egui::FontId::new(
                                         theme.mono,
                                         egui::FontFamily::Monospace,
@@ -1677,89 +2078,156 @@ pub fn show_editor(
                                 // 段落/列表：TextEdit 主题默认的垂直 margin 会让
                                 // 编辑态比渲染态（Label 无 margin）高约 5px，点击进入
                                 // 编辑时整块往下跳。归零后两态高度一致，块不再跳动。
-                                EditKind::Source | EditKind::List { .. } => te
-                                    .font(egui::FontId::new(
-                                        theme.body,
-                                        egui::FontFamily::Proportional,
-                                    ))
-                                    .frame(egui::Frame::NONE)
-                                    .margin(egui::Margin::ZERO)
-                                    .return_key(Option::<egui::KeyboardShortcut>::None)
-                                    .layouter(&mut layouter),
+                                EditKind::Source
+                                | EditKind::List { .. }
+                                | EditKind::Quote { .. } => {
+                                    if image_blocks.is_some() {
+                                        // 图片源码原样显示 `![文件名](路径)`：
+                                        // 隐藏标记的 inline_job 会把地址折掉，
+                                        // 看不到完整路径，不符合图片源码模式的预期。
+                                        te.font(egui::FontId::new(
+                                            theme.body * 0.85,
+                                            egui::FontFamily::Monospace,
+                                        ))
+                                        .text_color(theme.dim)
+                                        .frame(egui::Frame::NONE)
+                                        .margin(egui::Margin::ZERO)
+                                        .return_key(Option::<egui::KeyboardShortcut>::None)
+                                        .desired_width(page_w)
+                                    } else {
+                                        te.font(egui::FontId::new(
+                                            theme.body,
+                                            egui::FontFamily::Proportional,
+                                        ))
+                                        .frame(egui::Frame::NONE)
+                                        .margin(egui::Margin::ZERO)
+                                        .return_key(Option::<egui::KeyboardShortcut>::None)
+                                        .layouter(&mut layouter)
+                                    }
+                                }
                             };
                             // 代码块编辑态：按钮行（删除/复制/语言）与代码同在一个
                             // panel_frame 盒子里，与渲染态完全一致——否则点击进入
                             // 编辑后按钮会"跳到"盒子右上方之外。
-                            let (out, row_resp) = if let EditKind::Code(lang) = &edit_kind {
+                            let (out, row_resp) = if let EditKind::Code { lang, quote } = &edit_kind
+                            {
+                                let quote_level = *quote;
                                 let mut copied = false;
-                                let fr = render::panel_frame(theme).show(ui, |ui| {
-                                    // 功能栏：左语言 + 右操作按钮（与渲染态同款布局）
-                                    render::code_header_frame(theme).show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            if let Some(l) = render::language_combo(
-                                                ui,
-                                                ("code_lang_edit", tab_key, idx),
-                                                lang,
-                                            ) {
-                                                lang_change = Some(l);
-                                            }
-                                            ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| {
-                                                    if ui
-                                                        .button(
-                                                            egui::RichText::new("折叠")
-                                                                .size(theme.body * 0.85),
-                                                        )
-                                                        .on_hover_cursor(egui::CursorIcon::Default)
-                                                        .clicked()
-                                                    {
-                                                        actions
-                                                            .push(render::Action::FoldToggle(idx));
-                                                        // 折叠的是活动块：把它让给相邻块，立即退出编辑态看到折叠效果。
-                                                        new_active =
-                                                            Some(if idx + 1 < doc.blocks.len() {
-                                                                idx + 1
-                                                            } else {
-                                                                idx.saturating_sub(1)
-                                                            });
-                                                    }
-                                                    if ui
-                                                        .button(
-                                                            egui::RichText::new("删除")
-                                                                .size(theme.body * 0.85),
-                                                        )
-                                                        .on_hover_cursor(egui::CursorIcon::Default)
-                                                        .clicked()
-                                                    {
-                                                        actions.push(
-                                                            render::Action::AskDeleteBlock(idx),
+                                // 引用内的代码块：左侧留出缩进 + 竖线位置，
+                                // 编辑时也保持引用竖线，与渲染态一致。
+                                let hr = ui.horizontal(|ui| {
+                                    if quote_level > 0 {
+                                        ui.add_space(quote_level.min(4) as f32 * 8.0 + 11.0);
+                                    }
+                                    // 外层横向布局会传染给面板内容，显式回到纵向。
+                                    let fr = ui
+                                        .vertical(|ui| {
+                                            render::panel_frame(theme).show(ui, |ui| {
+                                                // 功能栏：左语言 + 右操作按钮（与渲染态同款布局）
+                                                render::code_header_frame(theme).show(ui, |ui| {
+                                                    ui.horizontal(|ui| {
+                                                        if let Some(l) = render::language_combo(
+                                                            ui,
+                                                            ("code_lang_edit", tab_key, idx),
+                                                            lang,
+                                                        ) {
+                                                            lang_change = Some(l);
+                                                        }
+                                                        ui.with_layout(
+                                                            egui::Layout::right_to_left(
+                                                                egui::Align::Center,
+                                                            ),
+                                                            |ui| {
+                                                                if ui
+                                                                    .button(
+                                                                        egui::RichText::new("折叠")
+                                                                            .size(
+                                                                                theme.body * 0.85,
+                                                                            ),
+                                                                    )
+                                                                    .on_hover_cursor(
+                                                                        egui::CursorIcon::Default,
+                                                                    )
+                                                                    .clicked()
+                                                                {
+                                                                    actions.push(
+                                                                        render::Action::FoldToggle(
+                                                                            idx,
+                                                                        ),
+                                                                    );
+                                                                    // 折叠的是活动块：把它让给相邻块，立即退出编辑态看到折叠效果。
+                                                                    new_active = Some(
+                                                                        if idx + 1
+                                                                            < doc.blocks.len()
+                                                                        {
+                                                                            idx + 1
+                                                                        } else {
+                                                                            idx.saturating_sub(1)
+                                                                        },
+                                                                    );
+                                                                }
+                                                                if ui
+                                                                    .button(
+                                                                        egui::RichText::new("删除")
+                                                                            .size(
+                                                                                theme.body * 0.85,
+                                                                            ),
+                                                                    )
+                                                                    .on_hover_cursor(
+                                                                        egui::CursorIcon::Default,
+                                                                    )
+                                                                    .clicked()
+                                                                {
+                                                                    actions.push(
+                                                                render::Action::AskDeleteBlock(idx),
+                                                            );
+                                                                }
+                                                                if ui
+                                                                    .button(
+                                                                        egui::RichText::new("复制")
+                                                                            .size(
+                                                                                theme.body * 0.85,
+                                                                            ),
+                                                                    )
+                                                                    .on_hover_cursor(
+                                                                        egui::CursorIcon::Default,
+                                                                    )
+                                                                    .clicked()
+                                                                {
+                                                                    copied = true;
+                                                                }
+                                                            },
                                                         );
-                                                    }
-                                                    if ui
-                                                        .button(
-                                                            egui::RichText::new("复制")
-                                                                .size(theme.body * 0.85),
-                                                        )
-                                                        .on_hover_cursor(egui::CursorIcon::Default)
-                                                        .clicked()
-                                                    {
-                                                        copied = true;
-                                                    }
-                                                },
-                                            );
-                                        });
-                                    });
-                                    ui.add_space(6.0);
-                                    render::code_divider(ui, theme);
-                                    ui.add_space(6.0);
-                                    te.show(ui)
+                                                    });
+                                                });
+                                                ui.add_space(6.0);
+                                                render::code_divider(ui, theme);
+                                                ui.add_space(6.0);
+                                                te.show(ui)
+                                            })
+                                        })
+                                        .inner;
+                                    if quote_level > 0 {
+                                        // 竖线高度跟随整个代码面板（含功能栏），
+                                        // 连续引用时用帧末的补接逻辑连成一条。
+                                        let rect = fr.response.rect;
+                                        ui.painter().rect_filled(
+                                            egui::Rect::from_min_max(
+                                                egui::pos2(rect.left() - 11.0, rect.top()),
+                                                egui::pos2(rect.left() - 8.0, rect.bottom()),
+                                            ),
+                                            1.0,
+                                            theme.accent,
+                                        );
+                                    }
+                                    fr
                                 });
+                                let fr = hr.inner;
                                 if copied {
                                     ctx.copy_text(active_buf.clone());
                                     actions.push(Action::Notify("复制成功".to_string()));
                                 }
-                                (fr.inner, fr.response)
+                                (fr.inner, hr.response)
                             } else if let EditKind::List {
                                 indent,
                                 marker,
@@ -1769,8 +2237,20 @@ pub fn show_editor(
                                 let indent_px = (*indent).min(12) as f32 * 8.0;
                                 let hr = ui.horizontal(|ui| {
                                     ui.add_space(indent_px);
+                                    // 与渲染态一致：标记贴近正文、复选框与圆点放大。
+                                    ui.spacing_mut().item_spacing.x = 5.0;
                                     match checked {
                                         Some(c) => {
+                                            ui.spacing_mut().icon_width = 19.0;
+                                            ui.spacing_mut().icon_width_inner = 11.0;
+                                            ui.spacing_mut().icon_spacing = 3.0;
+                                            let v = &mut ui.visuals_mut().widgets;
+                                            v.inactive.bg_stroke =
+                                                egui::Stroke::new(1.0, theme.dim);
+                                            v.hovered.bg_stroke =
+                                                egui::Stroke::new(1.0, theme.accent);
+                                            v.active.bg_stroke =
+                                                egui::Stroke::new(1.0, theme.accent);
                                             let mut cb_state = *c;
                                             let cb = ui.checkbox(&mut cb_state, "");
                                             if cb.clicked() {
@@ -1778,33 +2258,167 @@ pub fn show_editor(
                                             }
                                         }
                                         None => {
-                                            let m =
-                                                if marker.ends_with('.') || marker.ends_with(')') {
-                                                    format!("{}  ", marker)
-                                                } else {
-                                                    "•  ".to_string()
-                                                };
-                                            let mut f = theme.fmt(theme.body);
-                                            f.color = theme.dim;
-                                            let mut job = egui::text::LayoutJob::default();
-                                            job.append(&m, 0.0, f);
-                                            ui.label(job);
+                                            // 与渲染态一致：层级的标记样式随缩进变化。
+                                            let level = render::list_level(*indent);
+                                            if marker.ends_with('.') || marker.ends_with(')') {
+                                                let mut f = theme.fmt(theme.body);
+                                                f.color = theme.dim;
+                                                let mut job = egui::text::LayoutJob::default();
+                                                job.append(
+                                                    &render::ordered_list_marker(marker, level),
+                                                    0.0,
+                                                    f,
+                                                );
+                                                ui.label(job);
+                                            } else {
+                                                let d = (theme.body * 0.6).clamp(7.0, 14.0);
+                                                let color =
+                                                    theme.dim.lerp_to_gamma(theme.text, 0.55);
+                                                render::draw_list_bullet(ui, level, color, d);
+                                            }
                                         }
                                     }
-                                    let te =
-                                        te.desired_width((ui.available_width() - 8.0).max(80.0));
+                                    // Tab / Shift+Tab 在列表项里表示调整缩进层级，
+                                    // 不能让它变成 \t 插进正文，也不能把焦点移走。
+                                    let shift_tab = ui.input(|i| {
+                                        i.events.iter().find_map(|e| match e {
+                                            egui::Event::Key {
+                                                key: Key::Tab,
+                                                pressed: true,
+                                                modifiers,
+                                                ..
+                                            } => Some(modifiers.shift),
+                                            _ => None,
+                                        })
+                                    });
+                                    if let Some(shift_tab) = shift_tab {
+                                        list_tab = Some(shift_tab);
+                                        ui.ctx().input_mut(|i| {
+                                            i.events.retain(|e| {
+                                                !matches!(
+                                                    e,
+                                                    egui::Event::Key {
+                                                        key: Key::Tab,
+                                                        pressed: true,
+                                                        ..
+                                                    }
+                                                )
+                                            });
+                                        });
+                                    }
+                                    let te = te
+                                        .event_filter(egui::EventFilter {
+                                            tab: true,
+                                            ..Default::default()
+                                        })
+                                        .desired_width((ui.available_width() - 8.0).max(80.0));
                                     te.show(ui)
                                 });
                                 (hr.inner, hr.response)
+                            } else if let EditKind::Quote { level } = &edit_kind {
+                                // 引用编辑态与渲染态一致：左侧竖线 + 缩进，正文加粗、
+                                // 引用配色，不显示 `>` 源码标记。
+                                let indent_px = (*level).min(4) as f32 * 8.0;
+                                let bold_family = egui::FontFamily::Name("markd-bold".into());
+                                let mut quote_layouter =
+                                    |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+                                        let mut job = render::inline_job(
+                                            buf.as_str(),
+                                            theme,
+                                            theme.body,
+                                            theme.quote,
+                                            wrap,
+                                            Some(caret),
+                                            sel,
+                                        );
+                                        // 只把引用正文（普通文字，颜色为引用色）换成粗体；
+                                        // 透明标记、链接、行内代码等保持原样式。
+                                        for section in &mut job.sections {
+                                            if section.format.font_id.family
+                                                == egui::FontFamily::Proportional
+                                                && section.format.color == theme.quote
+                                            {
+                                                section.format.font_id = egui::FontId::new(
+                                                    theme.body,
+                                                    bold_family.clone(),
+                                                );
+                                            }
+                                        }
+                                        ui.fonts_mut(|f| f.layout_job(job))
+                                    };
+                                let hr = ui.horizontal(|ui| {
+                                    ui.add_space(indent_px);
+                                    // 竖线先不占固定高度：给正文留出「线宽 + 间距」，
+                                    // 等 TextEdit 排版完成后再按它的实际高度画，
+                                    // 软换行/多行时竖线会一直延伸到最底部。
+                                    ui.add_space(11.0);
+                                    let te = te
+                                        .text_color(theme.quote)
+                                        .layouter(&mut quote_layouter)
+                                        .desired_width((ui.available_width() - 8.0).max(80.0));
+                                    let out = te.show(ui);
+                                    let r = out.response.rect;
+                                    ui.painter().rect_filled(
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(r.left() - 11.0, r.top()),
+                                            egui::pos2(r.left() - 8.0, r.bottom()),
+                                        ),
+                                        1.0,
+                                        theme.accent,
+                                    );
+                                    out
+                                });
+                                (hr.inner, hr.response)
                             } else {
-                                let out = te.show(ui);
-                                let row = out.response.response.clone();
+                                // 图片块：上方露出 `![文件名](路径)` 源码，
+                                // 下方保留图片预览（可拖动右下角缩放）；
+                                // 点别处即退出这种模式。
+                                let (out, preview) = if let Some(imgs) = &image_blocks {
+                                    let mut prev: Option<egui::Response> = None;
+                                    let out = ui
+                                        .vertical(|ui| {
+                                            let out = te.show(ui);
+                                            ui.add_space(2.0);
+                                            for (no, (alt, url, width)) in imgs.iter().enumerate() {
+                                                let (r, resized) = render::image_preview(
+                                                    ui,
+                                                    alt,
+                                                    url,
+                                                    theme,
+                                                    ctx,
+                                                    images,
+                                                    base_dir,
+                                                    *width,
+                                                    (idx, no),
+                                                );
+                                                if let Some(w) = resized {
+                                                    actions.push(render::Action::ResizeImage(
+                                                        idx, no, w,
+                                                    ));
+                                                }
+                                                prev = Some(match prev.take() {
+                                                    Some(p) => p.union(r),
+                                                    None => r,
+                                                });
+                                            }
+                                            out
+                                        })
+                                        .inner;
+                                    (out, prev)
+                                } else {
+                                    (te.show(ui), None)
+                                };
+                                let mut row = out.response.response.clone();
+                                if let Some(p) = preview {
+                                    row = row.union(p);
+                                }
                                 (out, row)
                             };
-                            // 编辑态里单击链接也直接打开：用户刚插好链接就想点一下验证，
-                            // 这时块还处于编辑态，不能只把光标放进链接文字里。
-                            // 仍可用方向键把光标移进链接标签修改文字。
-                            if out.response.response.clicked() {
+                            // 编辑态里 Cmd/Ctrl+单击链接才打开；普通点击只把光标
+                            // 放进链接，并露出 `[标签](地址)` 源码供修改。
+                            if out.response.response.clicked()
+                                && ui.input(|i| i.modifiers.command || i.modifiers.ctrl)
+                            {
                                 if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
                                     let ci = out.galley.cursor_from_pos(p - out.galley_pos).index.0;
                                     if let Some(url) = render::link_at_markdown(&active_buf, ci) {
@@ -1908,11 +2522,50 @@ pub fn show_editor(
                             };
                             render::render_block(ui, idx, block, &mut env, focus_mode)
                         };
-                        // 行号：右缘对齐到正文左缘外固定间距（不随块内容偏移），
-                        // gutter 宽度与源码模式共用同一固定值。左侧空间不足
-                        //（窗口太窄）时不画，避免盖住正文。
+                        // 非文本块的选区叠加层：必须画在块内容之后（面板底色会盖住
+                        // 画在前面的形状），半透明所以不影响阅读。
+                        if let Some(color) = sel_overlay {
+                            if resp.rect.is_positive() {
+                                ui.painter().rect_filled(resp.rect.expand(1.0), 3.0, color);
+                            }
+                        }
+                        // 非文本块也参与跨块拖选：指针拖到它上面时把选区端点延伸进来。
+                        // 这类块没有可映射的字符位置，按「整块」计——向下拖取块尾、
+                        // 向上拖取块首，保证选区能跨过代码块/图表继续延伸。
+                        if !editing && !text_selection_block(block) && resp.rect.is_positive() {
+                            let over = drag_pos.is_some_and(|p| resp.rect.contains(p));
+                            let down = ctx.input(|i| i.pointer.primary_down());
+                            let pressed = ctx
+                                .input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
+                            let dragging = ctx.input(|i| i.pointer.is_decidedly_dragging());
+                            let len = block.plain().chars().count();
+                            if over && down {
+                                // 只有代码块/图表能在按下时开启选区。表格等仍需保留
+                                // 「点击进入单元格编辑」，不能一按下就切到选区状态。
+                                if pressed
+                                    && in_viewport
+                                    && matches!(block, Block::Code { .. } | Block::Diagram { .. })
+                                {
+                                    actions.push(Action::CrossDrag(idx, 0, true));
+                                } else if !pressed && let Some((a, _, _, _)) = state.cross_sel {
+                                    actions.push(Action::CrossDrag(
+                                        idx,
+                                        if idx >= a { len } else { 0 },
+                                        false,
+                                    ));
+                                } else if !pressed && in_viewport && dragging {
+                                    // 起点在活动块的 TextEdit 里：以那里为锚点。
+                                    actions.push(Action::ShiftClick(
+                                        idx,
+                                        if idx >= state.active { len } else { 0 },
+                                    ));
+                                }
+                            }
+                        }
+                        // 行号：画在编辑区最左侧固定 70px 行号栏内，右缘固定缩进，
+                        // 不随窗口宽度（版心居中）或模式移动。
                         if show_line_numbers {
-                            let num_x = page_left - GUTTER_PAD;
+                            let num_x = viewport_left + gutter_w - GUTTER_PAD;
                             if num_x - theme.body > ui.clip_rect().left() {
                                 ui.painter().text(
                                     egui::Pos2::new(num_x, resp.rect.top() + theme.body * 0.5),
@@ -1925,6 +2578,22 @@ pub fn show_editor(
                         }
                         if resp.rect.is_positive() {
                             block_rects.push((idx, resp.rect));
+                            if let Some(level) = quote_level_of(block) {
+                                // 渲染态 resp 是文字/面板矩形（竖线在左侧 11px 处）；
+                                // 编辑态 resp 是整条横向区域（文字前留了缩进 + 11px）。
+                                let x = if editing {
+                                    resp.rect.left() + level.min(4) as f32 * 8.0
+                                } else {
+                                    resp.rect.left() - 11.0
+                                };
+                                quote_bars.push((
+                                    idx,
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(x, resp.rect.top()),
+                                        egui::pos2(x + 3.0, resp.rect.bottom()),
+                                    ),
+                                ));
+                            }
                         }
                         if resp.clicked() {
                             new_active = Some(idx);
@@ -1940,7 +2609,28 @@ pub fn show_editor(
                                 state.sel = None;
                             }
                         }
-                        ui.add_space(if compact { 1.0 } else { 6.0 });
+                        if quote_run {
+                            ui.add_space(1.0);
+                        } else {
+                            ui.add_space(if compact { 1.0 } else { 6.0 });
+                        }
+                    }
+                    // 连续引用的竖线要连成一条：egui 会在相邻块之间自动留
+                    // item_spacing，单块各自的竖线在块间距处会断开。这里用同色
+                    // 小矩形把相邻两个引用块竖线之间的空隙补上。
+                    for pair in quote_bars.windows(2) {
+                        let ((i, a), (j, b)) = (pair[0], pair[1]);
+                        if j != i + 1 {
+                            continue;
+                        }
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_max(
+                                egui::pos2(a.left(), a.bottom()),
+                                egui::pos2(a.left() + 3.0, b.top() + 1.0),
+                            ),
+                            0.0,
+                            theme.accent,
+                        );
                     }
                 });
             });
@@ -2036,21 +2726,38 @@ pub fn show_editor(
                 _ => true,
             });
             // 拖选越界自动滚动：按住左键拖到编辑区可视范围之外时，
-            // 按超出距离比例持续滚动，选区随之延伸（Typora / VS Code 行为）。
-            if state.cross_sel.is_some()
+            // 按超出距离持续滚动，选区随之延伸（Typora / VS Code 行为）。
+            // 指针停住不动时系统不再送鼠标事件，必须主动请求重绘，
+            // 否则只会滚一帧就停住（用户反馈的「拖到底不会继续滚」）。
+            // 用 scroll_to_rect 而不是 scroll_with_delta：后者的位移在
+            // ScrollArea 里不会生效（实测 offset 始终为 0）。
+            // press_caret 也要算进来：在活动段落（TextEdit）里一直往下拖、
+            // 段落本身比视口高时还没有跨块选区，但同样应该自动滚动。
+            if (state.cross_sel.is_some() || state.press_caret.is_some())
                 && ctx.input(|i| i.pointer.primary_down())
                 && let Some(p) = ctx.input(|i| i.pointer.interact_pos())
             {
                 let view = ui.clip_rect();
-                let dy = if p.y < view.top() {
-                    -((view.top() - p.y) * 0.5).clamp(2.0, 30.0)
-                } else if p.y > view.bottom() {
-                    ((p.y - view.bottom()) * 0.5).clamp(2.0, 30.0)
+                let (overflow, below) = if p.y > view.bottom() {
+                    (p.y - view.bottom(), true)
+                } else if p.y < view.top() {
+                    (view.top() - p.y, false)
                 } else {
-                    0.0
+                    (0.0, false)
                 };
-                if dy != 0.0 {
-                    ui.scroll_with_delta(egui::vec2(0.0, dy));
+                if overflow > 0.0 {
+                    // 越界越远滚得越快。
+                    let step = (overflow * 0.6).clamp(3.0, 40.0);
+                    let y = if below {
+                        view.bottom() + step
+                    } else {
+                        view.top() - step
+                    };
+                    // 在视口边缘外放一个 1px 的虚拟目标，让 ScrollArea 把内容滚过去。
+                    let target =
+                        egui::Rect::from_min_size(egui::pos2(view.left(), y), egui::vec2(1.0, 1.0));
+                    ui.scroll_to_rect_animation(target, None, egui::style::ScrollAnimation::none());
+                    ctx.request_repaint();
                 }
             }
         });
@@ -2192,7 +2899,7 @@ pub fn show_editor(
     //    排除「同帧打字 + 回车」「行中间回车」的误判。
     if enter
         && changed
-        && matches!(edit_kind, EditKind::Code(_) | EditKind::Diagram(_))
+        && matches!(edit_kind, EditKind::Code { .. } | EditKind::Diagram(_))
         && buf_ended_nl
         && state.sel.is_none()
         && cursor_idx == active_buf.chars().count()
@@ -2258,19 +2965,22 @@ pub fn show_editor(
         let buf = active_buf.clone();
         let pos = state.last_cursor.min(buf.chars().count());
         let (left, right) = split_at_char(&buf, pos);
-        // 列表项（含任务项）：编辑缓冲已去掉行首标记，不能用 inherited_marker(buf)，
-        // 要从 EditKind 拿到当前 marker 来继承（任务项 marker 自带 "- [ ]"）。
-        // Typora 行为：非空项回车继承同类标记；空项再回车退出列表变普通段落。
-        let (marker, exit_list) = match &edit_kind {
+        // 列表项（含任务项）/ 引用块：编辑缓冲已去掉行首标记，不能用
+        // inherited_marker(buf)，要从 EditKind 拿到当前标记来继承。
+        // Typora 行为：非空项回车继承同类标记；空项再回车退出该块级格式。
+        let (marker, exit_prefix) = match &edit_kind {
             EditKind::List {
                 indent,
                 marker,
                 checked,
                 ..
             } => {
-                // 已勾选的任务项回车，新项从「未勾选」开始（Typora 行为）
+                // 已勾选的任务项回车，新项从「未勾选」开始（Typora 行为）；
+                // 有序列表回车时序号自动 +1。
                 let inherited = if checked == &Some(true) {
                     replace_task_checkbox(marker)
+                } else if checked.is_none() {
+                    next_ordered_marker(marker)
                 } else {
                     marker.clone()
                 };
@@ -2282,12 +2992,21 @@ pub fn show_editor(
                     (prefix, false)
                 }
             }
+            EditKind::Quote { level } => {
+                if buf.trim().is_empty() {
+                    // 空引用回车：当前块去掉 `>` 变普通段落，不再插入新块
+                    (String::new(), true)
+                } else {
+                    // 新行继承相同引用层级（连续 `>`）。
+                    (format!("{} ", ">".repeat((*level).max(1))), false)
+                }
+            }
             EditKind::Source => (inherited_marker(&buf), false),
             _ => (String::new(), false),
         };
         doc.record();
-        if exit_list {
-            // 退出列表：当前空项直接写回正文（无标记），光标留在原块
+        if exit_prefix {
+            // 退出列表 / 引用：当前空块直接写回正文（无标记），光标留在原块
             doc.edit_block(active, buf.trim_end());
             state.focus_req = Some(active);
             state.last_cursor = 0;
@@ -2316,19 +3035,48 @@ pub fn show_editor(
         ctx.request_repaint();
     }
     if tab {
-        let cur = active_buf.clone();
-        let indent = " ".repeat(state.tab_size.max(1));
-        let updated = if shift {
-            cur.strip_prefix(indent.as_str())
-                .unwrap_or(&cur)
-                .to_string()
-        } else {
-            format!("{indent}{cur}")
-        };
-        if updated != cur {
-            doc.record();
-            doc.edit_block(active, &updated);
-            return EditorEvent::Changed;
+        if let Some(shift_tab) = list_tab {
+            // 列表项：Tab 增加一级缩进（成为子列表），Shift+Tab 退回上一级。
+            if let EditKind::List {
+                indent,
+                marker,
+                checked,
+            } = &edit_kind
+            {
+                let step = state.tab_size.max(1);
+                let new_indent = if shift_tab {
+                    indent.saturating_sub(step)
+                } else {
+                    indent + step
+                };
+                if new_indent != *indent {
+                    doc.record();
+                    let ek = EditKind::List {
+                        indent: new_indent,
+                        marker: marker.clone(),
+                        checked: *checked,
+                    };
+                    doc.edit_block(active, &ek.rebuild(&active_buf));
+                    // 保持焦点与光标：缩进只改源码前缀，正文缓冲不变。
+                    state.focus_req = Some(active);
+                    return EditorEvent::Changed;
+                }
+            }
+        } else if !matches!(edit_kind, EditKind::List { .. }) {
+            let cur = active_buf.clone();
+            let indent = " ".repeat(state.tab_size.max(1));
+            let updated = if shift {
+                cur.strip_prefix(indent.as_str())
+                    .unwrap_or(&cur)
+                    .to_string()
+            } else {
+                format!("{indent}{cur}")
+            };
+            if updated != cur {
+                doc.record();
+                doc.edit_block(active, &updated);
+                return EditorEvent::Changed;
+            }
         }
     }
 
@@ -2531,7 +3279,11 @@ mod tests {
     fn edit_kind_rebuilds_markdown() {
         assert_eq!(EditKind::Heading(2).rebuild("标题"), "## 标题");
 
-        let src = EditKind::Code("rust".to_string()).rebuild("fn main() {}");
+        let src = EditKind::Code {
+            lang: "rust".to_string(),
+            quote: 0,
+        }
+        .rebuild("fn main() {}");
         assert_eq!(src, "```rust\nfn main() {}\n```");
         let blocks = crate::ast::parse(&src);
         assert!(
@@ -2540,22 +3292,452 @@ mod tests {
         );
 
         // 多行代码同样可往返
-        let src = EditKind::Code(String::new()).rebuild("a\nb");
+        let src = EditKind::Code {
+            lang: String::new(),
+            quote: 0,
+        }
+        .rebuild("a\nb");
         let blocks = crate::ast::parse(&src);
         assert!(matches!(&blocks[0], Block::Code { code, .. } if code == "a\nb"));
 
         // 末尾空行（缓冲以 \n 结尾）也要能往返：在末行回车产生的空行不丢失
-        let src = EditKind::Code("rust".to_string()).rebuild("a\n");
+        let src = EditKind::Code {
+            lang: "rust".to_string(),
+            quote: 0,
+        }
+        .rebuild("a\n");
         let blocks = crate::ast::parse(&src);
         assert!(
             matches!(&blocks[0], Block::Code { code, .. } if code == "a\n"),
             "{src}"
         );
-        let src = EditKind::Code("rust".to_string()).rebuild("\n");
+        let src = EditKind::Code {
+            lang: "rust".to_string(),
+            quote: 0,
+        }
+        .rebuild("\n");
         let blocks = crate::ast::parse(&src);
         assert!(
             matches!(&blocks[0], Block::Code { code, .. } if code == "\n"),
             "{src}"
+        );
+    }
+
+    /// 引用块进入编辑态时隐藏 `>`，保留行内 Markdown；写回时补回相同层级。
+    #[test]
+    fn quote_edit_hides_marker_and_roundtrips() {
+        let doc = Document::new("> 引用 **加粗** 文字", None);
+        let b = &doc.blocks[0];
+        assert!(
+            matches!(EditKind::of(b), EditKind::Quote { level: 1 }),
+            "引用应识别为 Quote 编辑类型"
+        );
+        assert_eq!(block_buffer(b), "引用 **加粗** 文字", "编辑缓冲不应含 `>`");
+        assert_eq!(
+            rebuild_source(b, &block_buffer(b)),
+            "> 引用 **加粗** 文字",
+            "写回应补回 `>` 且不丢失行内格式"
+        );
+
+        // 多级引用：连续 `>` 的层级要原样保留
+        let doc = Document::new(">> 嵌套引用", None);
+        let b = &doc.blocks[0];
+        assert!(matches!(EditKind::of(b), EditKind::Quote { level: 2 }));
+        assert_eq!(block_buffer(b), "嵌套引用");
+        assert_eq!(rebuild_source(b, "嵌套引用"), ">> 嵌套引用");
+    }
+
+    /// 引用按钮是开关：已是引用的块再点一次变回普通段落，普通段落点一次变引用。
+    #[test]
+    fn quote_command_toggles_quote_off() {
+        let mut doc = Document::new("引用文字", None);
+        let mut state = EditorState::default();
+        state.active = 0;
+        assert!(matches!(doc.blocks[0], Block::Paragraph { .. }));
+
+        apply_prefix(&mut doc, &mut state, "> ");
+        assert!(
+            matches!(doc.blocks[0], Block::Quote { .. }),
+            "第一次点击应加上引用：{}",
+            doc.blocks[0].source()
+        );
+
+        apply_prefix(&mut doc, &mut state, "> ");
+        assert!(
+            matches!(doc.blocks[0], Block::Paragraph { .. }),
+            "再次点击应还原成普通段落：{}",
+            doc.blocks[0].source()
+        );
+        assert_eq!(doc.blocks[0].source(), "引用文字", "取消引用不应丢文字");
+    }
+
+    /// 跨块拖选后点引用：选中的引用块整体还原，空行保持原样。
+    #[test]
+    fn quote_command_toggles_off_across_selection() {
+        let mut doc = Document::new("> 甲\n\n> 乙", None);
+        let mut state = EditorState::default();
+        state.cross_sel = Some((0, 0, 2, 1));
+
+        apply_prefix(&mut doc, &mut state, "> ");
+        assert!(
+            doc.blocks.iter().all(|b| !matches!(b, Block::Quote { .. })),
+            "选区内的引用块应全部还原：{:?}",
+            doc.blocks.iter().map(|b| b.source()).collect::<Vec<_>>()
+        );
+        assert!(state.cross_sel.is_none(), "处理完应清空跨块选区");
+
+        // 选区里混有普通段落时仍然统一加引用，不做「取消」。
+        let mut doc = Document::new("> 甲\n\n乙", None);
+        let mut state = EditorState::default();
+        state.cross_sel = Some((0, 0, 2, 1));
+        apply_prefix(&mut doc, &mut state, "> ");
+        assert!(
+            doc.blocks
+                .iter()
+                .filter(|b| !b.source().trim().is_empty())
+                .all(|b| matches!(b, Block::Quote { .. })),
+            "混选时应统一加引用：{:?}",
+            doc.blocks.iter().map(|b| b.source()).collect::<Vec<_>>()
+        );
+
+        // 选区里包含「引用内代码块」：取消引用要把代码块每行的 `>` 都去掉，
+        // 变成普通代码块，而不是只剥掉第一行前缀把代码弄坏。
+        let mut doc = Document::new("> 说明\n> ```rust\n> let a = 1;\n> ```", None);
+        let mut state = EditorState::default();
+        state.cross_sel = Some((0, 0, 1, 0));
+        apply_prefix(&mut doc, &mut state, "> ");
+        assert!(matches!(doc.blocks[0], Block::Paragraph { .. }));
+        assert!(matches!(
+            &doc.blocks[1],
+            Block::Code { quote: 0, code, .. } if code == "let a = 1;"
+        ));
+    }
+
+    /// 引用里的代码块：编辑缓冲只含代码，写回时逐行补回 `>`，往返不丢引用。
+    #[test]
+    fn quoted_code_edit_roundtrips() {
+        let doc = Document::new("> ```rust\n> let a = 1;\n> let b = 2;\n> ```", None);
+        let b = &doc.blocks[0];
+        assert!(matches!(EditKind::of(b), EditKind::Code { quote: 1, .. }));
+        assert_eq!(block_buffer(b), "let a = 1;\nlet b = 2;");
+        let src = rebuild_source(b, &block_buffer(b));
+        assert_eq!(src, "> ```rust\n> let a = 1;\n> let b = 2;\n> ```");
+        let re = crate::ast::parse(&src);
+        assert!(matches!(
+            &re[0],
+            Block::Code { quote: 1, code, .. } if code == "let a = 1;\nlet b = 2;"
+        ));
+    }
+
+    /// 在引用内代码块里打字：写回源码时每行仍带 `>`，不会把代码块挤出引用。
+    #[test]
+    fn typing_in_quoted_code_stays_quoted() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let ctx = egui::Context::default();
+        let run = |doc: &mut Document, state: &mut EditorState, events: Vec<egui::Event>| {
+            let mut images = ImageCache::new();
+            let mut actions: Vec<crate::render::Action> = Vec::new();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let c = ui.ctx().clone();
+                    let _ = show_editor(
+                        ui,
+                        doc,
+                        state,
+                        &theme,
+                        &c,
+                        &mut images,
+                        None,
+                        &[],
+                        false,
+                        false,
+                        false,
+                        false,
+                        1,
+                        &mut actions,
+                    );
+                });
+            });
+            out.textures_delta.clear();
+        };
+        let mut doc = Document::new("> ```rust\n> fn main() {}\n> ```", None);
+        let mut state = EditorState {
+            active: 0,
+            focus_req: Some(0),
+            last_cursor: 12,
+            ..Default::default()
+        };
+        // 第一帧把焦点交给代码块的 TextEdit，第二帧输入字符。
+        run(&mut doc, &mut state, vec![]);
+        run(&mut doc, &mut state, vec![egui::Event::Text("x".into())]);
+        let src = doc.blocks[0].source().to_string();
+        assert!(
+            src.starts_with("> ```rust\n> "),
+            "代码块应仍在引用内：{src}"
+        );
+        assert!(src.contains('x'), "输入的字符应进入引用内代码块：{src}");
+        assert!(src.ends_with("> ```"), "闭合围栏应保留引用前缀：{src}");
+    }
+
+    /// 光标在引用里点「代码块」：插入的代码块仍属于引用（quote 层级），
+    /// 而不是把引用拆成两段、代码块跑到引用外面。
+    #[test]
+    fn insert_code_block_inside_quote_stays_quoted() {
+        let mut doc = Document::new("> 引用文字", None);
+        let mut state = EditorState::default();
+        state.active = 0;
+        insert_code_block(&mut doc, &mut state);
+        assert_eq!(state.active, 1, "新代码块应成为活动块");
+        match &doc.blocks[1] {
+            Block::Code {
+                quote, lang, code, ..
+            } => {
+                assert_eq!(*quote, 1);
+                assert_eq!(lang, "");
+                assert_eq!(code, "");
+            }
+            other => panic!("应插入引用内的空代码块，实际 {other:?}"),
+        }
+        // 引用本身还在，代码块没有把引用拆掉。
+        assert!(matches!(doc.blocks[0], Block::Quote { .. }));
+        // 普通段落里插入仍是普通代码块。
+        let mut doc = Document::new("普通段落", None);
+        let mut state = EditorState::default();
+        state.active = 0;
+        insert_code_block(&mut doc, &mut state);
+        assert!(matches!(&doc.blocks[1], Block::Code { quote: 0, .. }));
+    }
+
+    /// 插入图片后光标落在图片下方的空段落：图片块不处于编辑态，
+    /// 这样插图完成即可看到渲染后的预览，而不是 `![](...)` 源码。
+    #[test]
+    fn insert_image_leaves_preview_rendered() {
+        let mut doc = Document::new("段落", None);
+        let mut state = EditorState::default();
+        state.active = 0;
+        insert_image(&mut doc, &mut state, "![a](imgs/a.png)");
+        assert!(
+            matches!(&doc.blocks[1], Block::Paragraph { source, .. } if source == "![a](imgs/a.png)"),
+            "图片应插成独立段落：{:?}",
+            doc.blocks.iter().map(|b| b.source()).collect::<Vec<_>>()
+        );
+        assert!(
+            matches!(&doc.blocks[2], Block::Blank { .. }),
+            "图片后应补一个空段落"
+        );
+        assert_eq!(state.active, 2, "光标应落在图片下方的空段落");
+        assert_eq!(state.focus_req, Some(2));
+    }
+
+    /// 点击渲染态的图片：该块进入编辑态，界面上露出 `![文件名](路径)` 源码；
+    /// 点击别处后图片恢复渲染。
+    #[test]
+    fn clicking_rendered_image_reveals_source() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let dir = std::env::temp_dir().join(format!("markd-img-click-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        image::RgbaImage::from_pixel(120, 80, image::Rgba([200, 40, 40, 255]))
+            .save(dir.join("a.png"))
+            .unwrap();
+        let path = dir.join("note.md");
+        std::fs::write(&path, "").unwrap();
+        let mut doc = Document::new("![a](a.png)\n\n文字", Some(path));
+        let mut state = EditorState::default();
+        state.active = 2;
+        let ctx = egui::Context::default();
+        let run = |doc: &mut Document, state: &mut EditorState, events: Vec<egui::Event>| {
+            let mut images = ImageCache::new();
+            let mut actions: Vec<crate::render::Action> = Vec::new();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let c = ui.ctx().clone();
+                    let _ = show_editor(
+                        ui,
+                        doc,
+                        state,
+                        &theme,
+                        &c,
+                        &mut images,
+                        Some(&dir),
+                        &[],
+                        false,
+                        false,
+                        false,
+                        false,
+                        1,
+                        &mut actions,
+                    );
+                });
+            });
+            out.textures_delta.clear();
+        };
+        // 先渲染一帧，让图片纹理与布局就绪
+        run(&mut doc, &mut state, vec![]);
+        let p = egui::pos2(400.0, 25.0);
+        run(
+            &mut doc,
+            &mut state,
+            vec![
+                egui::Event::PointerMoved(p),
+                egui::Event::PointerButton {
+                    pos: p,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+        );
+        run(
+            &mut doc,
+            &mut state,
+            vec![egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+        );
+        assert_eq!(state.active, 0, "点击图片应进入该块的源码编辑态");
+    }
+
+    /// 列表交互对齐 Typora：
+    /// - 回车后下一行仍是同类型列表（有序序号 +1、任务项回到未勾选）；
+    /// - Tab 让当前项变成子列表（缩进一级），Shift+Tab 退回上一级。
+    #[test]
+    fn list_enter_and_tab_match_typora() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let ctx = egui::Context::default();
+
+        let key = |k: egui::Key, shift: bool| -> Vec<egui::Event> {
+            vec![egui::Event::Key {
+                key: k,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers {
+                    shift,
+                    ..Default::default()
+                },
+            }]
+        };
+
+        let run = |doc: &mut Document, state: &mut EditorState, events: Vec<egui::Event>| {
+            let mut images = ImageCache::new();
+            let mut actions: Vec<crate::render::Action> = Vec::new();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let c = ui.ctx().clone();
+                    let _ = show_editor(
+                        ui,
+                        doc,
+                        state,
+                        &theme,
+                        &c,
+                        &mut images,
+                        None,
+                        &[],
+                        false,
+                        false,
+                        false,
+                        false,
+                        1,
+                        &mut actions,
+                    );
+                });
+            });
+            out.textures_delta.clear();
+        };
+
+        // Tab：第二项缩进成子列表；Shift+Tab 退回。
+        let mut doc = Document::new("- 父项\n- 子项", None);
+        let mut state = EditorState {
+            active: 1,
+            focus_req: Some(1),
+            tab_size: 2,
+            ..Default::default()
+        };
+        run(&mut doc, &mut state, key(egui::Key::Tab, false));
+        assert_eq!(
+            doc.blocks[1].source(),
+            "  - 子项",
+            "Tab 应把列表项缩进为子列表"
+        );
+        run(&mut doc, &mut state, key(egui::Key::Tab, true));
+        assert_eq!(doc.blocks[1].source(), "- 子项", "Shift+Tab 应退回上一级");
+
+        // 无序列表回车：下一行还是无序列表。
+        let mut doc = Document::new("- 父项", None);
+        let mut state = EditorState {
+            active: 0,
+            focus_req: Some(0),
+            last_cursor: 2,
+            tab_size: 2,
+            ..Default::default()
+        };
+        run(&mut doc, &mut state, key(egui::Key::Enter, false));
+        assert!(
+            matches!(&doc.blocks[1], Block::ListItem { item, .. } if item.marker == "-"),
+            "回车后应新建同类型的无序列表项，实际 {:?}",
+            doc.blocks
+        );
+
+        // 有序列表回车：序号自动 +1。
+        let mut doc = Document::new("3. 序号", None);
+        let mut state = EditorState {
+            active: 0,
+            focus_req: Some(0),
+            last_cursor: 2,
+            tab_size: 2,
+            ..Default::default()
+        };
+        run(&mut doc, &mut state, key(egui::Key::Enter, false));
+        assert!(
+            matches!(&doc.blocks[1], Block::ListItem { item, .. } if item.marker == "4."),
+            "有序列表回车序号应 +1，实际 {:?}",
+            doc.blocks
+        );
+
+        // 任务列表回车：新项保持任务列表，但回到未勾选。
+        let mut doc = Document::new("- [x] 完成", None);
+        let mut state = EditorState {
+            active: 0,
+            focus_req: Some(0),
+            last_cursor: 2,
+            tab_size: 2,
+            ..Default::default()
+        };
+        run(&mut doc, &mut state, key(egui::Key::Enter, false));
+        assert!(
+            matches!(
+                &doc.blocks[1],
+                Block::ListItem { item, .. } if item.checked == Some(false)
+            ),
+            "任务列表回车应新建未勾选的任务项，实际 {:?}",
+            doc.blocks
         );
     }
 
@@ -2655,6 +3837,37 @@ mod tests {
             apply_prefix(&mut doc, &mut st, prefix);
             assert_eq!(doc.source(), want, "真实块级标记应被剥掉：{src}");
         }
+    }
+
+    /// 鼠标拖选多个段落后再点列表：选区覆盖的每一段都要转成列表，
+    /// 空行保持原样；有序列表按选区顺序依次编号。
+    #[test]
+    fn apply_prefix_to_cross_selection() {
+        let mut doc = Document::new("甲\n\n乙\n\n丙", None);
+        let mut st = EditorState {
+            cross_sel: Some((0, 0, 4, 1)),
+            ..Default::default()
+        };
+        apply_prefix(&mut doc, &mut st, "- ");
+        assert_eq!(doc.blocks[0].source(), "- 甲");
+        assert!(
+            matches!(doc.blocks[1], Block::Blank { .. }),
+            "空行不应变成空列表项"
+        );
+        assert_eq!(doc.blocks[2].source(), "- 乙");
+        assert_eq!(doc.blocks[4].source(), "- 丙");
+        assert!(st.cross_sel.is_none(), "转换后选区应清除");
+        assert_eq!(st.active, 0, "光标应落到第一段");
+
+        // 反向拖选同样有效，有序列表要依次编号。
+        let mut doc = Document::new("甲\n\n乙", None);
+        let mut st = EditorState {
+            cross_sel: Some((2, 0, 0, 1)),
+            ..Default::default()
+        };
+        apply_prefix(&mut doc, &mut st, "1. ");
+        assert_eq!(doc.blocks[0].source(), "1. 甲");
+        assert_eq!(doc.blocks[2].source(), "2. 乙");
     }
 
     /// 链接保持旧行为：没有选区时只在光标处插入一对空标记，不裹整行。
@@ -3320,19 +4533,102 @@ mod tests {
         );
     }
 
-    /// 行号栏宽度必须固定：不随行数位数变化（3/4/5 位都同一宽度），
-    /// 不随 show 开关以外的一切因素变化；关闭时为 0。
+    /// 行号栏宽度必须固定为 70px 常量：不随字体、行数位数、窗口或模式变化；
+    /// 关闭行号时为 0。
     #[test]
     fn gutter_width_is_fixed_across_line_counts() {
-        let theme = Theme::get(crate::theme::ThemeKind::Light);
-        let on = gutter_width(&theme, true);
-        assert!(on > 0.0);
-        // 同一函数被源码/混合模式共用，本身不含行数参数 —— 这里直接验证
-        // 它不依赖任何"行数"输入：多次调用结果恒定。
-        assert_eq!(on, gutter_width(&theme, true));
-        assert_eq!(gutter_width(&theme, false), 0.0);
+        assert_eq!(gutter_width(true), 70.0);
+        assert_eq!(gutter_width(true), GUTTER_WIDTH);
+        assert_eq!(gutter_width(false), 0.0);
         // 固定间距常量也不变
-        assert_eq!(GUTTER_PAD, 28.0);
+        assert_eq!(GUTTER_PAD, 12.0);
+    }
+
+    /// 行号栏锚定在编辑区最左侧：代码窗口从 700px 拉到 1500px（全窗口 /
+    /// 部分窗口）时，源码模式与混合模式的行号 x 坐标都必须不变，
+    /// 且数字右缘始终位于固定 70px 行号栏内（距左缘 70-12=58px）。
+    #[test]
+    fn gutter_stays_fixed_across_window_widths_and_modes() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let src = "alpha\n\nbeta\n\ngamma";
+
+        let run = |source_mode: bool, width: f32| -> Vec<(String, f32, f32, f32)> {
+            let mut images = ImageCache::new();
+            let mut actions: Vec<crate::render::Action> = Vec::new();
+            let mut doc = Document::new(src, None);
+            let mut state = EditorState::default();
+            let ctx = egui::Context::default();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 900.0),
+                )),
+                ..Default::default()
+            };
+            let mut nums: Vec<(String, f32, f32, f32)> = Vec::new();
+            let mut out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let c = ui.ctx().clone();
+                    let _ = show_editor(
+                        ui,
+                        &mut doc,
+                        &mut state,
+                        &theme,
+                        &c,
+                        &mut images,
+                        None,
+                        &[],
+                        source_mode,
+                        false,
+                        false,
+                        true,
+                        1,
+                        &mut actions,
+                    );
+                });
+            });
+            for cs in &out.shapes {
+                if let egui::Shape::Text(t) = &cs.shape {
+                    let s = t.galley.text();
+                    if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
+                        nums.push((
+                            s.to_string(),
+                            t.pos.x,
+                            t.galley.size().x,
+                            cs.clip_rect.left(),
+                        ));
+                    }
+                }
+            }
+            out.textures_delta.clear();
+            nums
+        };
+
+        for source_mode in [true, false] {
+            let narrow = run(source_mode, 700.0);
+            let wide = run(source_mode, 1500.0);
+            assert!(!narrow.is_empty(), "source_mode={source_mode} 应有行号");
+            assert_eq!(
+                narrow.len(),
+                wide.len(),
+                "source_mode={source_mode} 两种窗口宽度下行号数量应一致"
+            );
+            for (i, (text, x, _, clip_left)) in narrow.iter().enumerate() {
+                assert_eq!(text, &wide[i].0, "source_mode={source_mode} 行号顺序应一致");
+                assert!(
+                    (x - wide[i].1).abs() < 0.5,
+                    "source_mode={source_mode} 行号 {text} 的 x 随窗口宽度变化：{x} → {}",
+                    wide[i].1
+                );
+                let gutter_right = x + narrow[i].2 - clip_left;
+                assert!(
+                    (gutter_right - (GUTTER_WIDTH - GUTTER_PAD)).abs() < 0.5,
+                    "source_mode={source_mode} 行号 {text} 右缘距编辑区左缘 {gutter_right:.1}px，\
+                     应在固定 {:.0}px 行号栏内",
+                    GUTTER_WIDTH - GUTTER_PAD
+                );
+            }
+        }
     }
 
     /// 源码模式行号栏宽度恒定验证：抓取行号数字的真实绘制坐标，
@@ -3753,6 +5049,86 @@ mod tests {
         }
     }
 
+    /// 编辑态表格单元格也要按对齐设置排版：之前点「居中/右对齐」只改了源码，
+    /// 单元格 TextEdit 永远左对齐，看起来像按钮失效。
+    #[test]
+    fn table_edit_cells_follow_alignment() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut doc = Document::new("| A | B |\n| --- | --- |\n| 1 | 2 |", None);
+        let mut state = EditorState::default(); // active=0 → 表格编辑态
+        let ctx = egui::Context::default();
+        let mut run =
+            |doc: &mut Document, state: &mut EditorState| -> Vec<egui::epaint::ClippedShape> {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 600.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |root| {
+                    egui::CentralPanel::default().show(root, |ui| {
+                        let c = ui.ctx().clone();
+                        let _ = show_editor(
+                            ui,
+                            doc,
+                            state,
+                            &theme,
+                            &c,
+                            &mut images,
+                            None,
+                            &[],
+                            false,
+                            false,
+                            false,
+                            true,
+                            1,
+                            &mut actions,
+                        );
+                    });
+                });
+                out.textures_delta.clear();
+                out.shapes
+            };
+        // 单元格文字「A」的绘制 x 坐标。
+        let text_x = |shapes: &[egui::epaint::ClippedShape]| -> f32 {
+            shapes
+                .iter()
+                .find_map(|cs| match &cs.shape {
+                    egui::Shape::Text(t) if t.galley.text() == "A" => Some(t.pos.x),
+                    _ => None,
+                })
+                .expect("应渲染出单元格文字 A")
+        };
+
+        // 进入编辑态：第一帧建立表格草稿。
+        run(&mut doc, &mut state);
+        let left_x = text_x(&run(&mut doc, &mut state));
+        assert!(state.table_draft.is_some(), "表格应进入编辑态");
+
+        // 改成居中：单元格文字应明显右移。
+        if let Some((_, _, aligns)) = state.table_draft.as_mut() {
+            *aligns = vec![crate::ast::Align::Center; 2];
+        }
+        let center_x = text_x(&run(&mut doc, &mut state));
+        assert!(
+            center_x > left_x + 10.0,
+            "居中后编辑态单元格文字应右移：{left_x:.1} -> {center_x:.1}"
+        );
+
+        // 改成右对齐：继续右移。
+        if let Some((_, _, aligns)) = state.table_draft.as_mut() {
+            *aligns = vec![crate::ast::Align::Right; 2];
+        }
+        let right_x = text_x(&run(&mut doc, &mut state));
+        assert!(
+            right_x > center_x + 10.0,
+            "右对齐后编辑态单元格文字应更靠右：{center_x:.1} -> {right_x:.1}"
+        );
+    }
+
     /// 代码块编辑态与渲染态的按钮行位置必须一致：
     /// 点击进入编辑后，"复制"按钮相对盒子顶部的偏移不得变化
     /// （否则按钮看起来"跳到盒子右上方外"、整块跳动）。
@@ -4001,6 +5377,388 @@ mod tests {
         );
     }
 
+    /// 跨块拖选必须能跨过代码块/图表这类「非文本块」：
+    /// 拖到它上面时选区端点落在该块内（向下取块尾、向上取块首），
+    /// 并且整块画出选区底色，而不是像以前一样在中间断掉。
+    #[test]
+    fn drag_selection_extends_into_code_block() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let text = "alpha\n\n`code` beta\n\n```rust\nfn main() {}\n```\n\ngamma";
+        let mut doc = Document::new(text, None);
+        // alpha(0) / 空行(1) / 行内代码段(2) / 空行(3) / 代码块(4) / 空行(5) / gamma(6)
+        assert_eq!(doc.blocks.len(), 7);
+        let code_idx = 4usize;
+        let code_len = doc.blocks[code_idx].plain().chars().count();
+        let mut state = EditorState::default();
+        state.active = 2;
+        let ctx = egui::Context::default();
+        let mut frame = |events: Vec<egui::Event>,
+                         doc: &mut Document,
+                         state: &mut EditorState,
+                         actions: &mut Vec<crate::render::Action>|
+         -> Vec<egui::epaint::ClippedShape> {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let outline = doc.outline();
+            let mut out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let _ = show_editor(
+                        ui,
+                        doc,
+                        state,
+                        &theme,
+                        &ctx,
+                        &mut images,
+                        None,
+                        &outline,
+                        false,
+                        false,
+                        false,
+                        false,
+                        1,
+                        actions,
+                    );
+                });
+            });
+            out.textures_delta.clear();
+            out.shapes
+        };
+        for _ in 0..3 {
+            let _ = frame(vec![], &mut doc, &mut state, &mut actions);
+        }
+        let shapes = frame(vec![], &mut doc, &mut state, &mut actions);
+        let find = |name: &str| -> egui::Pos2 {
+            for cs in &shapes {
+                if let egui::Shape::Text(t) = &cs.shape {
+                    if t.galley.text().starts_with(name) {
+                        return t.pos;
+                    }
+                }
+            }
+            panic!("{name} 未渲染");
+        };
+        let alpha = find("alpha");
+        let code = find("fn main");
+        let gamma = find("gamma");
+        let press = |pos: egui::Pos2| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ]
+        };
+
+        // 向下拖：从 alpha 拖到代码块上，端点应落在代码块末尾。
+        let _ = frame(
+            press(alpha + egui::vec2(3.0, 8.0)),
+            &mut doc,
+            &mut state,
+            &mut actions,
+        );
+        let on_code = code + egui::vec2(60.0, 8.0);
+        let _ = frame(
+            vec![egui::Event::PointerMoved(on_code)],
+            &mut doc,
+            &mut state,
+            &mut actions,
+        );
+        let _ = frame(
+            vec![egui::Event::PointerMoved(on_code)],
+            &mut doc,
+            &mut state,
+            &mut actions,
+        );
+        let _ = frame(
+            vec![egui::Event::PointerButton {
+                pos: on_code,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            &mut doc,
+            &mut state,
+            &mut actions,
+        );
+        let sel = state.cross_sel.expect("向下拖到代码块应建立选区");
+        assert_eq!(
+            sel,
+            (0, 0, code_idx, code_len),
+            "选区终点应落在代码块末尾，实际 {sel:?}"
+        );
+
+        // 代码块被选区覆盖时，应有一层半透明选区色叠在代码内容之上。
+        let shapes = frame(vec![], &mut doc, &mut state, &mut actions);
+        let code_center = code + egui::vec2(60.0, 8.0);
+        let sel_fill = {
+            let c = theme.selection;
+            egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 110)
+        };
+        let highlighted = shapes.iter().any(|cs| match &cs.shape {
+            egui::Shape::Rect(r) => r.fill == sel_fill && r.rect.contains(code_center),
+            _ => false,
+        });
+        assert!(highlighted, "代码块应画出选区叠加层");
+
+        // 向上拖：从 gamma 拖到代码块上，起点应落在代码块开头。
+        state.cross_sel = None;
+        let _ = frame(vec![], &mut doc, &mut state, &mut actions);
+        let _ = frame(
+            press(gamma + egui::vec2(3.0, 8.0)),
+            &mut doc,
+            &mut state,
+            &mut actions,
+        );
+        let _ = frame(
+            vec![egui::Event::PointerMoved(on_code)],
+            &mut doc,
+            &mut state,
+            &mut actions,
+        );
+        let _ = frame(
+            vec![egui::Event::PointerButton {
+                pos: on_code,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            &mut doc,
+            &mut state,
+            &mut actions,
+        );
+        let sel = state.cross_sel.expect("向上拖到代码块应建立选区");
+        let (s, sc, e, _) = (sel.0.min(sel.2), sel.1, sel.0.max(sel.2), sel.3);
+        assert_eq!(
+            (s, sc, e),
+            (code_idx, 0, 6),
+            "选区起点应落在代码块开头，实际 {sel:?}"
+        );
+    }
+
+    /// 视口外的按下（工具条/菜单）不能把指针钳进视口当成点了最上面的块：
+    /// 否则拖选好正文后点「引用」，选区会被 (0, n) 的零长度选区顶掉，
+    /// 格式加到第一段（用户反馈的引用 bug）。
+    #[test]
+    fn press_outside_viewport_does_not_clobber_cross_sel() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let mut doc = Document::new("第一段\n\n第二段\n\n第三段", None);
+        let mut state = EditorState::default(); // active = 0：第一段编辑态，其余渲染态
+        let ctx = egui::Context::default();
+        let mut frame = |events: Vec<egui::Event>,
+                         doc: &mut Document,
+                         state: &mut EditorState|
+         -> Vec<egui::epaint::ClippedShape> {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let outline = doc.outline();
+            let mut out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let _ = show_editor(
+                        ui,
+                        doc,
+                        state,
+                        &theme,
+                        &ctx,
+                        &mut images,
+                        None,
+                        &outline,
+                        false,
+                        false,
+                        false,
+                        false,
+                        1,
+                        &mut actions,
+                    );
+                });
+            });
+            out.textures_delta.clear();
+            out.shapes
+        };
+        let _ = frame(vec![], &mut doc, &mut state);
+        // 已有拖选：第二段整段选中
+        state.cross_sel = Some((2, 0, 2, 3));
+        // 在视口上方（工具条位置）按下并松开
+        let outside = egui::pos2(300.0, -20.0);
+        let _ = frame(
+            vec![
+                egui::Event::PointerMoved(outside),
+                egui::Event::PointerButton {
+                    pos: outside,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+            &mut doc,
+            &mut state,
+        );
+        let _ = frame(
+            vec![egui::Event::PointerButton {
+                pos: outside,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            &mut doc,
+            &mut state,
+        );
+        assert_eq!(
+            state.cross_sel,
+            Some((2, 0, 2, 3)),
+            "工具条上的点击不应覆盖已有跨块选区"
+        );
+        // 没有选区时，视口外按下也不该凭空建立选区
+        state.cross_sel = None;
+        let _ = frame(
+            vec![
+                egui::Event::PointerMoved(outside),
+                egui::Event::PointerButton {
+                    pos: outside,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: outside,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ],
+            &mut doc,
+            &mut state,
+        );
+        assert!(
+            state.cross_sel.is_none(),
+            "视口外的点击不应建立跨块选区，实际 {:?}",
+            state.cross_sel
+        );
+    }
+
+    /// 拖到视口外要能自动滚动，并且选区跟着一直延伸到底：
+    /// 指针停住不动时系统不再送鼠标事件，必须自己请求重绘；
+    /// 越界点也要钳到视口边缘才能持续命中块。
+    #[test]
+    fn drag_beyond_viewport_autoscrolls_and_extends_selection() {
+        let theme = Theme::get(crate::theme::ThemeKind::Light);
+        let mut images = ImageCache::new();
+        let mut actions: Vec<crate::render::Action> = Vec::new();
+        let text = (0..60)
+            .map(|i| format!("段落{i}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let mut doc = Document::new(&text, None);
+        let mut state = EditorState::default();
+        state.active = 0;
+        let ctx = egui::Context::default();
+        let mut now = 0.0f64;
+        let mut frame = |events: Vec<egui::Event>,
+                         doc: &mut Document,
+                         state: &mut EditorState,
+                         actions: &mut Vec<crate::render::Action>|
+         -> Vec<egui::epaint::ClippedShape> {
+            // 故意用较矮的窗口，让视口很快被段落填满。
+            // 时间必须往前走：ScrollArea 的滚动位移按动画时间轴推进。
+            now += 1.0 / 60.0;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 300.0),
+                )),
+                time: Some(now),
+                predicted_dt: 1.0 / 60.0,
+                events,
+                ..Default::default()
+            };
+            let outline = doc.outline();
+            let mut out = ctx.run_ui(input, |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let _ = show_editor(
+                        ui,
+                        doc,
+                        state,
+                        &theme,
+                        &ctx,
+                        &mut images,
+                        None,
+                        &outline,
+                        false,
+                        false,
+                        false,
+                        false,
+                        1,
+                        actions,
+                    );
+                });
+            });
+            out.textures_delta.clear();
+            out.shapes
+        };
+        for _ in 0..3 {
+            let _ = frame(vec![], &mut doc, &mut state, &mut actions);
+        }
+        // 在第二个段落（渲染态）按下。
+        let start = egui::pos2(300.0, 62.0);
+        let _ = frame(
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+            &mut doc,
+            &mut state,
+            &mut actions,
+        );
+        // 指针甩到视口下方之外并保持按住：靠自动滚动持续延伸选区。
+        let outside = egui::pos2(300.0, 900.0);
+        let _ = frame(
+            vec![egui::Event::PointerMoved(outside)],
+            &mut doc,
+            &mut state,
+            &mut actions,
+        );
+        let early = state.cross_sel.expect("越界拖选后应仍有选区");
+        let early_end = early.0.max(early.2);
+        for _ in 0..40 {
+            let _ = frame(
+                vec![egui::Event::PointerMoved(outside)],
+                &mut doc,
+                &mut state,
+                &mut actions,
+            );
+        }
+        let sel = state.cross_sel.expect("越界拖选后应仍有选区");
+        let (start_b, end_b) = (sel.0.min(sel.2), sel.0.max(sel.2));
+        assert_eq!(start_b, 2, "锚点应保持在按下的段落，实际 {sel:?}");
+        assert!(
+            end_b > early_end + 3,
+            "选区应随自动滚动继续延伸：首帧 {early_end} → 最终 {end_b}，实际 {sel:?}"
+        );
+    }
+
     /// 双击选词 / 三击选整段 / Shift+点击 三个 Action 聚合成 cross_sel。
     #[test]
     fn mouse_selection_actions_set_cross_sel() {
@@ -4079,6 +5837,20 @@ mod tests {
         let text = cross_sel_text(&doc, Some((4, 2, 2, 1))).expect("反向选区应产生相同文本");
         assert_eq!(text, "二段\n\n第三");
         assert!(cross_sel_text(&doc, None).is_none(), "无选区无文本");
+    }
+
+    /// 代码块这类非文本块是原子的：作为选区端点时整块计入复制文本，
+    /// 不按拖选时打上的「块首/块尾」端点字符截断。
+    #[test]
+    fn cross_sel_text_includes_whole_code_block() {
+        let doc = Document::new("alpha\n\n```rust\nfn main() {}\n```\n\ngamma", None);
+        // alpha(0) / 空行(1) / 代码块(2) / 空行(3) / gamma(4)
+        let code_len = doc.blocks[2].plain().chars().count();
+        let text = cross_sel_text(&doc, Some((0, 0, 2, code_len))).expect("向下选区应有文本");
+        assert_eq!(text, "alpha\n\nfn main() {}", "向下拖到代码块应整块计入");
+        // 向上拖：终点字符是 0（块首标记），仍应整块计入。
+        let text = cross_sel_text(&doc, Some((4, 6, 2, 0))).expect("向上选区应有文本");
+        assert_eq!(text, "fn main() {}\n\ngamma", "向上拖到代码块也应整块计入");
     }
 
     /// 回归：反向（向上）拖选不能漏块。

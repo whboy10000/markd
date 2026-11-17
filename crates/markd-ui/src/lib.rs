@@ -14,6 +14,7 @@ pub mod editor;
 pub mod features;
 pub mod find;
 pub mod icons;
+pub mod image_insert;
 pub mod render;
 pub mod settings;
 pub mod sidebar;

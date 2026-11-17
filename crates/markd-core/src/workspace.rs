@@ -100,7 +100,7 @@ fn default_ui_scale() -> f32 {
     1.0
 }
 fn default_assets_dir() -> String {
-    "assets".to_string()
+    "imgs".to_string()
 }
 
 impl Default for Config {
@@ -128,7 +128,7 @@ impl Default for Config {
             recent: Vec::new(),
             ui_scale: 1.0,
             insert_image_to_assets: true,
-            image_assets_dir: "assets".to_string(),
+            image_assets_dir: "imgs".to_string(),
             image_relative: true,
             export_embed_images: true,
             export_open_after: false,

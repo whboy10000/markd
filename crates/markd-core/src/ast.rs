@@ -13,8 +13,17 @@ pub enum Inline {
     Strike(Vec<Inline>),
     Underline(Vec<Inline>),
     Code(String),
-    Link { label: Vec<Inline>, url: String },
-    Image { alt: String, url: String },
+    Link {
+        label: Vec<Inline>,
+        url: String,
+    },
+    Image {
+        alt: String,
+        url: String,
+        /// 可选显示宽度（像素）：来自图片后的 `{width=300}` 属性，
+        /// 鼠标拖动缩放时写回源码。
+        width: Option<u32>,
+    },
     Math(String),
     Wiki(String),
     Footnote(String),
@@ -69,6 +78,9 @@ pub enum Block {
         lang: String,
         code: String,
         source: String,
+        /// 引用层级：> 0 表示这段代码块写在引用内部（`> ```…`），
+        /// 渲染时左侧带引用竖线，源码里的每一行都保留 `>` 前缀。
+        quote: usize,
     },
     Table {
         head: Vec<Vec<Inline>>,
@@ -220,6 +232,27 @@ pub fn collect_wiki(inlines: &[Inline], out: &mut Vec<String>) {
 
 // ---------------------------------------------------------------- 行内解析
 
+/// 解析图片后面的可选属性块 `{width=300}`（也接受 `{ width=300 }`）。
+/// 其它属性忽略但整块吃掉，避免属性泄漏成正文。
+fn image_width_attr(c: &[char], i: usize) -> (Option<u32>, usize) {
+    if c.get(i) != Some(&'{') {
+        return (None, i);
+    }
+    let Some(close) = find_seq(c, i + 1, &['}']) else {
+        return (None, i);
+    };
+    let inner: String = c[i + 1..close].iter().collect();
+    let mut width = None;
+    for part in inner.split([' ', ',']) {
+        if let Some(v) = part.strip_prefix("width=") {
+            if let Ok(n) = v.trim().trim_end_matches("px").parse::<u32>() {
+                width = Some(n.clamp(16, 8000));
+            }
+        }
+    }
+    (width, close + 1)
+}
+
 fn find_seq(c: &[char], from: usize, pat: &[char]) -> Option<usize> {
     if pat.is_empty() {
         return Some(from);
@@ -301,7 +334,9 @@ pub fn parse_inline(s: &str) -> Vec<Inline> {
         if ch == '!' && i + 1 < c.len() && c[i + 1] == '[' {
             if let Some((alt, url, end)) = parse_link(&c, i + 1) {
                 flush!();
-                out.push(Inline::Image { alt, url });
+                // 图片后可跟 `{width=300}` 属性（拖动缩放写回），解析后保留。
+                let (width, end) = image_width_attr(&c, end);
+                out.push(Inline::Image { alt, url, width });
                 i = end;
                 continue;
             }
@@ -447,6 +482,27 @@ fn is_rule(line: &str) -> bool {
             || t.chars().all(|c| c == '_'))
 }
 
+/// 拆掉行首连续的 `>` 与紧随的空格，返回 (引用层级, 去掉前缀的正文)。
+fn quote_level(line: &str) -> Option<(usize, &str)> {
+    let t = line.trim_end();
+    let rest = t.trim_start_matches('>');
+    let level = t.len() - rest.len();
+    if level == 0 {
+        return None;
+    }
+    Some((level, rest.trim_start_matches(' ')))
+}
+
+/// 引用里的围栏代码块起始行：`> ```lang` / `>> ~~~`。
+fn quote_fence(line: &str) -> Option<(usize, &str)> {
+    let (level, body) = quote_level(line)?;
+    if body.starts_with("```") || body.starts_with("~~~") {
+        Some((level, body))
+    } else {
+        None
+    }
+}
+
 fn footnote_def(line: &str) -> Option<(&str, &str)> {
     if !line.starts_with("[^") {
         return None;
@@ -583,6 +639,47 @@ pub fn parse(src: &str) -> Vec<Block> {
             continue;
         }
 
+        // 引用里的围栏代码块：`> ```lang` … `> ````
+        // 必须排在普通围栏和引用段落之前，否则会被当成一行带反引号的引用文字。
+        if let Some((qlevel, body)) = quote_fence(t) {
+            let fence3 = &body[..3];
+            let info = body[3..].trim().to_string();
+            let p = ">".repeat(qlevel);
+            let mut raw: Vec<String> = Vec::new();
+            let mut parts = vec![line.to_string()];
+            let mut j = i + 1;
+            let mut closed = false;
+            while j < lines.len() {
+                let Some((lv, text)) = quote_level(lines[j]) else {
+                    break;
+                };
+                if lv != qlevel {
+                    break;
+                }
+                if text.trim_start().starts_with(fence3) {
+                    parts.push(lines[j].to_string());
+                    j += 1;
+                    closed = true;
+                    break;
+                }
+                raw.push(text.to_string());
+                parts.push(lines[j].to_string());
+                j += 1;
+            }
+            if !closed {
+                // 未闭合时按引用结束处收尾：补一行闭合围栏，写回仍是合法代码块。
+                parts.push(format!("{p} {fence3}"));
+            }
+            out.push(Block::Code {
+                lang: info,
+                code: raw.join("\n"),
+                source: parts.join("\n"),
+                quote: qlevel,
+            });
+            i = j;
+            continue;
+        }
+
         // 围栏代码块 / 图表 / 数学块
         if t.starts_with("```") || t.starts_with("~~~") {
             let fence3 = &t[..3];
@@ -634,6 +731,7 @@ pub fn parse(src: &str) -> Vec<Block> {
                     lang: info,
                     code,
                     source,
+                    quote: 0,
                 }
             };
             out.push(block);
@@ -866,6 +964,37 @@ mod tests {
         assert!(v.iter().any(|i| matches!(i, Inline::Link { .. })));
     }
 
+    /// 图片宽度属性 `{width=300}`：解析出宽度（拖动缩放写回就靠它）。
+    #[test]
+    fn image_width_attr() {
+        let v = parse_inline("![a](imgs/a.png){width=300}");
+        assert!(
+            matches!(
+                &v[0],
+                Inline::Image {
+                    width: Some(300),
+                    ..
+                }
+            ),
+            "{v:?}"
+        );
+        let v = parse_inline("![a](imgs/a.png){ width=240 }");
+        assert!(
+            matches!(
+                &v[0],
+                Inline::Image {
+                    width: Some(240),
+                    ..
+                }
+            ),
+            "{v:?}"
+        );
+        // 没有属性时保持 None，图片后面的普通文字不受影响。
+        let v = parse_inline("![a](imgs/a.png) 后面 {正常文字}");
+        assert!(matches!(&v[0], Inline::Image { width: None, .. }), "{v:?}");
+        assert!(v.iter().any(|i| matches!(i, Inline::Text(_))));
+    }
+
     #[test]
     fn list_task_and_table() {
         let b = parse("- [x] 完成\n- [ ] 待办\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n");
@@ -896,6 +1025,48 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    /// 引用里的围栏代码块：`> ```lang` 起、`> ``` ` 止，正文去掉引用前缀，
+    /// 源码保留每行的 `>` 前缀，写回后仍是引用内的代码块。
+    #[test]
+    fn quoted_fenced_code() {
+        let src = "> 前言\n> ```rust\n> fn main() {}\n> \n> println!(\"hi\");\n> ```\n> 后记\n";
+        let b = parse(src);
+        let code = b
+            .iter()
+            .find_map(|x| match x {
+                Block::Code {
+                    lang, code, quote, ..
+                } => Some((lang.clone(), code.clone(), *quote)),
+                _ => None,
+            })
+            .expect("应解析出引用内的代码块");
+        assert_eq!(code.0, "rust");
+        assert_eq!(code.1, "fn main() {}\n\nprintln!(\"hi\");");
+        assert_eq!(code.2, 1, "引用层级应为 1");
+        // 代码块前后的引用段落仍然存在，代码块没有被拆成多行引用文字。
+        assert_eq!(
+            b.iter()
+                .filter(|x| matches!(x, Block::Quote { .. }))
+                .count(),
+            2
+        );
+        let block_src = b
+            .iter()
+            .find(|x| matches!(x, Block::Code { .. }))
+            .unwrap()
+            .source()
+            .to_string();
+        assert_eq!(
+            block_src,
+            "> ```rust\n> fn main() {}\n> \n> println!(\"hi\");\n> ```"
+        );
+        // 源码写回（文档 source 由各块 source 用 \n 连接）能往返。
+        assert_eq!(
+            b.iter().map(|x| x.source()).collect::<Vec<_>>().join("\n"),
+            src
+        );
     }
 
     #[test]

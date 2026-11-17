@@ -51,6 +51,45 @@ fn write_dirty_tabs(tabs: &mut [Tab], paths: &[Option<PathBuf>]) -> std::io::Res
     Ok(written)
 }
 
+/// 拖动缩放后重建「纯图片段落」的源码：第 `no` 张图片写入 `{width=N}`，
+/// 其余图片保留原有属性。不是纯图片段落时返回 None。
+fn resize_image_source(doc: &Document, block: usize, no: usize, width: u32) -> Option<String> {
+    let crate::ast::Block::Paragraph { content, .. } = doc.blocks.get(block)? else {
+        return None;
+    };
+    let imgs: Vec<(&String, &String, Option<u32>)> = content
+        .iter()
+        .filter_map(|i| match i {
+            crate::ast::Inline::Image { alt, url, width } => Some((alt, url, *width)),
+            _ => None,
+        })
+        .collect();
+    // 只重建「纯图片段落」：混着正文的段落重建会把文字弄丢。
+    let only_images = !imgs.is_empty()
+        && content.iter().all(|i| {
+            matches!(
+                i,
+                crate::ast::Inline::Image { .. } | crate::ast::Inline::Break
+            )
+        });
+    if !only_images || no >= imgs.len() {
+        return None;
+    }
+    Some(
+        imgs.iter()
+            .enumerate()
+            .map(|(k, (alt, url, w))| {
+                let w = if k == no { Some(width) } else { *w };
+                match w {
+                    Some(w) => format!("![{alt}]({url}){{width={w}}}"),
+                    None => format!("![{alt}]({url})"),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
 /// 关闭请求是否需要先弹「有未保存的修改」确认框：
 /// 用户已经选过「不保存」（force_quit）时直接放行。
 fn needs_exit_confirm(force_quit: bool, close_requested: bool, unsaved: usize) -> bool {
@@ -838,6 +877,47 @@ impl MarkdApp {
         self.stats.tick(self.stats_cache.words);
     }
 
+    /// 插入磁盘上的图片：按设置复制到文档旁的资源目录（默认 imgs/），
+    /// 再在光标所在块之后插入 Markdown 图片链接。
+    fn insert_image_path(&mut self, src: &Path) {
+        let (copy, assets, relative) = (
+            self.config.insert_image_to_assets,
+            self.config.image_assets_dir.clone(),
+            self.config.image_relative,
+        );
+        match crate::image_insert::from_file(src, self.doc.path.as_deref(), copy, &assets, relative)
+        {
+            Ok(md) => {
+                editor::insert_image(&mut self.doc, &mut self.editor, &md);
+                self.on_changed();
+                self.status = format!("已插入图片：{}", src.display());
+            }
+            Err(e) => self.status = format!("插入图片失败：{e}"),
+        }
+    }
+
+    /// 插入剪贴板图片：保存为 PNG 到文档旁的资源目录，再插入 Markdown 链接。
+    fn insert_clipboard_image(&mut self, img: &egui::ColorImage) {
+        let (assets, relative) = (
+            self.config.image_assets_dir.clone(),
+            self.config.image_relative,
+        );
+        match crate::image_insert::from_clipboard(
+            img.size,
+            &img.pixels,
+            self.doc.path.as_deref(),
+            &assets,
+            relative,
+        ) {
+            Ok(md) => {
+                editor::insert_image(&mut self.doc, &mut self.editor, &md);
+                self.on_changed();
+                self.status = "已插入剪贴板图片".to_string();
+            }
+            Err(e) => self.status = format!("插入剪贴板图片失败：{e}"),
+        }
+    }
+
     fn refresh_tree(&mut self) {
         if let Some(r) = &self.root {
             self.tree = workspace::scan_tree(r, &self.expanded);
@@ -1582,7 +1662,18 @@ impl MarkdApp {
             Command::Code => editor::wrap(&mut self.doc, &mut self.editor, "`", "`", true),
             Command::Link => self.open_link_dialog(),
             Command::Image => {
-                editor::insert_template(&mut self.doc, &mut self.editor, "![](./image.png)")
+                // 从磁盘选图片：按设置复制到文档旁的资源目录（默认 imgs/），
+                // 文档里写相对路径；未保存的文档回退到当前工作目录。
+                let base = crate::image_insert::doc_dir(self.doc.path.as_deref());
+                let mut dialog = rfd::FileDialog::new()
+                    .set_title("插入图片")
+                    .add_filter("图片", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
+                if base.is_dir() {
+                    dialog = dialog.set_directory(&base);
+                }
+                if let Some(p) = dialog.pick_file() {
+                    self.insert_image_path(&p);
+                }
             }
             Command::ClearFormat => {
                 // 与工具条橡皮擦同一动作：当前块去掉块级/行内标记变回普通段落。
@@ -1594,9 +1685,7 @@ impl MarkdApp {
                 }
             }
             Command::Quote => editor::apply_prefix(&mut self.doc, &mut self.editor, "> "),
-            Command::CodeBlock => {
-                editor::insert_template(&mut self.doc, &mut self.editor, "```\n\n```")
-            }
+            Command::CodeBlock => editor::insert_code_block(&mut self.doc, &mut self.editor),
             Command::Bullet => editor::apply_prefix(&mut self.doc, &mut self.editor, "- "),
             Command::Ordered => editor::apply_prefix(&mut self.doc, &mut self.editor, "1. "),
             // 任务列表：把当前块/选中文字转成任务项（保留正文、不新增块），
@@ -1676,6 +1765,43 @@ impl MarkdApp {
             self.terminal.has_focus()
         );
 
+        // ---- 剪贴板图片 ----
+        // Cmd/Ctrl+V 时若剪贴板里只有图片（截图、从画图/Finder 复制的图片），
+        // egui-winit 发的是 `Event::PasteImage` 而不是 `Paste(文本)`，
+        // 这里把它落盘到文档旁的资源目录并插入 Markdown 图片链接。
+        if !self.terminal.has_focus() {
+            let pasted = ctx.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::PasteImage(img) => Some(img.clone()),
+                    _ => None,
+                })
+            });
+            if let Some(img) = pasted {
+                self.insert_clipboard_image(&img);
+                return;
+            }
+        }
+
+        // ---- 跨块选区的复制 / 剪切 ----
+        // egui-winit 会把 Cmd/Ctrl+C、Cmd/Ctrl+X 直接转成虚拟事件
+        // `Event::Copy` / `Event::Cut`，不再产生 Key 事件——只按 Key 判断
+        // 永远收不到（这正是之前拖选后复制/剪切没反应的原因）。
+        // 终端有焦点时让给终端（它有自己的一套复制粘贴）。
+        if !self.terminal.has_focus() {
+            let (copy, cut) = ctx.input(|i| {
+                (
+                    i.events.iter().any(|e| matches!(e, egui::Event::Copy)),
+                    i.events.iter().any(|e| matches!(e, egui::Event::Cut)),
+                )
+            });
+            if copy && self.copy_cross_sel(ctx) {
+                return;
+            }
+            if cut && self.cut_cross_sel(ctx) {
+                return;
+            }
+        }
+
         // ---- 无修饰键：Typora 的 F8 专注 / F9 打字机 / F1 快捷键速查 ----
         if key(egui::Key::F8) {
             self.execute(Command::ToggleFocus, ctx);
@@ -1698,6 +1824,16 @@ impl MarkdApp {
         if mac && ctrl && !shift && key(egui::Key::S) {
             self.execute(Command::Save, ctx);
             return;
+        }
+        // Ctrl+C / Ctrl+X 也认（与 Ctrl+S 同理）。终端有焦点时不抢：
+        // Ctrl+C 在终端里是「中断正在运行的程序」，抢走会打断命令。
+        if mac && ctrl && !shift && !alt && !self.terminal.has_focus() {
+            if key(egui::Key::C) && self.copy_cross_sel(ctx) {
+                return;
+            }
+            if key(egui::Key::X) && self.cut_cross_sel(ctx) {
+                return;
+            }
         }
         // 文档内查找 / 替换：Ctrl+F、Ctrl+H（macOS 上 Cmd+H 是系统「隐藏」，只能用 Ctrl+H）。
         if mac && ctrl && !shift && !alt && key(egui::Key::F) {
@@ -1760,9 +1896,12 @@ impl MarkdApp {
         if key(egui::Key::C) && cmd {
             // 跨块选区（渲染态拖选）的复制：无编辑态焦点，不会与 TextEdit 冲突。
             // 没有跨块选区时不拦截，单块选区交给 TextEdit 原生复制。
-            if let Some(text) = editor::cross_sel_text(&self.doc, self.editor.cross_sel) {
-                ctx.copy_text(text);
-                self.notify(ctx, "已复制".to_string());
+            if self.copy_cross_sel(ctx) {
+                return;
+            }
+        } else if key(egui::Key::X) && cmd {
+            // 剪切跨块选区：复制到剪贴板后删除选中内容。
+            if self.cut_cross_sel(ctx) {
                 return;
             }
         } else if key(egui::Key::S) && shift {
@@ -2009,29 +2148,45 @@ impl MarkdApp {
             {
                 chosen = Some(Command::Strike);
             }
-            // 三种列表从「插入」下拉里移出来，方便高频使用
-            for (label, cmd) in [
-                ("列表", Command::Bullet),
-                ("编号", Command::Ordered),
-                ("任务", Command::Task),
-            ] {
-                if ui
-                    .button(label)
-                    .on_hover_cursor(egui::CursorIcon::Default)
-                    .clicked()
-                {
-                    chosen = Some(cmd);
+            // 三种列表收进一个下拉，节省工具条空间。
+            ui.menu_button("列表", |ui| {
+                for (label, cmd) in [
+                    ("无序列表", Command::Bullet),
+                    ("有序列表", Command::Ordered),
+                    ("任务列表", Command::Task),
+                ] {
+                    if ui.button(label).clicked() {
+                        chosen = Some(cmd);
+                        ui.close();
+                    }
                 }
+            });
+            // 引用从「插入」下拉里提出来，高频使用，放在「插入」左侧。
+            if ui
+                .button("引用")
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .on_hover_text("引用块 (Cmd/Ctrl+Option+Q)")
+                .clicked()
+            {
+                chosen = Some(Command::Quote);
             }
-            // 插入类动作收进一个下拉：图片、表格、代码、引用、链接、分隔线、公式、图表…
+            // 图片从「插入」下拉里提出来：高频使用，放在「插入」左侧。
+            // 点它从磁盘选图；Cmd/Ctrl+V 则直接插入剪贴板里的图片。
+            if ui
+                .button("图片")
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .on_hover_text("插入图片（也可 Cmd/Ctrl+V 粘贴剪贴板图片）")
+                .clicked()
+            {
+                chosen = Some(Command::Image);
+            }
+            // 插入类动作收进一个下拉：表格、代码、链接、分隔线、公式、图表…
             // 全塞在工具条上会挤成一排小按钮，下拉更好找。
             ui.menu_button("插入", |ui| {
                 for (label, cmd) in [
-                    ("图片", Command::Image),
                     ("表格", Command::Table),
                     ("代码块", Command::CodeBlock),
                     ("行内代码", Command::Code),
-                    ("引用", Command::Quote),
                     ("超链接", Command::Link),
                     ("分隔线", Command::Rule),
                     ("行内公式", Command::InlineMath),
@@ -3234,6 +3389,29 @@ impl MarkdApp {
         }
     }
 
+    /// 复制渲染态拖选出的跨块选区；没有选区时返回 false（交给 TextEdit 原生复制）。
+    fn copy_cross_sel(&mut self, ctx: &egui::Context) -> bool {
+        let Some(text) = editor::cross_sel_text(&self.doc, self.editor.cross_sel) else {
+            return false;
+        };
+        ctx.copy_text(text);
+        self.notify(ctx, "已复制".to_string());
+        true
+    }
+
+    /// 剪切跨块选区：先复制到剪贴板，再删除选中的内容。
+    /// 没有选区时返回 false（交给 TextEdit 原生剪切）。
+    fn cut_cross_sel(&mut self, ctx: &egui::Context) -> bool {
+        let Some(text) = editor::cut_cross_sel(&mut self.doc, &mut self.editor) else {
+            return false;
+        };
+        ctx.copy_text(text);
+        self.notify(ctx, "已剪切".to_string());
+        self.on_changed();
+        ctx.request_repaint();
+        true
+    }
+
     /// 更新状态栏文字并弹出轻提示（底部居中浮层，自动淡出），同时播放一声轻音效。
     fn notify(&mut self, ctx: &egui::Context, msg: String) {
         self.status = msg.clone();
@@ -3606,13 +3784,33 @@ impl eframe::App for MarkdApp {
                 }
                 Action::SetLang(i, lang) => {
                     let rebuilt = match self.doc.blocks.get(i) {
-                        Some(crate::ast::Block::Code { code, source, .. }) => {
-                            let fence = if source.starts_with("~~~") {
-                                "~~~"
+                        Some(crate::ast::Block::Code {
+                            code,
+                            source,
+                            quote,
+                            ..
+                        }) => {
+                            let fence = if source.contains("~~~") { "~~~" } else { "```" };
+                            if *quote == 0 {
+                                Some(format!("{}{}\n{}\n{}", fence, lang, code, fence))
                             } else {
-                                "```"
-                            };
-                            Some(format!("{}{}\n{}\n{}", fence, lang, code, fence))
+                                // 引用内的代码块：换语言时保留每行的 `>` 前缀。
+                                let p = ">".repeat(*quote);
+                                let body: Vec<String> = code
+                                    .split('\n')
+                                    .map(|l| {
+                                        if l.is_empty() {
+                                            p.clone()
+                                        } else {
+                                            format!("{p} {l}")
+                                        }
+                                    })
+                                    .collect();
+                                Some(format!(
+                                    "{p} {fence}{lang}\n{}\n{p} {fence}",
+                                    body.join("\n")
+                                ))
+                            }
                         }
                         // 图表块：选 mermaid 保持不变，选其它语言即转为普通代码块
                         Some(crate::ast::Block::Diagram { code, .. }) => {
@@ -3636,6 +3834,14 @@ impl eframe::App for MarkdApp {
                                 lang.as_str()
                             }
                         );
+                    }
+                }
+                Action::ResizeImage(bi, no, width) => {
+                    // 拖动图片右下角缩放：把新宽度写成 `{width=N}` 属性。
+                    // 拖动过程中每帧都会来，所以不记撤销栈（否则一次拖动几十步）。
+                    if let Some(src) = resize_image_source(&self.doc, bi, no, width) {
+                        self.doc.edit_block(bi, &src);
+                        self.on_changed();
                     }
                 }
             }
@@ -3701,6 +3907,24 @@ impl eframe::App for MarkdApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 拖动缩放：只给目标图片写入 `{width=N}`，其余图片属性不动；
+    /// 混着正文的段落不处理（重建会把文字弄丢）。
+    #[test]
+    fn resize_image_source_rewrites_width_attr() {
+        let doc = Document::new("![a](imgs/a.png)\n![b](imgs/b.png){width=120}", None);
+        let src = resize_image_source(&doc, 0, 1, 300).expect("纯图片段落应可重建");
+        assert_eq!(src, "![a](imgs/a.png)\n![b](imgs/b.png){width=300}");
+        assert!(
+            resize_image_source(&doc, 0, 9, 300).is_none(),
+            "序号越界不处理"
+        );
+        let mixed = Document::new("文字 ![a](a.png)", None);
+        assert!(
+            resize_image_source(&mixed, 0, 0, 300).is_none(),
+            "混着正文的段落不应重建源码"
+        );
+    }
 
     /// 加粗按钮：源码用标准 Markdown 的 ** 标记（即时渲染态由 inline_job
     /// 隐藏标记、显示粗体），不再写 <strong>。
@@ -3821,7 +4045,8 @@ mod tests {
     #[test]
     fn inline_job_renders_stars_as_bold() {
         let theme = Theme::get(crate::theme::ThemeKind::Light);
-        let job = crate::render::inline_job("**粗体**", &theme, 16.0, theme.text, 400.0, None);
+        let job =
+            crate::render::inline_job("**粗体**", &theme, 16.0, theme.text, 400.0, None, None);
         assert!(
             job.sections.iter().any(|sec| {
                 matches!(&sec.format.font_id.family, egui::FontFamily::Name(n) if n.as_ref() == "markd-bold")
@@ -4187,23 +4412,9 @@ mod tests {
         let (lo, hi) = (sel.0.min(sel.2), sel.0.max(sel.2));
         assert_eq!((lo, hi), (2, 4), "选区应覆盖第二段到第三段，实际 {sel:?}");
 
-        // Cmd+C：剪贴板应收到两段文本
-        let cmd_c = egui::Event::Key {
-            key: egui::Key::C,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers {
-                command: true,
-                ..Default::default()
-            },
-        };
-        let mods_cmd = egui::Event::ModifiersChanged(egui::Modifiers {
-            command: true,
-            mac_cmd: true,
-            ..Default::default()
-        });
-        let (_, copied) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![mods_cmd, cmd_c]);
+        // Cmd+C：egui-winit 会把它转成 Event::Copy（不产生 Key 事件），
+        // 剪贴板应收到两段文本。
+        let (_, copied) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![egui::Event::Copy]);
         assert_eq!(copied, "第二段\n\n第三段", "Cmd+C 应把跨块选区复制进剪贴板");
 
         // 退格：删除选区（跨块合并）
@@ -4248,6 +4459,33 @@ mod tests {
             "第一段\n\n第二段\n\n第三段",
             "Cmd+Z 应恢复被删除的两段"
         );
+    }
+
+    /// Cmd+X：跨块选区应先复制进剪贴板，再从文档里删除。
+    #[test]
+    fn cross_block_cut_shortcut_copies_and_deletes() {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        let mut frame = eframe::Frame::_new_kittest();
+        app.doc = Document::new("第一段\n\n第二段\n\n第三段", None);
+        app.home = false;
+        app.editor.active = 0;
+        for _ in 0..3 {
+            run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+        }
+        // 直接给一个跨块选区：第二段(2) 到第三段(4) 全选。
+        app.editor.cross_sel = Some((2, 0, 4, 3));
+
+        // egui-winit 把 Cmd+X 转成 Event::Cut（不产生 Key 事件）。
+        let (_, copied) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![egui::Event::Cut]);
+        assert_eq!(copied, "第二段\n\n第三段", "Cmd+X 应把跨块选区复制进剪贴板");
+        assert!(app.editor.cross_sel.is_none(), "剪切后选区应清除");
+        let src = app.doc.source();
+        assert!(
+            !src.contains("第二段") && !src.contains("第三段"),
+            "Cmd+X 应删除选中的两段，实际 {src:?}"
+        );
+        assert!(src.contains("第一段"), "未选中的第一段必须保留：{src:?}");
     }
 
     /// 真实 app 完整帧路径：新建文档后点编辑区空白，光标必须一直在第一行。

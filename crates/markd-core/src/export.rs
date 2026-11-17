@@ -42,9 +42,11 @@ fn inline_html(v: &[Inline]) -> String {
                     inline_html(label)
                 ));
             }
-            Inline::Image { alt, url } => {
+            Inline::Image { alt, url, width } => {
+                // 拖动缩放写回的宽度导出成 HTML 的 width 属性。
+                let w = width.map(|w| format!(" width=\"{w}\"")).unwrap_or_default();
                 s.push_str(&format!(
-                    "<img src=\"{}\" alt=\"{}\" />",
+                    "<img src=\"{}\" alt=\"{}\"{w} />",
                     esc(url),
                     esc(alt)
                 ));
