@@ -440,6 +440,22 @@ fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
     }
 }
 
+/// 取一段已渲染文字的可见中心，作为鼠标点击落点。
+///
+/// 不能用「文字左上角 t.pos + 固定偏移」：macOS 加载阿里巴巴普惠体、CI Linux
+/// 回退到默认字体，两者字形度量不同，固定 y 偏移在 Linux 上会落到块间空隙，
+/// 被判成「点空白」而把 active 设成最后一块（代码组），导致「点段落退出编辑态」
+/// 失效。`galley.rect` 的 top 恒为 0、左对齐时 left 也为 0，其中心即文字可见中心，
+/// 跨平台都落在 label 的交互矩形内。
+fn text_center(shapes: &[egui::epaint::ClippedShape], name: &str) -> Option<egui::Pos2> {
+    shapes.iter().find_map(|cs| match &cs.shape {
+        egui::Shape::Text(t) if t.galley.text() == name => {
+            Some(t.pos + t.galley.rect.center().to_vec2())
+        }
+        _ => None,
+    })
+}
+
 /// 手动链路验证：拖选跨块 → Cmd+C 复制剪贴板 → 退格合并 → Cmd+Z 撤销。
 #[test]
 fn cross_block_manual_flow() {
@@ -1322,8 +1338,7 @@ fn rendered_code_group_tab_switches_displayed_language() {
 
     // 点回上面的段落，让代码组进入渲染态。
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
-    let para = find(&shapes, "段落").expect("段落");
-    let para = para + egui::vec2(3.0, 5.0);
+    let para = text_center(&shapes, "段落").expect("段落");
     for ev in [
         vec![egui::Event::PointerMoved(para)],
         vec![pointer_button(para, true)],
@@ -1490,8 +1505,7 @@ fn code_group_language_combo_changes_active_tab() {
         })
     };
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
-    let para = find(&shapes, "段落").expect("段落");
-    let para = para + egui::vec2(3.0, 5.0);
+    let para = text_center(&shapes, "段落").expect("段落");
     for ev in [
         vec![egui::Event::PointerMoved(para)],
         vec![pointer_button(para, true)],
@@ -1656,8 +1670,7 @@ fn code_group_add_and_remove_tabs() {
 
     // 3) 渲染态点「+」：新增后直接进入编辑。
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
-    let para = find_full(&shapes, "段落").expect("段落");
-    let para = para + egui::vec2(3.0, 5.0);
+    let para = text_center(&shapes, "段落").expect("段落");
     for ev in [
         vec![egui::Event::PointerMoved(para)],
         vec![pointer_button(para, true)],
