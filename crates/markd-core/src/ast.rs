@@ -54,6 +54,25 @@ pub enum DiagramKind {
     Gantt,
 }
 
+/// 代码组里的一个语言标签：语言名 + 该标签下的代码。
+///
+/// 源码用四反引号的外层围栏表示：
+/// ````text
+/// ````code-group
+/// ```java
+/// ...
+/// ```
+/// ```python
+/// ...
+/// ```
+/// ````
+/// ````
+#[derive(Clone, Debug, PartialEq)]
+pub struct CodeGroupItem {
+    pub lang: String,
+    pub code: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Block {
     Heading {
@@ -81,6 +100,11 @@ pub enum Block {
         /// 引用层级：> 0 表示这段代码块写在引用内部（`> ```…`），
         /// 渲染时左侧带引用竖线，源码里的每一行都保留 `>` 前缀。
         quote: usize,
+    },
+    /// 代码组：同一个代码区用 Tab 切换多种语言（如 Java / Python）。
+    CodeGroup {
+        items: Vec<CodeGroupItem>,
+        source: String,
     },
     Table {
         head: Vec<Vec<Inline>>,
@@ -125,6 +149,7 @@ impl Block {
             | Block::Quote { source, .. }
             | Block::ListItem { source, .. }
             | Block::Code { source, .. }
+            | Block::CodeGroup { source, .. }
             | Block::Table { source, .. }
             | Block::Rule { source }
             | Block::Math { source, .. }
@@ -143,6 +168,7 @@ impl Block {
             | Block::Quote { source, .. }
             | Block::ListItem { source, .. }
             | Block::Code { source, .. }
+            | Block::CodeGroup { source, .. }
             | Block::Table { source, .. }
             | Block::Rule { source }
             | Block::Math { source, .. }
@@ -159,6 +185,7 @@ impl Block {
         matches!(
             self,
             Block::Code { .. }
+                | Block::CodeGroup { .. }
                 | Block::Table { .. }
                 | Block::Diagram { .. }
                 | Block::Math { .. }
@@ -181,6 +208,11 @@ impl Block {
             | Block::Footnote { content, .. } => inline_plain(content),
             Block::ListItem { item, .. } => inline_plain(&item.content),
             Block::Code { code, .. } | Block::Diagram { code, .. } => code.clone(),
+            Block::CodeGroup { items, .. } => items
+                .iter()
+                .map(|i| i.code.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n"),
             Block::Math { tex, .. } => tex.clone(),
             Block::Table { head, rows, .. } => {
                 let mut parts: Vec<String> = head.iter().map(|c| inline_plain(c)).collect();
@@ -571,6 +603,71 @@ fn split_cells(line: &str) -> Vec<String> {
     t.split('|').map(|c| c.trim().to_string()).collect()
 }
 
+/// 代码组外层围栏：4 个及以上反引号 + `code-group`。
+fn code_group_open(t: &str) -> Option<usize> {
+    let n = t.chars().take_while(|c| *c == '`').count();
+    if n < 4 {
+        return None;
+    }
+    let info = t[n..].trim();
+    (info.eq_ignore_ascii_case("code-group") || info.eq_ignore_ascii_case("codegroup")).then_some(n)
+}
+
+/// 纯围栏闭合行：反引号数量 >= n，后面没有 info 文字。
+fn is_fence_close(line: &str, n: usize) -> bool {
+    let t = line.trim();
+    let m = t.chars().take_while(|c| *c == '`').count();
+    m >= n && t[m..].trim().is_empty()
+}
+
+/// 解析代码组内部的 ```lang 段落；每个段落是一组「打开围栏 → 代码 → 关闭围栏」。
+fn parse_code_group_items(body: &[String]) -> Vec<CodeGroupItem> {
+    let mut items = Vec::new();
+    let mut i = 0usize;
+    while i < body.len() {
+        let line = body[i].trim_start();
+        let n = line.chars().take_while(|c| *c == '`').count();
+        if n < 3 {
+            i += 1;
+            continue;
+        }
+        let lang = line[n..].trim().to_string();
+        let mut code: Vec<String> = Vec::new();
+        let mut j = i + 1;
+        while j < body.len()
+            && body[j]
+                .trim_start()
+                .chars()
+                .take_while(|c| *c == '`')
+                .count()
+                < 3
+        {
+            code.push(body[j].clone());
+            j += 1;
+        }
+        items.push(CodeGroupItem {
+            lang,
+            code: code.join("\n"),
+        });
+        i = if j < body.len() { j + 1 } else { j };
+    }
+    items
+}
+
+/// 由标签列表生成规范化的代码组源码（编辑器写回、插入模板共用）。
+pub fn code_group_source(items: &[CodeGroupItem]) -> String {
+    let mut out = String::from("````code-group\n");
+    for it in items {
+        out.push_str("```");
+        out.push_str(&it.lang);
+        out.push('\n');
+        out.push_str(&it.code);
+        out.push_str("\n```\n");
+    }
+    out.push_str("````");
+    out
+}
+
 fn is_table_start(lines: &[&str], i: usize) -> bool {
     if i + 1 >= lines.len() || !lines[i].contains('|') {
         return false;
@@ -675,6 +772,45 @@ pub fn parse(src: &str) -> Vec<Block> {
                 code: raw.join("\n"),
                 source: parts.join("\n"),
                 quote: qlevel,
+            });
+            i = j;
+            continue;
+        }
+
+        // 代码组：````code-group 外层围栏，内部是多个 ```lang 代码块。
+        // 必须排在普通围栏之前：普通围栏会把 4 个反引号当成「以 3 个反引号开头」。
+        if let Some(n) = code_group_open(t) {
+            let fence = "`".repeat(n);
+            let mut body: Vec<String> = Vec::new();
+            let mut j = i + 1;
+            let mut closed = false;
+            while j < lines.len() {
+                if is_fence_close(lines[j], n) {
+                    closed = true;
+                    j += 1;
+                    break;
+                }
+                body.push(lines[j].to_string());
+                j += 1;
+            }
+            let mut parts = vec![line.to_string()];
+            parts.extend(body.iter().cloned());
+            if closed {
+                parts.push(lines[j - 1].to_string());
+            } else {
+                // 未闭合：补一行闭合围栏，写回仍是合法代码组。
+                parts.push(fence);
+            }
+            let mut items = parse_code_group_items(&body);
+            if items.is_empty() {
+                items.push(CodeGroupItem {
+                    lang: String::new(),
+                    code: body.join("\n"),
+                });
+            }
+            out.push(Block::CodeGroup {
+                items,
+                source: parts.join("\n"),
             });
             i = j;
             continue;
@@ -1115,5 +1251,52 @@ mod tests {
                 _ => None,
             });
         assert_eq!(no_lang, Some("alpha\nbeta".to_string()));
+    }
+
+    /// 代码组：外层 4 个反引号，内部按 ```lang 分段；源码与标签列表无损往返。
+    #[test]
+    fn code_group_parses_languages_and_roundtrips() {
+        let src = r#####"````code-group
+```java
+int a = 1;
+```
+```python
+a = 1
+```
+````"#####;
+        let blocks = parse(src);
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        match &blocks[0] {
+            Block::CodeGroup { items, source } => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].lang, "java");
+                assert_eq!(items[0].code, "int a = 1;");
+                assert_eq!(items[1].lang, "python");
+                assert_eq!(items[1].code, "a = 1");
+                assert_eq!(source, src, "源码应原样保留");
+                assert_eq!(code_group_source(items), src, "规范化源码应无损往返");
+            }
+            other => panic!("应解析为代码组: {other:?}"),
+        }
+    }
+
+    /// 空代码的标签也能往返（插入模板后还没输入代码时的状态）。
+    #[test]
+    fn code_group_empty_tabs_roundtrip() {
+        let items = vec![
+            CodeGroupItem {
+                lang: "java".to_string(),
+                code: String::new(),
+            },
+            CodeGroupItem {
+                lang: "python".to_string(),
+                code: String::new(),
+            },
+        ];
+        let src = code_group_source(&items);
+        match parse(&src).first() {
+            Some(Block::CodeGroup { items: got, .. }) => assert_eq!(got, &items),
+            other => panic!("应解析为代码组: {other:?}"),
+        }
     }
 }

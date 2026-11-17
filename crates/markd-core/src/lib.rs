@@ -7,5 +7,6 @@ pub mod ast;
 pub mod command;
 pub mod document;
 pub mod export;
+pub mod image_host;
 pub mod theme;
 pub mod workspace;

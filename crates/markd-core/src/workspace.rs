@@ -85,6 +85,29 @@ pub struct Config {
     pub auto_number_heading: bool,
     #[serde(default)]
     pub confirm_on_exit: bool,
+
+    // ---- 图床：把图片上传到远端仓库，文档里直接写公网 URL ----
+    /// 图床平台；`Disabled` 时图片仍写本地路径。
+    #[serde(default)]
+    pub image_host: crate::image_host::ImageHostKind,
+    #[serde(default = "default_image_host_owner")]
+    pub image_host_owner: String,
+    #[serde(default = "default_image_host_repo")]
+    pub image_host_repo: String,
+    #[serde(default = "default_image_host_branch")]
+    pub image_host_branch: String,
+    #[serde(default = "default_image_host_dir")]
+    pub image_host_dir: String,
+    /// 仓库根目录下的保存路径模板，支持
+    /// `{year}` `{month}` `{day}` `{hour}` `{minute}` 占位符。
+    #[serde(default = "default_image_host_path")]
+    pub image_host_path: String,
+    /// 私人令牌：只保存在本地配置文件里，不会写进文档。
+    #[serde(default)]
+    pub image_host_token: String,
+    /// 可选的自定义访问前缀（CDN）；留空按平台默认规则生成 URL。
+    #[serde(default)]
+    pub image_host_public_base: String,
 }
 
 fn default_true() -> bool {
@@ -101,6 +124,21 @@ fn default_ui_scale() -> f32 {
 }
 fn default_assets_dir() -> String {
     "imgs".to_string()
+}
+fn default_image_host_owner() -> String {
+    "domitius".to_string()
+}
+fn default_image_host_repo() -> String {
+    "markd_images".to_string()
+}
+fn default_image_host_branch() -> String {
+    "master".to_string()
+}
+fn default_image_host_dir() -> String {
+    "images".to_string()
+}
+fn default_image_host_path() -> String {
+    "{year}/{month}/{day}".to_string()
 }
 
 impl Default for Config {
@@ -138,6 +176,14 @@ impl Default for Config {
             footnote_enabled: true,
             auto_number_heading: false,
             confirm_on_exit: false,
+            image_host: crate::image_host::ImageHostKind::Disabled,
+            image_host_owner: default_image_host_owner(),
+            image_host_repo: default_image_host_repo(),
+            image_host_branch: default_image_host_branch(),
+            image_host_dir: default_image_host_dir(),
+            image_host_path: default_image_host_path(),
+            image_host_token: String::new(),
+            image_host_public_base: String::new(),
         }
     }
 }
@@ -350,5 +396,19 @@ mod tests {
         assert!(!back.show_outline);
         assert_eq!(back.sidebar_width, 320.0);
         assert!(back.show_workspace_bar);
+    }
+
+    /// 旧配置没有图床字段：应回退到「关闭」+ 预置仓库信息，不能反序列化失败。
+    #[test]
+    fn old_config_gets_image_host_defaults() {
+        let json = r#"{"theme":"Dark","focus_mode":false,"typewriter":false,"source_mode":false,"show_sidebar":true,"show_outline":false,"auto_save":true,"font_size":16.0,"workspace":null}"#;
+        let c: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(c.image_host, crate::image_host::ImageHostKind::Disabled);
+        assert_eq!(c.image_host_owner, "domitius");
+        assert_eq!(c.image_host_repo, "markd_images");
+        assert_eq!(c.image_host_branch, "master");
+        assert_eq!(c.image_host_dir, "images");
+        assert_eq!(c.image_host_path, "{year}/{month}/{day}");
+        assert!(c.image_host_token.is_empty());
     }
 }

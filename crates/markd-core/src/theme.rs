@@ -179,21 +179,29 @@ impl Theme {
         }
     }
 
-    /// 行内代码背景：浅色用略深的冷灰、深色用比编辑器底色亮一档的灰，
-    /// 与正文背景有区分但不抢眼，和链接蓝、引用灰搭配协调。
+    /// 行内代码背景：浅色用极浅灰蓝（方案 B），深色用低透明度天蓝叠加
+    /// （方案 C：rgba(125,211,252,0.12)，叠在正文底色上更柔和）。
     pub fn inline_code_bg(&self) -> Color32 {
         match self.kind {
-            ThemeKind::Light => rgb(240, 242, 245),
-            ThemeKind::Dark => rgb(52, 54, 58),
+            ThemeKind::Light => rgb(239, 241, 245),
+            ThemeKind::Dark => Color32::from_rgba_unmultiplied(125, 211, 252, 31),
         }
     }
 
-    /// 行内代码文字色：跟随正文的柔和黑/白，靠背景形成「代码片」，
-    /// 不用高饱和彩色，避免一整段文字里四处跳色。
+    /// 行内代码文字色：浅色用品红点缀、深色用亮天蓝，和正文拉开层次，
+    /// 不至于淹没在大段文字里。
     pub fn inline_code_fg(&self) -> Color32 {
         match self.kind {
-            ThemeKind::Light => rgb(36, 41, 46),
-            ThemeKind::Dark => rgb(221, 221, 221),
+            ThemeKind::Light => rgb(214, 51, 108),
+            ThemeKind::Dark => rgb(125, 211, 252),
+        }
+    }
+
+    /// 行内代码描边：浅色方案 B 带一圈很淡的冷灰边，深色方案 C 不描边。
+    pub fn inline_code_border(&self) -> Option<Color32> {
+        match self.kind {
+            ThemeKind::Light => Some(rgb(226, 230, 238)),
+            ThemeKind::Dark => None,
         }
     }
 

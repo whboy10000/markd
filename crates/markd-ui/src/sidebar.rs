@@ -176,17 +176,35 @@ pub fn outline_panel(
             .unwrap_or(false);
         let is_folded = folded.contains(&i);
         let indent = ((item.level.saturating_sub(1)) as f32) * 13.0;
+        // 折叠箭头做成固定 20px 的点击盒：图标放大到正文字号，命中区域也从
+        // 原来只有字形那么大扩到一整块，方便一眼看到、随手点中。
+        let arrow_box = (theme.body + 4.0).max(20.0);
         let mut label_resp: Option<egui::Response> = None;
         ui.horizontal(|ui| {
             ui.set_min_width(full_w.max(60.0));
             ui.add_space(indent);
             if has_child {
                 let arrow = if is_folded { "▶" } else { "▼" };
-                let a = ui
-                    .add(
-                        egui::Label::new(RichText::new(arrow).small().color(theme.dim))
-                            .sense(Sense::click()),
-                    )
+                let (rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(arrow_box, arrow_box), Sense::click());
+                if ui.is_rect_visible(rect) {
+                    if resp.hovered() {
+                        ui.painter()
+                            .rect_filled(rect.shrink(1.0), 3.0, theme.table_head);
+                    }
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        arrow,
+                        egui::FontId::proportional(theme.body),
+                        if resp.hovered() {
+                            theme.accent
+                        } else {
+                            theme.dim
+                        },
+                    );
+                }
+                let a = resp
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .on_hover_text(if is_folded {
                         "展开小节"
@@ -197,7 +215,7 @@ pub fn outline_panel(
                     fold_toggles.push(i);
                 }
             } else {
-                ui.add_space(12.0);
+                ui.add_space(arrow_box);
             }
             label_resp = Some(
                 ui.add(

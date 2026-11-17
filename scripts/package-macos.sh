@@ -36,7 +36,7 @@ pack() {
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
   cp "$bin" "$APP/Contents/MacOS/markd"
   sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
-  cp assets/icon.icns "$APP/Contents/Resources/AppIcon.icns"
+  cp assets/morphe_aurora.icns "$APP/Contents/Resources/AppIcon.icns"
   chmod +x "$APP/Contents/MacOS/markd"
   codesign --force --deep --sign - "$APP" 2>/dev/null || true
   mkdir -p dist/dmg

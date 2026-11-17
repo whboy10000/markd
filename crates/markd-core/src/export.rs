@@ -139,6 +139,36 @@ pub fn to_html(title: &str, source: &str, dark: bool) -> String {
                     esc(code)
                 ));
             }
+            Block::CodeGroup { items, .. } => {
+                // 代码组：HTML 里保留 Tab 切换（与编辑器一致）。
+                out.push_str("<div class=\"code-group\">\n<div class=\"code-group-tabs\">\n");
+                for (i, it) in items.iter().enumerate() {
+                    let label = if it.lang.trim().is_empty() {
+                        "纯文本"
+                    } else {
+                        it.lang.as_str()
+                    };
+                    // 点击切换：内联脚本按 data-lang 找对应的代码面板，
+                    // 不依赖全局函数，导出的 HTML 单文件即可用。
+                    out.push_str(&format!(
+                        "<button class=\"{}\" data-lang=\"{}\" onclick=\"var g=this.closest('.code-group');g.querySelectorAll('.code-group-tabs button').forEach(function(x){{x.classList.remove('active')}});this.classList.add('active');var l=this.dataset.lang;g.querySelectorAll('.code-group-panel').forEach(function(p){{p.classList.toggle('active',p.dataset.lang===l)}});\">{}</button>\n",
+                        if i == 0 { "active" } else { "" },
+                        esc(&it.lang),
+                        esc(label)
+                    ));
+                }
+                out.push_str("</div>\n");
+                for (i, it) in items.iter().enumerate() {
+                    out.push_str(&format!(
+                        "<pre class=\"code-group-panel{}\" data-lang=\"{}\"><code class=\"language-{}\">{}</code></pre>\n",
+                        if i == 0 { " active" } else { "" },
+                        esc(&it.lang),
+                        esc(&it.lang),
+                        esc(&it.code)
+                    ));
+                }
+                out.push_str("</div>\n");
+            }
             Block::Table {
                 head, rows, align, ..
             } => {
@@ -238,6 +268,12 @@ img{{max-width:100%}} .wiki{{color:#8957e5}}
 .front-matter{{font-size:.85em;opacity:.8}}
 .toc{{border:1px solid #ddd;border-radius:8px;padding:12px 20px;margin:1em 0}}
 .toc ul{{margin:.4em 0}} .footnote{{font-size:.9em;opacity:.85}}
+.code-group{{margin:1em 0;border:1px solid #ddd;border-radius:8px;overflow:hidden}}
+.code-group-tabs{{display:flex;gap:2px;padding:4px;border-bottom:1px solid #ddd;flex-wrap:wrap}}
+.code-group-tabs button{{background:none;border:none;padding:6px 12px;cursor:pointer;font:inherit;font-size:.85em;opacity:.65;border-radius:4px}}
+.code-group-tabs button.active{{opacity:1;font-weight:600;background:rgba(127,127,127,.14)}}
+.code-group-panel{{display:none;margin:0;border-radius:0}}
+.code-group-panel.active{{display:block}}
 @media print{{body{{padding:0;max-width:none}}}}
 </style></head><body>
 {body}
@@ -282,5 +318,27 @@ mod tests {
         let h = to_html("T", "<script>alert(1)</script>", false);
         assert!(!h.contains("<script>"));
         assert!(h.contains("&lt;script&gt;"));
+    }
+
+    /// 代码组导出成可点击切换的 Tab 结构，两个语言各占一个面板。
+    #[test]
+    fn code_group_exports_tabs() {
+        let src = r#####"````code-group
+```java
+int a = 1;
+```
+```python
+a = 1
+```
+````"#####;
+        let h = to_html("T", src, false);
+        assert!(h.contains("code-group-tabs"), "{h}");
+        assert!(h.contains("data-lang=\"java\""), "{h}");
+        assert!(h.contains("data-lang=\"python\""), "{h}");
+        assert!(
+            h.contains("code-group-panel active"),
+            "默认第一个面板可见：{h}"
+        );
+        assert!(h.contains("int a = 1;") && h.contains("a = 1"), "{h}");
     }
 }

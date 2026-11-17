@@ -97,6 +97,12 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
     let m_table = mk(&mut map, "table", "插入表格", Command::Table);
     let m_rule = mk(&mut map, "rule", "插入分隔线", Command::Rule);
     let m_codeblock = mk(&mut map, "codeblock", "插入代码块", Command::CodeBlock);
+    let m_codegroup = mk(
+        &mut map,
+        "codegroup",
+        "插入代码组（多语言 Tab）",
+        Command::CodeGroup,
+    );
     let m_math = mk(&mut map, "math", "插入公式块", Command::Math);
     let m_inline_math = mk(&mut map, "inline_math", "插入行内公式", Command::InlineMath);
     let m_mermaid = mk(&mut map, "mermaid", "插入 Mermaid 图", Command::Mermaid);
@@ -127,6 +133,7 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
             &m_table,
             &m_rule,
             &m_codeblock,
+            &m_codegroup,
             &m_math,
             &m_inline_math,
             &m_mermaid,

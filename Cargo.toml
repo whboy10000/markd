@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "2026.11.17"
+version = "2026.11.18"
 edition = "2024"
 authors = ["aurelianus <aurelianus@126.com>"]
 license = "PolyForm-Noncommercial-1.0.0"
@@ -35,6 +35,11 @@ winresource = "0.1.27"
 rfd = "0.18.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# 图床上传与远程图片下载（阻塞式 HTTP + rustls）。
+ureq = { version = "3.5.2", features = ["json"] }
+base64 = "0.22.1"
+# 图床保存路径模板里的 {year}/{month}/{day} 需要本地时区时间。
+chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 markd-core = { path = "crates/markd-core" }
 markd-platform = { path = "crates/markd-platform" }
 markd-ui = { path = "crates/markd-ui" }
