@@ -440,20 +440,27 @@ fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
     }
 }
 
-/// 取一段已渲染文字的可见中心，作为鼠标点击落点。
+/// 取文档编辑区里一段已渲染文字的可见中心，作为鼠标点击落点。
 ///
-/// 不能用「文字左上角 t.pos + 固定偏移」：macOS 加载阿里巴巴普惠体、CI Linux
-/// 回退到默认字体，两者字形度量不同，固定 y 偏移在 Linux 上会落到块间空隙，
-/// 被判成「点空白」而把 active 设成最后一块（代码组），导致「点段落退出编辑态」
-/// 失效。`galley.rect` 的 top 恒为 0、左对齐时 left 也为 0，其中心即文字可见中心，
-/// 跨平台都落在 label 的交互矩形内。
+/// 两个跨平台陷阱：
+/// 1. 非 macOS（CI Linux）窗口内会渲染 VS Code 风格菜单栏，「段落」既是菜单
+///    分类名又是文档文字；`shapes` 按绘制顺序排列，菜单在编辑区之前，直接
+///    `find_map` 会命中菜单按钮、点开菜单而不是点文档段落（macOS 用原生菜单
+///    栏、窗口内无此文字，所以本地一直通过）。因此只取 y 在编辑区内的文字。
+/// 2. 不能用「文字左上角 + 固定偏移」：不同平台字体度量不同，固定 y 偏移会
+///    落到块间空隙、被判成「点空白」。用 `galley.rect` 中心跨平台都落在文字
+///    交互矩形内。
 fn text_center(shapes: &[egui::epaint::ClippedShape], name: &str) -> Option<egui::Pos2> {
-    shapes.iter().find_map(|cs| match &cs.shape {
-        egui::Shape::Text(t) if t.galley.text() == name => {
-            Some(t.pos + t.galley.rect.center().to_vec2())
-        }
-        _ => None,
-    })
+    shapes
+        .iter()
+        .filter_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == name => Some(t),
+            _ => None,
+        })
+        // 菜单栏/工具条/标签栏都在窗口顶部约 80px 内，文档正文在其下方。
+        .filter(|t| t.pos.y > 80.0)
+        .last()
+        .map(|t| t.pos + t.galley.rect.center().to_vec2())
 }
 
 /// 手动链路验证：拖选跨块 → Cmd+C 复制剪贴板 → 退格合并 → Cmd+Z 撤销。
