@@ -395,6 +395,16 @@ impl Theme {
         Color32::from_rgba_unmultiplied(self.accent.r(), self.accent.g(), self.accent.b(), 26)
     }
 
+    /// 行内高亮（`==文字==`）的底色：浅色用暖黄，深色用低饱和琥珀，
+    /// 保证黑/白正文都清晰。
+    pub fn highlight_bg(&self) -> Color32 {
+        if self.kind.is_dark() {
+            Color32::from_rgb(92, 74, 18)
+        } else {
+            Color32::from_rgb(255, 235, 130)
+        }
+    }
+
     pub fn fmt(&self, size: f32) -> egui::text::TextFormat {
         egui::text::TextFormat {
             font_id: FontId::new(size, FontFamily::Proportional),

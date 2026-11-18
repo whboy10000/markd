@@ -186,9 +186,7 @@ impl Settings {
                 changed |= ui
                     .checkbox(&mut cfg.show_toolbar, "显示格式工具条")
                     .changed();
-                changed |= ui
-                    .checkbox(&mut cfg.show_tabbar, "显示标签栏")
-                    .changed();
+                changed |= ui.checkbox(&mut cfg.show_tabbar, "显示标签栏").changed();
             }
             Tab::Editor => {
                 ui.label(RichText::new("编辑器").strong());

@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod actions;
+mod context;
 mod dialogs;
 mod feedback;
 mod files;

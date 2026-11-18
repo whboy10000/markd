@@ -396,6 +396,10 @@ impl eframe::App for MarkdApp {
             }
         }
 
+        // 编辑区空白处的右键菜单：位置由编辑器在检测到空白右键时记录，
+        // 这里统一绘制并分发菜单动作。
+        self.editor_context_menu(&ctx);
+
         if std::env::var("MARKD_TRACE_FOCUS").is_ok() {
             eprintln!(
                 "[state] home={} tabs={} active={} blocks={} focused={:?}",

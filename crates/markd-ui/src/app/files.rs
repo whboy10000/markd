@@ -467,7 +467,11 @@ fn collect_image_urls(inl: &crate::ast::Inline, out: &mut Vec<String>) {
     use crate::ast::Inline;
     match inl {
         Inline::Image { url, .. } => out.push(url.clone()),
-        Inline::Strong(v) | Inline::Emph(v) | Inline::Strike(v) | Inline::Underline(v) => {
+        Inline::Strong(v)
+        | Inline::Emph(v)
+        | Inline::Strike(v)
+        | Inline::Underline(v)
+        | Inline::Highlight(v) => {
             for i in v {
                 collect_image_urls(i, out);
             }

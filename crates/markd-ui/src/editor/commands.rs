@@ -372,6 +372,109 @@ pub fn make_paragraph(doc: &mut Document, state: &mut EditorState) {
     apply_prefix(doc, state, "");
 }
 
+/// 当前可复制的选区文本：跨块选区优先，其次是活动块里的文本选区。
+pub fn copy_selection(doc: &Document, state: &EditorState) -> Option<String> {
+    if let Some(text) = cross_sel_text(doc, state.cross_sel) {
+        return Some(text);
+    }
+    selection_text(doc, state).map(|(_, _, _, text)| text)
+}
+
+/// 复制选区为 Markdown：跨块选区按整块源码拼接，单块选区取可编辑文本。
+pub fn copy_selection_markdown(doc: &Document, state: &EditorState) -> Option<String> {
+    if let Some(sel) = state.cross_sel {
+        let (s, _, e, _) = cross_sel_range(sel);
+        let parts: Vec<String> = (s..=e)
+            .filter_map(|i| doc.blocks.get(i))
+            .map(|b| b.source().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !parts.is_empty() {
+            return Some(parts.join("\n\n"));
+        }
+    }
+    selection_text(doc, state).map(|(_, _, _, text)| text)
+}
+
+/// 剪切当前选区：跨块选区走原有逻辑，单块选区删掉选中字符后写回。
+pub fn cut_selection(doc: &mut Document, state: &mut EditorState) -> Option<String> {
+    if state.cross_sel.is_some() {
+        return cut_cross_sel(doc, state);
+    }
+    let (idx, a, z, text) = selection_text(doc, state)?;
+    let b = doc.blocks.get(idx)?;
+    let chars: Vec<char> = block_buffer(b).chars().collect();
+    let mut out: String = chars[..a].iter().collect();
+    out.extend(&chars[z..]);
+    let src = rebuild_source(b, &out);
+    doc.record();
+    doc.edit_block(idx, &src);
+    state.active = idx;
+    state.focus_req = Some(idx);
+    state.last_cursor = a;
+    state.caret_req = Some((idx, a));
+    state.sel = None;
+    state.last_sel = None;
+    Some(text)
+}
+
+/// 把剪贴板文本粘贴到当前选区/光标处。返回是否发生了修改。
+pub fn paste_text(doc: &mut Document, state: &mut EditorState, text: &str) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    if state.cross_sel.is_some() {
+        return apply_cross_sel_edit(doc, state, Some(text));
+    }
+    let idx = state.active;
+    let Some(b) = doc.blocks.get(idx) else {
+        return false;
+    };
+    let chars: Vec<char> = block_buffer(b).chars().collect();
+    let len = chars.len();
+    let (a, z) = selection_text(doc, state)
+        .map(|(_, a, z, _)| (a.min(len), z.min(len)))
+        .unwrap_or_else(|| {
+            let p = state.last_cursor.min(len);
+            (p, p)
+        });
+    let mut out: String = chars[..a].iter().collect();
+    out.push_str(text);
+    out.extend(&chars[z..]);
+    let src = rebuild_source(b, &out);
+    doc.record();
+    doc.edit_block(idx, &src);
+    state.active = idx;
+    state.focus_req = Some(idx);
+    state.last_cursor = a + text.chars().count();
+    state.caret_req = Some((idx, state.last_cursor));
+    state.sel = None;
+    state.last_sel = None;
+    true
+}
+
+/// 在上方 / 下方插入一个空段落，并把光标移过去。
+pub fn insert_paragraph(doc: &mut Document, state: &mut EditorState, above: bool) {
+    let idx = state.active;
+    doc.record();
+    let at = if above {
+        doc.insert_block_before(idx, "");
+        idx
+    } else {
+        doc.insert_block_after(idx, "");
+        idx + 1
+    };
+    state.active = at;
+    state.focus_req = Some(at);
+    state.scroll_req = Some(at);
+    state.scroll_top = false;
+    state.last_cursor = 0;
+    state.caret_req = Some((at, 0));
+    state.sel = None;
+    state.last_sel = None;
+    state.cross_sel = None;
+}
+
 pub fn toggle_task(doc: &mut Document, idx: usize) {
     let Some(b) = doc.blocks.get(idx) else {
         return;

@@ -1,5 +1,58 @@
 use super::*;
 
+/// 行内公式原生形状必须画在占位字符的基线上，而不是行顶/行底。
+#[test]
+fn inline_math_image_aligns_to_text_baseline() {
+    let theme = Theme::get(ThemeKind::Light);
+    let ctx = egui::Context::default();
+    let mut out = ctx.run_ui(egui::RawInput::default(), |_root| {});
+    out.textures_delta.clear();
+    let mut cache = ImageCache::new();
+    let math = cache
+        .math_shapes("x^2 + y^2", 16.0, MathDisplay::Inline)
+        .expect("公式原生渲染失败");
+    let marker = '\u{E000}';
+    let galley = ctx.fonts_mut(|f| {
+        f.layout_no_wrap(
+            marker.to_string(),
+            egui::FontId::proportional(16.0),
+            egui::Color32::WHITE,
+        )
+    });
+    let scale = 1.0;
+    let size = math.size * scale;
+    let baseline = math.baseline * scale;
+    let run = InlineMathRun {
+        marker,
+        math: Some(math),
+        size,
+        baseline,
+        reserved: size.x,
+        scale,
+    };
+    let origin = egui::pos2(100.0, 50.0);
+    let shapes = math_image_shapes(&galley, origin, &[run], theme.text);
+    assert!(!shapes.is_empty(), "公式形状没有落到占位字符上");
+
+    // 计算所有形状的包围盒。
+    let bounds = shapes
+        .iter()
+        .filter_map(|s| match s {
+            egui::Shape::Mesh(m) => Some(m.calc_bounds()),
+            egui::Shape::Rect(r) => Some(r.rect),
+            _ => None,
+        })
+        .fold(egui::Rect::NOTHING, |acc, r| acc.union(r));
+    assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
+    // 公式内部基线（距顶部 baseline）必须落在文字基线上。
+    let text_baseline = origin.y + galley.rows[0].glyphs[0].pos.y;
+    assert!(
+        (bounds.top() - (text_baseline - baseline)).abs() < 0.5,
+        "公式基线未对齐文字基线：top={}, baseline={text_baseline}",
+        bounds.top()
+    );
+}
+
 /// 回归：跨块选区高亮必须 ① 覆盖最后一个字（不能每行少一截）
 /// ② 画在文字下层（否则蓝底盖住文字，看起来"字没了"）。
 #[test]

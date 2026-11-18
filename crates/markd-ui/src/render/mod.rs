@@ -22,12 +22,13 @@ mod frames;
 mod inline;
 mod language;
 mod lists;
+mod math;
 mod media;
 mod syntax;
 #[cfg(test)]
 mod tests;
 
-pub use self::{block::*, inline::*, language::*, lists::*, media::*, syntax::*};
+pub use self::{block::*, inline::*, language::*, lists::*, math::*, media::*, syntax::*};
 pub(crate) use self::{diagram::*, frames::*};
 
 #[derive(Clone, Debug)]

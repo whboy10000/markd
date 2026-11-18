@@ -2,6 +2,64 @@
 
 use super::*;
 
+/// 行内公式在 galley 里占用的位置信息。排版时先放一个透明占位字符，
+/// 拿到 galley 后再把 RaTeX 原生形状画到占位字符的基线上。
+pub(crate) struct InlineMathRun {
+    pub(crate) marker: char,
+    /// 原生显示列表形状（已按正文字号渲染）。
+    pub(crate) math: Option<RenderedMath>,
+    /// 缩放后的显示尺寸。
+    pub(crate) size: egui::Vec2,
+    /// 缩放后基线到公式顶部的距离。
+    pub(crate) baseline: f32,
+    /// 占位字符实际占用的宽度（用于水平居中）。
+    pub(crate) reserved: f32,
+    /// 应用的缩放比例。
+    pub(crate) scale: f32,
+}
+
+/// 行内公式排版上下文：负责取原生形状、算显示尺寸并记录占位字符。
+pub(crate) struct MathBuild<'a> {
+    pub ctx: &'a egui::Context,
+    pub images: &'a mut ImageCache,
+    pub max_width: f32,
+    pub runs: Vec<InlineMathRun>,
+}
+
+impl MathBuild<'_> {
+    fn push(&mut self, tex: &str, job: &mut LayoutJob, theme: &Theme, size: f32) {
+        // 行内公式用正文字号渲染，与文字基线对齐。
+        let Some(math) = self.images.math_shapes(tex, size, MathDisplay::Inline) else {
+            return;
+        };
+        // 行内公式不能高过行距，否则会压到上下行；宽公式也不能撑出版心。
+        let max_h = (size * 1.45).max(18.0);
+        let max_w = (self.max_width * 0.92).max(24.0);
+        let scale = (max_h / math.size.y.max(1.0))
+            .min(max_w / math.size.x.max(1.0))
+            .min(1.0);
+        let display = math.size * scale;
+        let baseline = math.baseline * scale;
+
+        let marker = char::from_u32(0xE000 + self.runs.len() as u32).unwrap_or('\u{FFFC}');
+        let font_id = theme.fmt(size).font_id;
+        let marker_w = self.ctx.fonts_mut(|f| f.glyph_width(&font_id, marker));
+        let reserved = display.x.max(marker_w);
+        let mut f = theme.fmt(size);
+        f.color = Color32::TRANSPARENT;
+        f.extra_letter_spacing = (reserved - marker_w).max(0.0);
+        job.append(&marker.to_string(), 0.0, f);
+        self.runs.push(InlineMathRun {
+            marker,
+            math: Some(math),
+            size: display,
+            baseline,
+            reserved,
+            scale,
+        });
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn append_inline(
     job: &mut LayoutJob,
@@ -13,7 +71,9 @@ pub(crate) fn append_inline(
     italic: bool,
     strike: bool,
     underline: bool,
+    highlight: bool,
     linked: bool,
+    mut math: Option<&mut MathBuild<'_>>,
 ) {
     match inl {
         Inline::Text(t) => {
@@ -30,6 +90,9 @@ pub(crate) fn append_inline(
             if underline {
                 f.underline = Stroke::new(1.0, f.color);
             }
+            if highlight {
+                f.background = theme.highlight_bg();
+            }
             if linked {
                 f.underline = Stroke::new(1.0, theme.link);
             }
@@ -41,28 +104,90 @@ pub(crate) fn append_inline(
             // （从编辑态切到渲染态）时突然变色、且变细。
             for x in v {
                 append_inline(
-                    job, x, theme, size, color, true, italic, strike, underline, linked,
+                    job,
+                    x,
+                    theme,
+                    size,
+                    color,
+                    true,
+                    italic,
+                    strike,
+                    underline,
+                    highlight,
+                    linked,
+                    math.as_deref_mut(),
                 );
             }
         }
         Inline::Underline(v) => {
             for x in v {
                 append_inline(
-                    job, x, theme, size, color, bold, italic, strike, true, linked,
+                    job,
+                    x,
+                    theme,
+                    size,
+                    color,
+                    bold,
+                    italic,
+                    strike,
+                    true,
+                    highlight,
+                    linked,
+                    math.as_deref_mut(),
                 );
             }
         }
         Inline::Emph(v) => {
             for x in v {
                 append_inline(
-                    job, x, theme, size, color, bold, true, strike, underline, linked,
+                    job,
+                    x,
+                    theme,
+                    size,
+                    color,
+                    bold,
+                    true,
+                    strike,
+                    underline,
+                    highlight,
+                    linked,
+                    math.as_deref_mut(),
                 );
             }
         }
         Inline::Strike(v) => {
             for x in v {
                 append_inline(
-                    job, x, theme, size, color, bold, italic, true, underline, linked,
+                    job,
+                    x,
+                    theme,
+                    size,
+                    color,
+                    bold,
+                    italic,
+                    true,
+                    underline,
+                    highlight,
+                    linked,
+                    math.as_deref_mut(),
+                );
+            }
+        }
+        Inline::Highlight(v) => {
+            for x in v {
+                append_inline(
+                    job,
+                    x,
+                    theme,
+                    size,
+                    color,
+                    bold,
+                    italic,
+                    strike,
+                    underline,
+                    true,
+                    linked,
+                    math.as_deref_mut(),
                 );
             }
         }
@@ -74,7 +199,18 @@ pub(crate) fn append_inline(
         Inline::Link { label, .. } => {
             for x in label {
                 append_inline(
-                    job, x, theme, size, color, bold, italic, strike, underline, true,
+                    job,
+                    x,
+                    theme,
+                    size,
+                    color,
+                    bold,
+                    italic,
+                    strike,
+                    underline,
+                    highlight,
+                    true,
+                    math.as_deref_mut(),
                 );
             }
         }
@@ -85,9 +221,13 @@ pub(crate) fn append_inline(
             job.append(&format!("[图片: {}]", txt), 0.0, f);
         }
         Inline::Math(t) => {
-            let mut f = theme.mono_fmt();
-            f.color = theme.heading;
-            job.append(&math_pretty(t), 0.0, f);
+            if let Some(m) = math.as_mut() {
+                m.push(t, job, theme, size);
+            } else {
+                let mut f = theme.mono_fmt();
+                f.color = theme.heading;
+                job.append(&math_pretty(t), 0.0, f);
+            }
         }
         Inline::Wiki(name) => {
             let mut f = theme.fmt(size);
@@ -129,7 +269,40 @@ pub fn build_layout(
     job.wrap.break_anywhere = true;
     for i in inlines {
         append_inline(
-            &mut job, i, theme, size, color, bold, false, false, false, false,
+            &mut job, i, theme, size, color, bold, false, false, false, false, false, None,
+        );
+    }
+    if inlines.is_empty() {
+        job.append(" ", 0.0, theme.fmt(size));
+    }
+    job
+}
+
+/// 与 [`build_layout`] 相同，但行内公式会以 RaTeX 图片占位并记录位置。
+pub(crate) fn build_layout_with_math(
+    inlines: &[Inline],
+    theme: &Theme,
+    size: f32,
+    color: Color32,
+    bold: bool,
+    math: &mut MathBuild<'_>,
+) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.wrap.break_anywhere = true;
+    for i in inlines {
+        append_inline(
+            &mut job,
+            i,
+            theme,
+            size,
+            color,
+            bold,
+            false,
+            false,
+            false,
+            false,
+            false,
+            Some(&mut *math),
         );
     }
     if inlines.is_empty() {
@@ -218,6 +391,7 @@ pub fn inline_job(
         let mut ital: Vec<usize> = Vec::new();
         let mut bold: Vec<usize> = Vec::new();
         let mut tilde: Vec<usize> = Vec::new();
+        let mut eq: Vec<usize> = Vec::new();
         let mut i = 0usize;
         while i < chars.len() {
             match chars[i] {
@@ -232,6 +406,10 @@ pub fn inline_job(
                 }
                 '~' if chars.get(i + 1) == Some(&'~') => {
                     tilde.push(i);
+                    i += 2;
+                }
+                '=' if chars.get(i + 1) == Some(&'=') => {
+                    eq.push(i);
                     i += 2;
                 }
                 '`' => {
@@ -250,6 +428,7 @@ pub fn inline_job(
         mark_lone(&ital, &mut lone);
         mark_lone(&bold, &mut lone);
         mark_lone(&tilde, &mut lone);
+        mark_lone(&eq, &mut lone);
         mark_lone(&tick, &mut lone);
         bold_runs = bold;
     }
@@ -274,7 +453,7 @@ pub fn inline_job(
         }
     }
 
-    let fmt_now = |code: bool, italic: bool, bold: bool, strike: bool| {
+    let fmt_now = |code: bool, italic: bool, bold: bool, strike: bool, highlight: bool| {
         if code {
             inline_code_format(theme, size)
         } else {
@@ -289,6 +468,11 @@ pub fn inline_job(
                 ),
                 color,
                 italics: italic,
+                background: if highlight {
+                    theme.highlight_bg()
+                } else {
+                    Color32::TRANSPARENT
+                },
                 strikethrough: if strike {
                     Stroke::new(1.0, color)
                 } else {
@@ -304,6 +488,7 @@ pub fn inline_job(
     let mut bold = false;
     let mut italic = false;
     let mut strike = false;
+    let mut highlight = false;
     let mut code = false;
 
     fn push(job: &mut LayoutJob, c: char, f: &TextFormat) {
@@ -324,7 +509,7 @@ pub fn inline_job(
         // 配不上对（孤立的开/闭标签）就按普通文字原样显示
         if c == '<' && tag_at(&chars, i, "<strong>") {
             let f = if bold {
-                fmt_now(code, italic, bold, strike)
+                fmt_now(code, italic, bold, strike, highlight)
             } else {
                 marker.clone()
             };
@@ -339,7 +524,7 @@ pub fn inline_job(
             let f = if bold {
                 marker.clone()
             } else {
-                fmt_now(code, italic, bold, strike)
+                fmt_now(code, italic, bold, strike, highlight)
             };
             for k in i..i + 9 {
                 push(&mut job, chars[k], &f);
@@ -352,7 +537,7 @@ pub fn inline_job(
         // 配不上对（孤立的开/闭标签）就按普通文字原样显示
         if c == '<' && tag_at(&chars, i, "<em>") {
             let f = if italic {
-                fmt_now(code, italic, bold, strike)
+                fmt_now(code, italic, bold, strike, highlight)
             } else {
                 marker.clone()
             };
@@ -367,7 +552,7 @@ pub fn inline_job(
             let f = if italic {
                 marker.clone()
             } else {
-                fmt_now(code, italic, bold, strike)
+                fmt_now(code, italic, bold, strike, highlight)
             };
             for k in i..i + 5 {
                 push(&mut job, chars[k], &f);
@@ -378,11 +563,11 @@ pub fn inline_job(
         }
         if c == '`' {
             let f = if lone.contains(&i) {
-                fmt_now(code, italic, bold, strike)
+                fmt_now(code, italic, bold, strike, highlight)
             } else if reveal_tick.contains(&i) {
                 // 光标在代码内：这一对反引号按代码样式显示，和正文连成一片，
                 // 用户可以直接删改这段源码。
-                fmt_now(true, italic, bold, strike)
+                fmt_now(true, italic, bold, strike, highlight)
             } else {
                 marker.clone()
             };
@@ -394,11 +579,11 @@ pub fn inline_job(
         if c == '*' {
             let n = chars[i..].iter().take_while(|&&x| x == '*').count();
             let f = if lone.contains(&i) {
-                fmt_now(code, italic, bold, strike)
+                fmt_now(code, italic, bold, strike, highlight)
             } else if reveal_bold.contains(&i) {
                 // 光标在加粗范围内：露出这一对 **（普通字重，避免闭合标记
                 // 跟着变粗、看起来像多敲了一个星号）。
-                fmt_now(code, italic, false, strike)
+                fmt_now(code, italic, false, strike, highlight)
             } else {
                 marker.clone()
             };
@@ -416,13 +601,26 @@ pub fn inline_job(
         if c == '~' && i + 1 < chars.len() && chars[i + 1] == '~' {
             let visible = lone.contains(&i);
             let f = if visible {
-                fmt_now(code, italic, bold, strike)
+                fmt_now(code, italic, bold, strike, highlight)
             } else {
                 marker.clone()
             };
             push(&mut job, '~', &f);
             push(&mut job, '~', &f);
             strike = !strike;
+            i += 2;
+            continue;
+        }
+        if c == '=' && i + 1 < chars.len() && chars[i + 1] == '=' {
+            let visible = lone.contains(&i);
+            let f = if visible {
+                fmt_now(code, italic, bold, strike, highlight)
+            } else {
+                marker.clone()
+            };
+            push(&mut job, '=', &f);
+            push(&mut job, '=', &f);
+            highlight = !highlight;
             i += 2;
             continue;
         }
@@ -443,7 +641,7 @@ pub fn inline_job(
                         // `[标签](地址)`，进入可编辑的源码模式。
                         let revealed = cursor.is_some_and(|c| i < c && c <= end);
                         if revealed {
-                            let plain = fmt_now(false, italic, bold, strike);
+                            let plain = fmt_now(false, italic, bold, strike, highlight);
                             let url_fmt = TextFormat {
                                 font_id: FontId::new(size, FontFamily::Proportional),
                                 color: theme.link,
@@ -476,7 +674,7 @@ pub fn inline_job(
             }
         }
 
-        let fmt = fmt_now(code, italic, bold, strike);
+        let fmt = fmt_now(code, italic, bold, strike, highlight);
         push(&mut job, c, &fmt);
         i += 1;
     }

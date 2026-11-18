@@ -34,6 +34,7 @@ fn inline_html(v: &[Inline]) -> String {
             Inline::Emph(x) => s.push_str(&format!("<em>{}</em>", inline_html(x))),
             Inline::Strike(x) => s.push_str(&format!("<del>{}</del>", inline_html(x))),
             Inline::Underline(x) => s.push_str(&format!("<u>{}</u>", inline_html(x))),
+            Inline::Highlight(x) => s.push_str(&format!("<mark>{}</mark>", inline_html(x))),
             Inline::Code(t) => s.push_str(&format!("<code>{}</code>", esc(t))),
             Inline::Link { label, url } => {
                 s.push_str(&format!(

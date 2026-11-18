@@ -80,6 +80,8 @@ pub struct EditorState {
     pub tab_size: usize,
     /// 是否自动补全括号/引号。
     pub auto_pair: bool,
+    /// 编辑区空白处右键菜单的弹出位置；None 表示菜单关闭。
+    pub context_menu: Option<egui::Pos2>,
     /// 已折叠的代码块下标集合（渲染态折叠，切换标签/文档时随 EditorState 一起保存）。
     pub folded: HashSet<usize>,
     /// 代码组当前显示的标签：(块下标 → 标签下标)。

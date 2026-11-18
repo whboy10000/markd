@@ -115,6 +115,7 @@ impl MarkdApp {
             Command::Underline => {
                 editor::wrap(&mut self.doc, &mut self.editor, "<u>", "</u>", true)
             }
+            Command::Highlight => editor::wrap(&mut self.doc, &mut self.editor, "==", "==", true),
             Command::Code => editor::wrap(&mut self.doc, &mut self.editor, "`", "`", true),
             Command::Link => self.open_link_dialog(),
             Command::Image => {
@@ -155,6 +156,11 @@ impl MarkdApp {
             Command::Math => {
                 editor::insert_template(&mut self.doc, &mut self.editor, "$$\nE = mc^2\n$$")
             }
+            Command::MathCode => editor::insert_template(
+                &mut self.doc,
+                &mut self.editor,
+                "```math\n\\frac{a}{b} = c\n```",
+            ),
             Command::InlineMath => {
                 editor::insert_template(&mut self.doc, &mut self.editor, "$E = mc^2$")
             }
@@ -331,6 +337,10 @@ impl MarkdApp {
             } else if key(egui::Key::F) {
                 // macOS 上 Cmd+H 被系统占用来隐藏窗口，替换用 Cmd+Option+F。
                 self.find.open_for(true);
+            } else if key(egui::Key::X) {
+                self.execute(Command::Task, ctx);
+            } else if key(egui::Key::Minus) {
+                self.execute(Command::Rule, ctx);
             }
             return;
         }
@@ -378,8 +388,12 @@ impl MarkdApp {
             self.execute(Command::Bold, ctx);
         } else if key(egui::Key::I) {
             self.execute(Command::Italic, ctx);
+        } else if key(egui::Key::U) {
+            self.execute(Command::Underline, ctx);
         } else if key(egui::Key::K) {
             self.execute(Command::Link, ctx);
+        } else if key(egui::Key::Backslash) {
+            self.execute(Command::ClearFormat, ctx);
         } else if key(egui::Key::C) {
             // 跨块选区（渲染态拖选）的复制：无编辑态焦点，不会与 TextEdit 冲突。
             // 没有跨块选区时不拦截，单块选区交给 TextEdit 原生复制。
@@ -407,13 +421,15 @@ impl MarkdApp {
         } else if key(egui::Key::L) && shift {
             self.execute(Command::ToggleSidebar, ctx);
         } else if key(egui::Key::H) && shift {
-            self.execute(Command::ToggleSidebarHeader, ctx);
+            self.execute(Command::Highlight, ctx);
         } else if key(egui::Key::Z) && shift {
             self.execute(Command::Redo, ctx);
         } else if key(egui::Key::Z) {
             self.execute(Command::Undo, ctx);
         } else if key(egui::Key::Comma) {
             self.execute(Command::Settings, ctx);
+        } else if key(egui::Key::Num0) {
+            self.execute(Command::Paragraph, ctx);
         } else if key(egui::Key::Num1) {
             self.execute(Command::H1, ctx);
         } else if key(egui::Key::Num2) {

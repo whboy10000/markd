@@ -477,10 +477,21 @@ pub fn render_block(
                 // 窗口变宽表就变宽；窄窗口下自动收窄并让单元格内文字换行。
                 // 列宽公式与编辑态（editor.rs 表格编辑分支）完全一致，
                 // 保证点击进入编辑时列宽不变、表格不跳。
-                let cols = head.len().max(1);
-                let avail = (ui.available_width() - 12.0).max(120.0);
+                // 列数按「所有行里最宽的一行」计算。只看表头会在数据行比表头
+                // 多列时把整张表按 1 列排版：col_w 拿到整页宽度，第二列之后
+                // 全被推到屏幕外，看起来就像「表格只显示一列」。
+                let cols = head
+                    .len()
+                    .max(rows.iter().map(|r| r.len()).max().unwrap_or(0))
+                    .max(1);
+                // 再按版心宽度兜底：横向布局里 available_width 偶尔会拿到
+                // 远超正文宽度的值，若不夹住，col_w 会被放大成整页宽，
+                // 第二列之后直接被推出可视区域。
+                let avail = (ui.available_width().min(env.max_width) - 12.0).max(60.0);
                 let gap = ui.spacing().item_spacing.x * cols.saturating_sub(1) as f32;
-                let col_w = ((avail - gap) / cols as f32).max(56.0);
+                // 列多时允许继续缩小，保证整表落在版心内，而不是把后面的列
+                // 直接挤出可视区域。
+                let col_w = ((avail - gap) / cols as f32).max(28.0);
                 // 记录每个单元格的矩形，用于画「单线」分隔（不是每格一个框）
                 let mut row_rects: Vec<Vec<egui::Rect>> = Vec::new();
                 let mut copied = false;
@@ -764,7 +775,41 @@ pub fn render_block(
                 );
                 resp
             }
-            Block::Math { tex, .. } => {
+            Block::Math { tex, source } => {
+                // ```math 代码块与 `$$...$$` 块级公式都交给 RaTeX 排成原生显示列表，
+                // 独占一行、居中显示。
+                let latex = crate::ast::math_fence_tex(source)
+                    .or_else(|| crate::ast::display_math_tex(source));
+                if let Some(latex) = latex {
+                    let font_size = 22.0f32;
+                    let rendered = env
+                        .images
+                        .math_shapes(&latex, font_size, MathDisplay::Display);
+                    let r = panel_frame(theme).show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            if let Some(m) = &rendered {
+                                let max_w = (env.max_width - 16.0).max(40.0);
+                                let scale = (max_w / m.size.x.max(1.0)).min(1.0);
+                                let draw_size = m.size * scale;
+                                let (rect, _) = ui.allocate_exact_size(draw_size, Sense::hover());
+                                let painter = ui.painter().clone();
+                                for shape in crate::render::math::transform_shapes(
+                                    &m.shapes, rect.min, scale, theme.text,
+                                ) {
+                                    painter.add(shape);
+                                }
+                            } else {
+                                // 渲染失败时至少把 LaTeX 原文显示出来，方便排查。
+                                let mut f = theme.mono_fmt();
+                                f.color = theme.heading;
+                                let mut job = LayoutJob::default();
+                                job.append(&latex, 0.0, f);
+                                wrapped_label(ui, job, env.max_width, Sense::hover());
+                            }
+                        })
+                    });
+                    return r.response.interact(Sense::click());
+                }
                 let r = panel_frame(theme).show(ui, |ui| {
                     ui.vertical_centered(|ui| {
                         let mut f = theme.mono_fmt();

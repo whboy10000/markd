@@ -28,11 +28,9 @@ pub(crate) fn table_op_on_grid(
     op: TableOp,
 ) -> bool {
     use crate::ast::Align;
-    let cols = grid
-        .first()
-        .map(|r| r.len())
-        .into_iter()
-        .fold(0usize, usize::max);
+    // 列数必须按最宽的一行算：只取第一行会在表头短于数据行时把后面的
+    // 列操作全部夹到同一位置。
+    let cols = grid.iter().map(|r| r.len()).max().unwrap_or(0);
     match op {
         TableOp::InsertRow(r) => {
             // 在第 r 行下方插入：r=0（表头）→ 数据区最前；其余插到其后

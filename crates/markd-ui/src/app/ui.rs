@@ -190,7 +190,41 @@ impl MarkdApp {
             {
                 chosen = Some(Command::Image);
             }
-            // 插入类动作收进一个下拉：表格、代码、链接、分隔线、公式、图表…
+            // 超链接从「插入」下拉里提出来：高频使用，放在「插入」左侧。
+            if ui
+                .button("超链接")
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .on_hover_text("插入超链接 (Cmd/Ctrl+K)")
+                .clicked()
+            {
+                chosen = Some(Command::Link);
+            }
+            // 行内公式 / 公式块也从「插入」下拉里提出来，放在「插入」左侧。
+            if ui
+                .button("行内公式")
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .on_hover_text("插入行内公式 ($...$)")
+                .clicked()
+            {
+                chosen = Some(Command::InlineMath);
+            }
+            if ui
+                .button("公式块")
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .on_hover_text("插入独立公式块 (Cmd/Ctrl+Option+B)")
+                .clicked()
+            {
+                chosen = Some(Command::Math);
+            }
+            if ui
+                .button("代码块公式")
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .on_hover_text("插入公式代码块 (```math ... ```)")
+                .clicked()
+            {
+                chosen = Some(Command::MathCode);
+            }
+            // 插入类动作收进一个下拉：表格、代码、分隔线、图表…
             // 全塞在工具条上会挤成一排小按钮，下拉更好找。
             ui.menu_button("插入", |ui| {
                 for (label, cmd) in [
@@ -198,10 +232,7 @@ impl MarkdApp {
                     ("代码块", Command::CodeBlock),
                     ("代码组", Command::CodeGroup),
                     ("行内代码", Command::Code),
-                    ("超链接", Command::Link),
                     ("分隔线", Command::Rule),
-                    ("行内公式", Command::InlineMath),
-                    ("公式块", Command::Math),
                     ("图表", Command::Mermaid),
                     ("流程图", Command::Flowchart),
                     ("脚注", Command::Footnote),
@@ -262,16 +293,12 @@ impl MarkdApp {
         use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke};
         // 页签之间的分隔线：1px 低对比灰，上下内缩 5px，不顶到容器边缘。
         fn divider(ui: &mut egui::Ui) {
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(1.0, 14.0), egui::Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 14.0), egui::Sense::hover());
             let x = rect.center().x;
             let y = rect.center().y;
             ui.painter().line_segment(
                 [Pos2::new(x, y - 7.0), Pos2::new(x, y + 7.0)],
-                Stroke::new(
-                    1.0,
-                    Color32::from_rgba_unmultiplied(128, 128, 128, 89),
-                ),
+                Stroke::new(1.0, Color32::from_rgba_unmultiplied(128, 128, 128, 89)),
             );
         }
         ui.style_mut().interaction.selectable_labels = false;

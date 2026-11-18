@@ -147,6 +147,27 @@ impl Document {
         self.rev += 1;
     }
 
+    /// 在 `idx` 之前插入新块；`idx == 0` 时插到文档最前。
+    /// 与 `insert_block_after` 一样只解析这段新源码，不重解析全文。
+    pub fn insert_block_before(&mut self, idx: usize, source: &str) {
+        let at = idx.min(self.blocks.len());
+        let parsed = ast::parse(source);
+        if parsed.is_empty() {
+            self.blocks.insert(
+                at,
+                Block::Blank {
+                    source: source.to_string(),
+                },
+            );
+        } else {
+            for (k, b) in parsed.into_iter().enumerate() {
+                self.blocks.insert(at + k, b);
+            }
+        }
+        self.dirty = true;
+        self.rev += 1;
+    }
+
     pub fn remove_block(&mut self, idx: usize) {
         if self.blocks.len() <= 1 || idx >= self.blocks.len() {
             return;

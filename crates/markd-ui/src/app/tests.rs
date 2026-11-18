@@ -433,6 +433,44 @@ fn run_real_frame_ext(
     (out.shapes, copied)
 }
 
+/// 与 `run_real_frame_ext` 相同，但 root Ui 的 Id 稳定。
+/// 点击类测试必须用它：自动 Id 每帧变化会让 egui 认为按下和松开不是同一个控件。
+fn run_real_frame_stable_ext(
+    ctx: &egui::Context,
+    app: &mut MarkdApp,
+    frame: &mut eframe::Frame,
+    events: Vec<egui::Event>,
+) -> (Vec<egui::epaint::ClippedShape>, String) {
+    use eframe::App as _;
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |root| {
+        let mut root = egui::Ui::new(
+            root.ctx().clone(),
+            egui::Id::new("markd_test_root"),
+            egui::UiBuilder::new(),
+        );
+        app.ui(&mut root, frame);
+    });
+    out.textures_delta.clear();
+    let copied = out
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            egui::OutputCommand::CopyText(t) => Some(t.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    (out.shapes, copied)
+}
+
 fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
     egui::Event::PointerButton {
         pos,
@@ -669,6 +707,202 @@ fn real_app_blank_click_after_new_document() {
     }
 }
 
+/// 单击正文块就应进入编辑并获得焦点，不能要求点第二次。
+#[test]
+fn real_app_single_click_focuses_block() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("第一段\n\n第二段", None);
+    app.home = false;
+    for _ in 0..3 {
+        let _ = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
+    }
+
+    let (shapes, _) = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
+    let pos = shapes
+        .iter()
+        .find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == "第二段" => {
+                let p = t.pos + t.galley.rect.center().to_vec2();
+                (p.y > 80.0).then_some(p)
+            }
+            _ => None,
+        })
+        .expect("第二段未渲染");
+
+    let _ = run_real_frame_stable_ext(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![egui::Event::PointerMoved(pos)],
+    );
+    let _ = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![pointer_button(pos, true)]);
+    let _ = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![pointer_button(pos, false)]);
+    for _ in 0..2 {
+        let _ = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
+    }
+
+    assert_eq!(app.editor.active, 2, "单击后活动块应切到第二段");
+    let tab_key = app.tabs.get(app.active).map(|t| t.uid).unwrap_or(0);
+    assert_eq!(
+        ctx.memory(|m| m.focused()),
+        Some(egui::Id::new(("block_edit", tab_key, 2))),
+        "单击一次后第二段就必须持有焦点（光标闪烁）"
+    );
+}
+
+/// 空白处右键应记录菜单位置并保持打开；点别处后关闭。
+#[test]
+fn real_app_blank_secondary_click_opens_context_menu() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("第一段\n\n第二段", None);
+    app.home = false;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+
+    let blank = egui::pos2(600.0, 500.0);
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![
+            egui::Event::PointerMoved(blank),
+            egui::Event::PointerButton {
+                pos: blank,
+                button: egui::PointerButton::Secondary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+        ],
+    );
+    // egui 的 clicked/secondary_clicked 在松开时触发：按下帧只登记指针。
+    assert!(
+        app.editor.context_menu.is_none(),
+        "按下右键不应提前打开菜单"
+    );
+
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![egui::Event::PointerButton {
+            pos: blank,
+            button: egui::PointerButton::Secondary,
+            pressed: false,
+            modifiers: Default::default(),
+        }],
+    );
+    assert!(
+        app.editor.context_menu.is_some(),
+        "松开右键后应打开上下文菜单"
+    );
+
+    // Area 首帧是 sizing pass（不可见），下一帧才真正绘制。
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    fn collect_texts<'a>(shape: &'a egui::Shape, out: &mut Vec<&'a str>) {
+        match shape {
+            egui::Shape::Text(t) => out.push(t.galley.text()),
+            egui::Shape::Vec(v) => {
+                for s in v {
+                    collect_texts(s, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut texts = Vec::new();
+    for cs in &shapes {
+        collect_texts(&cs.shape, &mut texts);
+    }
+    for label in ["剪切", "拷贝", "粘贴", "段落", "格式", "插入"] {
+        assert!(
+            texts.contains(&label),
+            "右键菜单应渲染「{label}」，实际：{texts:?}"
+        );
+    }
+    assert!(
+        app.editor.context_menu.is_some(),
+        "没有点击外部时菜单应保持打开"
+    );
+
+    // 点「段落」→ 子菜单出现 → 点「一级标题」→ 当前块变成 H1。
+    let find = |shapes: &[egui::epaint::ClippedShape], name: &str| -> egui::Pos2 {
+        shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Text(t) if t.galley.text() == name => {
+                    Some(t.pos + t.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            // 跳过菜单栏/标签栏里的同名文字，只取正文区域。
+            .filter(|p| p.y > 80.0)
+            .last()
+            .unwrap_or_else(|| panic!("未渲染：{name}"))
+    };
+    let paragraph = find(&shapes, "段落");
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![pointer_button(paragraph, true)],
+    );
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![pointer_button(paragraph, false)],
+    );
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let h1 = find(&shapes, "一级标题");
+    run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(h1, true)]);
+    run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(h1, false)]);
+    assert!(
+        matches!(
+            app.doc.blocks.first(),
+            Some(crate::ast::Block::Heading { level: 1, .. })
+        ),
+        "点击「一级标题」应把当前块变成一级标题"
+    );
+
+    // 再验证一次「在正文块上右键」：块矩形通常占满整行，不应因此失效。
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let body = find(&shapes, "第一段");
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![
+            egui::Event::PointerMoved(body),
+            egui::Event::PointerButton {
+                pos: body,
+                button: egui::PointerButton::Secondary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+        ],
+    );
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![egui::Event::PointerButton {
+            pos: body,
+            button: egui::PointerButton::Secondary,
+            pressed: false,
+            modifiers: Default::default(),
+        }],
+    );
+    assert!(
+        app.editor.context_menu.is_some(),
+        "在正文块上右键也应稳定打开菜单"
+    );
+}
+
 /// 代码块编辑态换语言必须一次点击完成：
 /// 光标在代码块内（TextEdit 持有焦点）→ 点一次语言下拉（弹层打开）→
 /// 点一次语言项（语言改掉、弹层收起）。这是用户报告的「需要点两次」bug 的原始场景。
@@ -818,6 +1052,105 @@ fn drag_paragraph_to_below_list_selects_all() {
     );
 }
 
+/// 回归：光标停在标题（活动 TextEdit）里，从标题拖到下方段落，
+/// 跨块选区必须从标题里的按下字符一直覆盖到段落末端。
+#[test]
+fn drag_heading_to_paragraph_selects_all() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("# 标题\n\n下面是一段文字", None);
+    app.home = false;
+    app.editor.active = 0;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    // 活动标题的 TextEdit 只显示「标题」两个字（编辑态隐藏 `# ` 标记）；
+    // 工具条/大纲/侧栏里也有同名文字，只取编辑区里（y 在工具条下方）那一个。
+    let heading = shapes
+        .iter()
+        .filter_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == "标题" => Some(t.pos),
+            _ => None,
+        })
+        .filter(|p| p.y > 70.0)
+        .min_by(|a, b| a.y.total_cmp(&b.y))
+        .expect("未渲染标题");
+    // 从标题文字开头按下（保证锚点落在标题内），拖到段落最后一个字上。
+    let start = heading + egui::vec2(2.0, 7.0);
+    let (para, size) = shapes
+        .iter()
+        .find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == "下面是一段文字" && t.pos.y > 140.0 => {
+                Some((t.pos, t.galley.size()))
+            }
+            _ => None,
+        })
+        .expect("未渲染段落");
+    let end = para + egui::vec2(size.x - 4.0, 7.0);
+    drag_select(&ctx, &mut app, &mut frame, start, end);
+
+    let text = crate::editor::cross_sel_text(&app.doc, app.editor.cross_sel).unwrap_or_default();
+    assert!(
+        text.contains("下面是一段文字"),
+        "从标题往下拖必须选中段落，实际选区 {:?}",
+        app.editor.cross_sel
+    );
+    assert!(
+        text.contains("标题"),
+        "从标题按下时锚点必须落在标题内，实际选区 {:?}",
+        app.editor.cross_sel
+    );
+}
+
+/// 回归：活动段落里含 Markdown 标记（`**`）时，从可见文字处起拖，
+/// 锚点必须换算到「所见文本」坐标，不能因隐藏标记而少选/漏选。
+#[test]
+fn drag_from_active_bold_paragraph_selects_visible_text() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("前缀**加粗**后缀\n\n下面一段文字", None);
+    app.home = false;
+    app.editor.active = 0;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let find = |pred: &dyn Fn(&str) -> bool, min_y: f32| -> (egui::Pos2, egui::Vec2) {
+        shapes
+            .iter()
+            .find_map(|cs| match &cs.shape {
+                egui::Shape::Text(t) if pred(t.galley.text()) && t.pos.y > min_y => {
+                    Some((t.pos, t.galley.size()))
+                }
+                _ => None,
+            })
+            .expect("未渲染目标文字")
+    };
+    // 编辑态缓冲区仍是原文（`**` 被排成透明字），文字形状里带标记。
+    let (src, _) = find(&|t| t.contains("加粗") && t.contains('*'), 70.0);
+    let (para, size) = find(&|t| t.starts_with("下面一段文字"), 120.0);
+    let start = src + egui::vec2(2.0, 7.0);
+    let end = para + egui::vec2(size.x - 4.0, 7.0);
+    drag_select(&ctx, &mut app, &mut frame, start, end);
+
+    let sel = app.editor.cross_sel.expect("应建立跨块选区");
+    assert_eq!(
+        (sel.0, sel.2),
+        (0, 2),
+        "锚点/终点块应为 0 和 2，实际 {sel:?}"
+    );
+    assert!(sel.1 <= 2, "锚点应按所见文本换算，实际 {sel:?}");
+    let text = crate::editor::cross_sel_text(&app.doc, app.editor.cross_sel).unwrap_or_default();
+    assert!(text.contains("前缀"), "选区应从按下处开始，实际 {sel:?}");
+    assert!(
+        text.contains("下面一段文字"),
+        "选区应覆盖下一段，实际 {sel:?}"
+    );
+}
+
 /// 回归：反向从列表下方往上拖到段落，中间经过块间空档，也要选全。
 #[test]
 fn drag_list_up_to_paragraph_selects_all() {
@@ -849,6 +1182,123 @@ fn drag_list_up_to_paragraph_selects_all() {
         "反向拖选也应覆盖全部内容，实际 {:?}",
         app.editor.cross_sel
     );
+}
+
+/// 行内公式必须用原生形状渲染，而不是退化成 `$x^2$` 文本。
+#[test]
+fn real_app_inline_math_draws_texture() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("前 $x^2 + y^2$ 后\n\n第二段", None);
+    app.home = false;
+    // 第一个块处于编辑态时显示源码，不会走富文本渲染；把焦点放到第二段。
+    app.editor.active = 2;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    fn has_native_math(shape: &egui::Shape) -> bool {
+        match shape {
+            // 原生公式是用默认白色纹理的实心 Mesh（区别于贴图 Mesh）。
+            egui::Shape::Mesh(mesh) => {
+                mesh.texture_id == egui::TextureId::default() && !mesh.vertices.is_empty()
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().any(has_native_math),
+            _ => false,
+        }
+    }
+    assert!(
+        shapes.iter().any(|cs| has_native_math(&cs.shape)),
+        "行内公式没有用原生形状绘制"
+    );
+    let text = |needle: &str| {
+        shapes.iter().any(|cs| match &cs.shape {
+            egui::Shape::Text(t) => t.galley.text().contains(needle),
+            _ => false,
+        })
+    };
+    assert!(text("前") && text("后"), "公式两侧的文字应正常保留");
+    assert!(!text("x^2") && !text("$"), "公式源码不应作为文本出现");
+}
+
+/// 块级公式 `$$...$$` 也必须渲染成居中的 RaTeX 原生形状。
+#[test]
+fn real_app_display_math_draws_texture() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("$$\nE = mc^2\n$$\n\n第二段", None);
+    app.home = false;
+    app.editor.active = 2;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    fn has_native_math(shape: &egui::Shape) -> bool {
+        match shape {
+            egui::Shape::Mesh(mesh) => {
+                mesh.texture_id == egui::TextureId::default() && !mesh.vertices.is_empty()
+            }
+            egui::Shape::Rect(r) => r.fill != egui::Color32::TRANSPARENT,
+            egui::Shape::Vec(shapes) => shapes.iter().any(has_native_math),
+            _ => false,
+        }
+    }
+    assert!(
+        shapes.iter().any(|cs| has_native_math(&cs.shape)),
+        "块级公式没有用原生形状绘制"
+    );
+    let text = |needle: &str| {
+        shapes.iter().any(|cs| match &cs.shape {
+            egui::Shape::Text(t) => t.galley.text().contains(needle),
+            _ => false,
+        })
+    };
+    assert!(
+        !text("E = mc^2") && !text("$$"),
+        "块级公式源码不应作为文本出现"
+    );
+}
+
+/// 回归：多列表格必须把所有列都排进版心，不能只显示第一列。
+#[test]
+fn real_app_table_shows_all_columns() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new(
+        "| A1 | B1 | C1 | D1 |\n| --- | --- | --- | --- |\n| A2 | B2 | C2 | D2 |",
+        None,
+    );
+    app.home = false;
+    app.editor.active = 0;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let mut xs: Vec<f32> = ["A1", "B1", "C1", "D1"]
+        .iter()
+        .map(|name| {
+            shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    egui::Shape::Text(t) if t.galley.text() == *name => Some(t.pos),
+                    _ => None,
+                })
+                .find(|p| p.y > 80.0)
+                .unwrap_or_else(|| panic!("未渲染：{name}"))
+                .x
+        })
+        .collect();
+    xs.sort_by(f32::total_cmp);
+    assert_eq!(xs.len(), 4, "四个表头都应渲染");
+    for pair in xs.windows(2) {
+        assert!(
+            pair[1] - pair[0] < 400.0,
+            "列间距过大，后面的列会被挤出屏幕：{xs:?}"
+        );
+    }
 }
 
 /// 回归：光标在表格第一格时，按住鼠标拖到其它单元格，应把整张表格选入

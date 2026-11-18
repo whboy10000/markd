@@ -150,6 +150,7 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
     let m_italic = mk(&mut map, "italic", "斜体", Command::Italic);
     let m_underline = mk(&mut map, "underline", "下划线", Command::Underline);
     let m_strike = mk(&mut map, "strike", "删除线", Command::Strike);
+    let m_highlight = mk(&mut map, "highlight", "高亮", Command::Highlight);
     let m_code = mk(&mut map, "code", "行内代码", Command::Code);
     let m_link = mk(&mut map, "link", "插入链接", Command::Link);
     let m_image = mk(&mut map, "image", "插入图片", Command::Image);
@@ -162,6 +163,7 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
             &m_italic,
             &m_underline,
             &m_strike,
+            &m_highlight,
             &m_code,
             &m_link,
             &m_image,

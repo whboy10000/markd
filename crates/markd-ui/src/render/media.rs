@@ -9,9 +9,107 @@ use std::sync::mpsc::{Receiver, Sender};
 /// 后台下载完成的远程图片：URL + 解码后的像素（None 表示失败）。
 type RemoteImage = (String, Option<egui::ColorImage>);
 
+/// RaTeX 栅格化得到的公式 PNG 及其尺寸信息（旧路径，仅保留用于缓存测试）。
+#[derive(Clone)]
+struct PngRenderedMath {
+    png: Vec<u8>,
+    size: egui::Vec2,
+    baseline: f32,
+}
+
+/// 一张已经上传到 GPU 的公式图片。
+#[derive(Clone)]
+pub struct MathImage {
+    pub texture: egui::TextureHandle,
+    /// 逻辑尺寸（已经除以 device_pixel_ratio）。
+    pub size: egui::Vec2,
+    /// 基线到图片顶部的逻辑距离，用于行内公式与文字基线对齐。
+    pub baseline: f32,
+}
+
+const MATH_FONT_SIZE: f32 = 22.0;
+const MATH_PADDING: f32 = 4.0;
+const MATH_DPR: f32 = 2.0;
+
+/// 用 RaTeX 把 LaTeX 排版并栅格化成透明底 PNG。
+/// 黑色字形 + 透明背景，绘制时再按主题 tint，这样浅色/深色可以共用同一份缓存。
+fn render_math_png(tex: &str) -> Option<PngRenderedMath> {
+    let ast = ratex_parser::parse(tex).ok()?;
+    let layout_options = ratex_layout::LayoutOptions {
+        color: ratex_types::color::Color::BLACK,
+        ..Default::default()
+    };
+    let layout = ratex_layout::layout(&ast, &layout_options);
+    let display_list = ratex_layout::to_display_list(&layout);
+    let png = ratex_render::render_to_png(
+        &display_list,
+        &ratex_render::RenderOptions {
+            font_size: MATH_FONT_SIZE,
+            padding: MATH_PADDING,
+            background_color: ratex_types::color::Color::new(0.0, 0.0, 0.0, 0.0),
+            font_dir: String::new(),
+            device_pixel_ratio: MATH_DPR,
+        },
+    )
+    .ok()?;
+
+    // RaTeX 的 height 是基线以上高度，depth 是基线以下深度。
+    let width_px = (layout.width as f32 * MATH_FONT_SIZE + MATH_PADDING * 2.0) * MATH_DPR;
+    let height_px =
+        ((layout.height + layout.depth) as f32 * MATH_FONT_SIZE + MATH_PADDING * 2.0) * MATH_DPR;
+    let baseline_px = (layout.height as f32 * MATH_FONT_SIZE + MATH_PADDING) * MATH_DPR;
+    Some(PngRenderedMath {
+        png,
+        size: egui::vec2(width_px / MATH_DPR, height_px / MATH_DPR),
+        baseline: baseline_px / MATH_DPR,
+    })
+}
+
+#[cfg(test)]
+mod math_tests {
+    /// RaTeX + 内嵌字体必须真的产出一张可解码的 PNG。
+    #[test]
+    fn ratex_renders_png() {
+        let math = super::render_math_png("\\frac{a}{b} = c").expect("RaTeX 渲染失败");
+        assert!(math.png.starts_with(b"\x89PNG"), "输出不是 PNG");
+        let img = image::load_from_memory(&math.png).expect("PNG 解码失败");
+        assert!(img.width() > 0 && img.height() > 0);
+        assert!(math.size.x > 0.0 && math.size.y > 0.0);
+        assert!(math.baseline > 0.0 && math.baseline < math.size.y);
+    }
+
+    /// 块级公式提取出的字符串带首尾换行，RaTeX 也必须能渲染。
+    #[test]
+    fn ratex_accepts_multiline_formula() {
+        assert!(
+            super::render_math_png("\nE = mc^2\n").is_some(),
+            "块级公式渲染失败"
+        );
+    }
+
+    /// 同一个公式第二次取纹理必须命中缓存，而不是重新渲染。
+    #[test]
+    fn math_texture_is_cached_by_formula() {
+        let ctx = egui::Context::default();
+        let mut cache = super::ImageCache::new();
+        let first = cache.math_texture(&ctx, "x^2 + y^2").expect("首次渲染失败");
+        let second = cache.math_texture(&ctx, "x^2 + y^2").expect("缓存未命中");
+        assert_eq!(
+            first.texture.id(),
+            second.texture.id(),
+            "同一公式不应生成第二张纹理"
+        );
+    }
+}
+
 pub struct ImageCache {
     local: HashMap<PathBuf, Option<egui::TextureHandle>>,
     remote: HashMap<String, Option<egui::TextureHandle>>,
+    /// ```math 代码块按 LaTeX 源字符串缓存纹理；None 表示渲染失败，避免每帧重试。
+    math: HashMap<String, Option<MathImage>>,
+    /// 原生显示列表公式缓存：key = (公式, 字号×100取整, 显示模式)。
+    /// 避免每帧重新解析 RaTeX 与细分字形轮廓。
+    math_native: HashMap<(String, u32, MathDisplay), Option<RenderedMath>>,
     /// 正在下载的 URL，避免同一张图重复起线程。
     pending: HashSet<String>,
     rx: Receiver<RemoteImage>,
@@ -24,6 +122,8 @@ impl ImageCache {
         Self {
             local: HashMap::new(),
             remote: HashMap::new(),
+            math: HashMap::new(),
+            math_native: HashMap::new(),
             pending: HashSet::new(),
             rx,
             tx,
@@ -49,6 +149,57 @@ impl ImageCache {
         })();
         self.local.insert(path.to_path_buf(), tex.clone());
         tex
+    }
+
+    /// 数学代码块纹理：RaTeX 把 LaTeX 排成 PNG，再上传成 egui 纹理。
+    /// 以公式源字符串为 key，同一公式只渲染一次。
+    pub fn math_texture(&mut self, ctx: &egui::Context, tex: &str) -> Option<MathImage> {
+        if let Some(v) = self.math.get(tex) {
+            return v.clone();
+        }
+        let image = render_math_png(tex).and_then(|rendered| {
+            let img = image::load_from_memory(&rendered.png).ok()?.to_rgba8();
+            let (w, h) = (img.width() as usize, img.height() as usize);
+            if w == 0 || h == 0 {
+                return None;
+            }
+            let ci = egui::ColorImage::from_rgba_unmultiplied([w, h], img.as_raw());
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            use std::hash::{Hash, Hasher};
+            tex.hash(&mut hasher);
+            Some(MathImage {
+                texture: ctx.load_texture(
+                    format!("markd-math:{:x}", hasher.finish()),
+                    ci,
+                    egui::TextureOptions::LINEAR,
+                ),
+                size: rendered.size,
+                baseline: rendered.baseline,
+            })
+        });
+        // 新纹理在本帧末尾才上传；请求下一帧，避免公式首帧空白。
+        if image.is_some() {
+            ctx.request_repaint();
+        }
+        self.math.insert(tex.to_string(), image.clone());
+        image
+    }
+
+    /// 原生显示列表公式：直接把 RaTeX 显示列表转成 epaint 形状，不走 PNG。
+    /// 按 (公式, 字号, 显示模式) 缓存，解析与字形细分只做一次。
+    pub fn math_shapes(
+        &mut self,
+        tex: &str,
+        font_size: f32,
+        display: MathDisplay,
+    ) -> Option<RenderedMath> {
+        let key = (tex.to_string(), (font_size * 100.0).round() as u32, display);
+        if let Some(v) = self.math_native.get(&key) {
+            return v.clone();
+        }
+        let rendered = crate::render::math::render_formula(tex, font_size, display);
+        self.math_native.insert(key, rendered.clone());
+        rendered
     }
 
     /// 远程图片纹理：命中缓存直接返回；未命中时启动后台下载（每张图只下一次）。

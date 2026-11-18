@@ -20,3 +20,12 @@ vte = "0.15.0"
 # 侧栏图标是 SVG，编译期嵌入、运行时用 resvg 栅格化。
 # 关掉默认特性（文字/系统字体/位图嵌入）后体积和编译时间都小很多，图标只有路径。
 resvg = { version = "0.47.0", default-features = false }
+arboard.workspace = true
+ratex-parser.workspace = true
+ratex-layout.workspace = true
+ratex-render.workspace = true
+ratex-types.workspace = true
+ratex-font.workspace = true
+ratex-font-loader.workspace = true
+ab_glyph.workspace = true
+lyon.workspace = true

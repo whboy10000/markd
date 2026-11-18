@@ -12,9 +12,11 @@ pub(crate) fn collect_link_ranges(
     for inl in inlines {
         match inl {
             Inline::Text(t) => *pos += t.chars().count(),
-            Inline::Strong(v) | Inline::Emph(v) | Inline::Strike(v) | Inline::Underline(v) => {
-                collect_link_ranges(v, out, pos)
-            }
+            Inline::Strong(v)
+            | Inline::Emph(v)
+            | Inline::Strike(v)
+            | Inline::Underline(v)
+            | Inline::Highlight(v) => collect_link_ranges(v, out, pos),
             Inline::Code(t) => *pos += t.chars().count(),
             Inline::Link { label, url } => {
                 let start = *pos;

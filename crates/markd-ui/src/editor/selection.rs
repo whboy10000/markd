@@ -13,16 +13,24 @@ pub(super) fn cross_sel_range(sel: (usize, usize, usize, usize)) -> (usize, usiz
 }
 
 /// 渲染态用 text_response 自己画文字选区的块。
-/// 其余块（代码块、图表、表格、公式…）没有可映射的字符位置，拖选时按「整块」处理。
+/// 其余块（代码块、图表、表格、公式、纯图片段落…）没有可映射的字符位置，
+/// 拖选时按「整块」处理。
 pub(super) fn text_selection_block(b: &Block) -> bool {
-    matches!(
-        b,
+    match b {
+        // 纯图片段落走 image_preview，没有文字可映射，按原子块处理；
+        // 图文混排的段落仍然走 text_response。
+        Block::Paragraph { content, .. } => content.iter().any(|i| {
+            !matches!(
+                i,
+                crate::ast::Inline::Image { .. } | crate::ast::Inline::Break
+            )
+        }),
         Block::Heading { .. }
-            | Block::Paragraph { .. }
-            | Block::Quote { .. }
-            | Block::ListItem { .. }
-            | Block::Footnote { .. }
-    )
+        | Block::Quote { .. }
+        | Block::ListItem { .. }
+        | Block::Footnote { .. } => true,
+        _ => false,
+    }
 }
 
 /// 非文本块是否被跨块选区整块覆盖：在两端之间，或作为端点。

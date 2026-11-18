@@ -38,6 +38,23 @@ serde_json = "1.0.154"
 # 图床上传与远程图片下载（阻塞式 HTTP + rustls）。
 ureq = { version = "3.5.2", features = ["json"] }
 base64 = "0.22.1"
+# 右键菜单「粘贴」需要主动读取系统剪贴板文本（egui 只暴露写入接口）。
+arboard = "3.7.0"
+# 仅用于从原始 Markdown 中识别 ```math 围栏（其余解析仍走自研 AST，
+# 以保留源码无损往返）。
+pulldown-cmark = { version = "0.13.6", default-features = false }
+# RaTeX：把 LaTeX 公式排版并栅格化成 PNG。
+ratex-parser = "0.1.16"
+ratex-layout = "0.1.16"
+ratex-render = { version = "0.1.16", default-features = false, features = ["embed-fonts"] }
+ratex-types = "0.1.16"
+# 原生显示列表渲染需要直接访问字体与字形轮廓。
+ratex-font = "0.1.16"
+ratex-font-loader = "0.1.16"
+ab_glyph = "0.2.32"
+# 把 RaTeX 的显示列表（字形轮廓、路径）细分成三角形网格，再交给 egui 的
+# Mesh 直接上 GPU 绘制，避免 PNG 栅格化与纹理上传。
+lyon = "1.0.12"
 # 图床保存路径模板里的 {year}/{month}/{day} 需要本地时区时间。
 chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 markd-core = { path = "crates/markd-core" }

@@ -193,6 +193,20 @@ pub(super) fn show_source_mode(
                 .layer_id_at(*p)
                 .is_none_or(|layer| layer == ui.layer_id())
     });
+    // 源码模式也弹出同一个上下文菜单。与混合模式保持一致：只要在编辑区
+    // 可见范围内右键即可，不再要求必须点在 TextEdit 矩形之外，避免
+    // 「有时能弹、有时不能弹」。
+    if ctx.input(|i| i.pointer.secondary_clicked())
+        && let Some(p) = pointer.filter(|p| {
+            (ui.max_rect().contains(*p) || ui.clip_rect().contains(*p))
+                && !bar_zone.contains(*p)
+                && ctx
+                    .layer_id_at(*p)
+                    .is_none_or(|layer| layer == ui.layer_id())
+        })
+    {
+        state.context_menu = Some(p);
+    }
     if let Some(p) = blank {
         let id = Id::new(("source_editor", tab_key));
         if let Some(mut ts) = egui::TextEdit::load_state(ui.ctx(), id) {

@@ -12,6 +12,7 @@ pub enum Inline {
     Emph(Vec<Inline>),
     Strike(Vec<Inline>),
     Underline(Vec<Inline>),
+    Highlight(Vec<Inline>),
     Code(String),
     Link {
         label: Vec<Inline>,
@@ -235,6 +236,7 @@ pub fn inline_plain(inlines: &[Inline]) -> String {
             | Inline::Emph(v)
             | Inline::Strike(v)
             | Inline::Underline(v)
+            | Inline::Highlight(v)
             | Inline::Link { label: v, .. } => {
                 s.push_str(&inline_plain(v));
             }
@@ -254,6 +256,7 @@ pub fn collect_wiki(inlines: &[Inline], out: &mut Vec<String>) {
             | Inline::Emph(v)
             | Inline::Strike(v)
             | Inline::Underline(v)
+            | Inline::Highlight(v)
             | Inline::Link { label: v, .. } => {
                 collect_wiki(v, out);
             }
@@ -404,7 +407,9 @@ pub fn parse_inline(s: &str) -> Vec<Inline> {
         }
         if ch == '$' {
             if let Some(end) = find_seq(&c, i + 1, &['$']) {
-                let tex: String = c[i + 1..end].iter().collect();
+                let span: String = c[i..=end].iter().collect();
+                let tex = inline_math_tex(&span)
+                    .unwrap_or_else(|| c[i + 1..end].iter().collect::<String>());
                 flush!();
                 out.push(Inline::Math(tex));
                 i = end + 1;
@@ -455,6 +460,16 @@ pub fn parse_inline(s: &str) -> Vec<Inline> {
                 let inner: String = c[i + 2..end].iter().collect();
                 flush!();
                 out.push(Inline::Strike(parse_inline(&inner)));
+                i = end + 2;
+                continue;
+            }
+        }
+        // 高亮 ==文字==：与删除线同理，成对才生效，落单的等号按普通文字处理。
+        if ch == '=' && i + 1 < c.len() && c[i + 1] == '=' {
+            if let Some(end) = find_seq(&c, i + 2, &['=', '=']) {
+                let inner: String = c[i + 2..end].iter().collect();
+                flush!();
+                out.push(Inline::Highlight(parse_inline(&inner)));
                 i = end + 2;
                 continue;
             }
@@ -696,6 +711,51 @@ fn parse_align(line: &str) -> Vec<Align> {
             }
         })
         .collect()
+}
+
+/// 用 pulldown-cmark 的 math 扩展识别一段 `$...$` 行内公式。
+/// 仅用于确认语法并取出 LaTeX；正文解析仍由自研 parse_inline 完成。
+pub fn inline_math_tex(source: &str) -> Option<String> {
+    use pulldown_cmark::{Event, Options, Parser};
+    Parser::new_ext(source, Options::ENABLE_MATH).find_map(|ev| match ev {
+        Event::InlineMath(tex) => Some(tex.into_string()),
+        _ => None,
+    })
+}
+
+/// 识别块级公式 `$$...$$` 并取出其中的 LaTeX。
+pub fn display_math_tex(source: &str) -> Option<String> {
+    use pulldown_cmark::{Event, Options, Parser};
+    Parser::new_ext(source, Options::ENABLE_MATH).find_map(|ev| match ev {
+        Event::DisplayMath(tex) => Some(tex.into_string()),
+        _ => None,
+    })
+}
+
+/// 从原始 Markdown 中提取 ```math / ```latex 围栏内的 LaTeX。
+///
+/// 这里用 pulldown-cmark 只做「围栏识别」这一件事，正文块仍由自研解析器
+/// 生成，以保留源码与 AST 的无损往返。不是数学围栏时返回 `None`。
+pub fn math_fence_tex(source: &str) -> Option<String> {
+    use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
+
+    let mut in_math = false;
+    let mut tex = String::new();
+    for ev in Parser::new(source) {
+        match ev {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => {
+                let lang = info.trim().to_ascii_lowercase();
+                if lang == "math" || lang == "latex" {
+                    in_math = true;
+                    tex.clear();
+                }
+            }
+            Event::Text(t) if in_math => tex.push_str(&t),
+            Event::End(TagEnd::CodeBlock) if in_math => return Some(tex),
+            _ => {}
+        }
+    }
+    None
 }
 
 pub fn parse(src: &str) -> Vec<Block> {
@@ -1020,6 +1080,41 @@ mod tests {
         let b = parse("# 标题\n\n正文一段");
         assert!(matches!(b[0], Block::Heading { level: 1, .. }));
         assert!(b.iter().any(|x| matches!(x, Block::Paragraph { .. })));
+    }
+
+    /// ```math 围栏应被识别为数学代码块，并提取出 LaTeX 正文。
+    #[test]
+    fn math_fence_source() {
+        let src = "```math\n\\frac{a}{b} = c\n```";
+        assert_eq!(math_fence_tex(src).as_deref(), Some("\\frac{a}{b} = c\n"));
+        assert!(math_fence_tex("```rust\nfn main() {}\n```").is_none());
+        assert!(math_fence_tex("$$\nE = mc^2\n$$").is_none());
+        assert!(matches!(parse(src)[0], Block::Math { .. }));
+    }
+
+    /// 块级公式 `$$...$$` 由 pulldown-cmark 识别为 DisplayMath。
+    #[test]
+    fn display_math_source() {
+        assert_eq!(
+            display_math_tex("$$\nE = mc^2\n$$").as_deref(),
+            Some("\nE = mc^2\n")
+        );
+        assert!(display_math_tex("普通文本").is_none());
+        assert!(matches!(parse("$$\nE = mc^2\n$$")[0], Block::Math { .. }));
+    }
+
+    /// 行内公式由 pulldown-cmark 的 math 扩展识别，并保留在 AST 中。
+    #[test]
+    fn inline_math_source() {
+        assert_eq!(inline_math_tex("$x^2 + y^2$").as_deref(), Some("x^2 + y^2"));
+        assert!(inline_math_tex("普通文本").is_none());
+        let parsed = parse_inline("前 $x^2$ 后");
+        assert!(
+            parsed
+                .iter()
+                .any(|i| matches!(i, Inline::Math(t) if t == "x^2")),
+            "应解析出行内 Math: {parsed:?}"
+        );
     }
 
     /// <u>文字</u> 解析为下划线行内样式。
