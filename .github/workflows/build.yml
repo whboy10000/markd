@@ -16,7 +16,7 @@ permissions:
 jobs:
   test:
     name: Test (ubuntu)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - name: Install Linux dependencies
@@ -40,7 +40,7 @@ jobs:
         include:
           - os: macos-latest
             artifact: markd-macos
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             artifact: markd-linux
           - os: windows-latest
             artifact: markd-windows
@@ -199,7 +199,7 @@ jobs:
        github.ref == 'refs/heads/main' ||
        startsWith(github.ref, 'refs/tags/v') ||
        startsWith(github.ref, 'refs/tags/20'))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # 需要完整 git 历史与所有 tag，才能算出「这一版相对上一版改了什么」
       - uses: actions/checkout@v6
