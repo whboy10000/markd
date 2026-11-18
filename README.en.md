@@ -1,26 +1,88 @@
 # Markd
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm_Noncommercial_1.0.0-blue)](./LICENSE)
+[![Build](https://github.com/whboy10000/markd/actions/workflows/build.yml/badge.svg)](https://github.com/whboy10000/markd/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/whboy10000/markd?display_name=tag&sort=date)](https://github.com/whboy10000/markd/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#install)
 
 [简体中文](README.md) | **English**
 
-A Markdown editor built from scratch in pure Rust + egui, with an interface and interactions aligned with mainstream WYSIWYG editors.
+A desktop Markdown editor built from scratch in pure Rust + egui. **No web kernel, no Tauri/Electron, no off-the-shelf editor component** — from Markdown parsing to every pixel on screen, Markd draws it all itself.
 
-## About
+## Why Markd
 
-Markd is a desktop Markdown editor. Markdown parsing, block-level live rendering, code highlighting, and diagram drawing are all built in-house — no third-party editor kernel involved. Open and write: **the current block shows its source, all other blocks render live** (Hybrid View).
+| Dimension | Markd | Electron / WebView-based editors |
+| --- | --- | --- |
+| Binary size | Single-file executable, a few MB | 100 MB+, bundles Chromium |
+| Memory | Native GUI, tens of MB | One Chromium process to start |
+| Rendering | egui immediate mode, straight to GPU | DOM + CSS layout, layered indirection |
+| Long documents | 500k-character files stay smooth | Scrolling/typing stutter is common |
+| Parsing | In-house AST, lossless round-trip | Round-trip through HTML, format drift |
 
-## Features
+## Core concept: Hybrid View
 
-- **Hybrid View**: click any paragraph to edit it; the current block shows Markdown source while every other block renders as rich text, with lossless round-tripping.
-- **Block-level WYSIWYG**: headings, paragraphs, quotes, lists (including task lists), tables, code blocks (in-house syntax highlighting + one-click copy + language switching), math, Mermaid diagrams, images, footnotes, YAML front matter, `[TOC]`.
-- **Workspace**: open a folder, scan a Markdown file tree, jump via outline, drag-and-drop file opening.
-- **Writing modes**: source mode, focus mode, typewriter mode, auto save.
-- **Extras**: command palette, quick open, workspace-wide full-text search, bidirectional link graph, writing statistics, version snapshots (time machine).
-- **Integrated terminal**: PTY-based interactive shell (VS Code style) with colored output and alternate-screen apps (vim / less / htop); panel resizing syncs rows and columns automatically.
-- **6 themes**: Default Light / Default Dark / GitHub / Parchment / Nord / Solarized.
-- **Export**: self-contained HTML (printable to PDF from a browser).
-- **macOS native menu bar** and custom title bar: to the right of the traffic lights sit quick buttons for the command palette / quick open / search / save / terminal.
+**The current block shows source; every other block renders live.** Click any paragraph to edit it — that block turns into Markdown source so you can edit characters precisely; move focus away and it returns to rich text. You keep the intuitiveness of WYSIWYG editors like Typora without auto-formatting "eating" details in your source file (indentation, blank lines, original marker order).
+
+## Feature overview
+
+### Editing experience
+- **Hybrid View block-level WYSIWYG**: headings, paragraphs, quotes, lists (including task lists), tables, code blocks, math, Mermaid, images, footnotes, YAML front matter, `[TOC]`.
+- **Cross-block drag selection**: drag from a heading into a paragraph, across code blocks / images / formulas — the selection stays continuous; the active block stays in edit mode during the drag so layout doesn't jump.
+- **Right-click context menu**: Paragraph / Format / Insert submenus, Cut / Copy / Paste, plus "Copy as / Paste as" with multiple targets (Markdown, plain text, HTML).
+- **Full shortcut system**: 30+ shortcuts for heading levels, inline formats, block insertion, mode switches, command palette, etc. — `F1` opens the cheatsheet any time.
+- **Inline highlight `==text==`**: a first-class marker alongside bold / italic / strikethrough / inline code, fully nestable.
+
+### Markdown syntax
+- **Basics**: ATX/Setext headings, paragraphs, ordered / unordered / nested lists, quotes (with nested blocks), links, images, horizontal rules, hard breaks.
+- **GFM extensions**: tables (with alignment), strikethrough, task lists `- [ ]` / `- [x]`, fenced code blocks with language tags.
+- **Inline formats**: `**bold**`, `*italic*`, `` `code` ``, `~~strike~~`, `==highlight==`, super/subscript, `[link](url)`, `![image](src)`, autolinks.
+- **Footnotes**: `[^1]` references + `[^1]: content` definitions, auto-numbered.
+- **Front matter**: a top YAML block rendered separately, never mixed into the body.
+
+### Math (RaTeX native display list)
+- **Three syntaxes**: inline `$...$`, display `$$...$$`, fenced ` ```math ... ``` `.
+- **Zero rasterization**: RaTeX lays LaTeX out into a display list (glyph outlines, Bézier paths, line segments, rectangles); Markd tessellates it with lyon under the NonZero / EvenOdd winding rules into triangles and hands them to epaint `Mesh` for direct GPU rendering. **No PNG, no texture upload, no bitmap cache.**
+- **Baseline-aligned**: inline math embeds into the text stream and aligns to the text baseline; display math sits on its own centered line and scales down uniformly if too wide.
+- **Display mode**: inline uses `\textstyle`, display uses `\displaystyle`, matching LaTeX behavior.
+- **Cached results**: tessellated shapes are cached by `(formula, font size, display mode)` — every frame is just a Mesh draw.
+
+### Mermaid (25+ diagram types, all self-rendered)
+No mermaid.js — every diagram type has its own Rust renderer:
+`flowchart`, `sequence`, `class`, `er`, `gantt`, `journey`, `gitGraph`, `mindmap`, `timeline`, `pie`, `quadrantChart`, `radar`, `sankey`, `treemap`, `xychart`, `kanban`, `C4`, `requirementDiagram`, `cynefin`, `packet`, `railroad`, `swimlane`, `blockDiagram`, `boxes`, and more.
+
+### Code blocks
+- In-house lexical highlighting across 10 language families: Rust / Python / JavaScript / C-like / Markup / CSS / data formats / Shell / SQL / generic.
+- One-click copy, switchable language tag, line numbers, current-line highlight.
+
+### Workspace
+- Open a folder → scan a Markdown file tree (capped at 4000 files / 60k entries as a safety net).
+- Outline panel: built from heading levels, click to jump.
+- Quick open `Cmd/Ctrl+Shift+O`: fuzzy search across workspace files.
+- Backlink graph: `[[wiki-link]]` entries auto-build a graph, visualizing how notes interconnect.
+- Full-text search across files.
+- Writing statistics: word count, paragraphs, reading time.
+- Version snapshots (time machine): automatic / manual snapshots, review history any time.
+- Drag a file onto the window to open it.
+
+### Writing modes
+- **Source mode**: plain text editing, no rendering.
+- **Focus mode `F8`**: only the current paragraph stays bright, the rest fades.
+- **Typewriter mode `F9`**: the editing line stays centered in the viewport.
+- **Auto save**: configurable interval.
+
+### Integrated terminal
+- PTY-based interactive shell (VS Code style) with colored output and alternate-screen apps (vim / less / htop).
+- Panel resizing syncs terminal rows and columns automatically (`SIGWINCH`).
+- When the terminal has focus, every app shortcut except `Cmd/Ctrl+J` is handed to the shell.
+
+### Export
+- **Self-contained HTML**: CSS inlined, printable to PDF from any browser.
+- Math, code highlighting, Mermaid, table styles are all inlined — no external resources needed.
+
+### Appearance
+- **2 themes**: Light / Dark, syntax highlighting and math colors follow the theme.
+- **macOS native menu bar** + custom title bar: to the right of the traffic lights sit quick buttons for the command palette / quick open / search / save / terminal.
+- 220+ sidebar SVG icons embedded at compile time, rasterized once into a texture cache.
 
 ## Install
 
@@ -30,9 +92,12 @@ Download the installer for your platform from [Releases](https://github.com/whbo
   - `Markd-*-macos-intel.dmg`: Intel chips
   - `Markd-*-macos-apple-silicon.dmg`: Apple Silicon (M-series) chips
   - `Markd-*-macos-universal.dmg`: universal binary, runs on both
-  - Open the DMG and drag Markd into Applications.
+  - Open the DMG and drag Markd into Applications. If macOS says "cannot verify developer" on first run: `xattr -d com.apple.quarantine /Applications/Markd.app`.
 - **Windows**: `Markd-*-windows-setup.exe`, an install wizard with optional directory choice; Start-menu and desktop shortcuts are created automatically.
-- **Linux**: `Markd-*-linux-amd64.deb` (`sudo dpkg -i Markd-*.deb`) or `Markd-*-linux-amd64.rpm` (`sudo rpm -i Markd-*.rpm`), both registering an application menu entry; or run the binary straight from the `.tar.gz`.
+- **Linux**:
+  - `Markd-*-linux-amd64.deb`: `sudo dpkg -i Markd-*.deb`
+  - `Markd-*-linux-amd64.rpm`: `sudo rpm -i Markd-*.rpm`
+  - Both register an application menu entry; or run the binary straight from the `.tar.gz`.
 
 ## Run
 
@@ -94,15 +159,35 @@ sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev \
 A Cargo workspace with strictly one-way dependency flow:
 
 ```text
-markd-core → markd-platform → markd-ui → markd (bin)
+┌─────────────────────────────────────────────────────────────┐
+│ markd (bin)                                                 │  Entry point + icon resources
+└─────────────────────────────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│ markd-ui                                                    │
+│  ├─ app/        App state, action dispatch, dialogs, tabs   │
+│  ├─ editor/     Hybrid View editor, selection, caret, undo  │
+│  ├─ render/     Block rendering (math / diagram / inline)   │
+│  ├─ terminal/   PTY terminal                                │
+│  ├─ sidebar.rs  File tree / outline / search                │
+│  └─ icons.rs    220+ compile-time SVG icons                 │
+└─────────────────────────────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│ markd-platform                                              │  macOS native menu (muda) / font loading
+└─────────────────────────────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│ markd-core                                                  │
+│  ├─ ast.rs        In-house Markdown AST                     │
+│  ├─ document.rs   Document model + undo stack               │
+│  ├─ command.rs    Command abstraction (edit/insert/nav)     │
+│  ├─ export.rs     HTML export                               │
+│  ├─ workspace.rs  Workspace scan / backlink index           │
+│  ├─ image_host.rs Image-host upload                         │
+│  └─ theme.rs      Theme & syntax highlight palette          │
+└─────────────────────────────────────────────────────────────┘
 ```
-
-| crate | Role |
-| --- | --- |
-| `markd-core` | Markdown parsing (in-house AST), document model & undo stack, `Command` definitions, themes, workspace & config persistence, HTML export |
-| `markd-platform` | macOS native menu bar (muda) and system CJK font loading |
-| `markd-ui` | egui UI: block rendering, Hybrid View editor, sidebar, PTY terminal, overlays |
-| `markd` | Binary entry point |
 
 ## Performance: opens 500k-character documents smoothly
 
@@ -115,6 +200,7 @@ Markd's rendering pipeline is designed specifically for very long documents — 
 - **Throttled undo stack**. Snapshots are recorded with a 450ms throttle (capped at 200 entries), so continuous typing never floods the undo stack nor copies the full text on every keystroke.
 - **Lazy workspace**. File-tree scans are capped at 4000 files / 60k entries as a safety net; quick open and the link graph only scan in the background when their panels open — never synchronously at startup.
 - **Zero runtime icon overhead**. 220+ sidebar SVG icons are embedded at compile time, rasterized once into a texture cache, then drawn as textures every frame.
+- **Zero rasterization for math**. RaTeX display lists convert straight to epaint Meshes; shapes are cached by `(formula, font size, display mode)` so each frame is just a triangle draw.
 - **Fast dev builds too**. `[profile.dev.package."*"] opt-level = 3` fully optimizes dependencies, so `cargo run` is usable day-to-day while your own code stays debuggable.
 
 Measured baseline (100k characters / 989 blocks): full-text parse ~11ms (once on open); incremental single-block write-back ~3µs; editor frame ~9.5ms. A 500k-character document is roughly 5× that size and stays equally fluid.
@@ -122,6 +208,13 @@ Measured baseline (100k characters / 989 blocks): full-text parse ~11ms (once on
 ## Configuration
 
 Configuration and version snapshots are stored under `~/.markd/` in the user directory, never inside the project folder.
+
+```
+~/.markd/
+├── config.toml      # Theme, font, auto-save, etc.
+├── fonts/           # Custom fonts (Regular weight preferred)
+└── snapshots/       # Version snapshots (time machine)
+```
 
 ## Fonts
 
@@ -134,6 +227,8 @@ GitHub Actions builds on macOS / Windows / Linux automatically (`.github/workflo
 - Every push to `main` / `master` and every PR runs compile & tests;
 - Build artifacts are uploaded as Actions Artifacts, ready to download and run;
 - Pushing a `v*` / `20*` tag creates a Release automatically: macOS produces Intel / Apple Silicon / universal DMGs (`scripts/package-macos.sh`, same logic locally and in CI), Linux produces `.deb` / `.rpm` / `.tar.gz`, Windows produces an NSIS installer.
+
+CI runners are pinned (`ubuntu-26.04` / `macos-latest` / `windows-latest`) — we don't chase `*-latest` to avoid GitHub migration banners.
 
 ## License
 

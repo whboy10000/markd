@@ -1,26 +1,88 @@
 # Markd
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm_Noncommercial_1.0.0-blue)](./LICENSE)
+[![Build](https://github.com/whboy10000/markd/actions/workflows/build.yml/badge.svg)](https://github.com/whboy10000/markd/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/whboy10000/markd?display_name=tag&sort=date)](https://github.com/whboy10000/markd/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#安装)
 
 **简体中文** | [English](README.en.md)
 
-纯 Rust + egui 从零实现的 Markdown 编辑器，界面与交互对齐主流所见即所得编辑器。
+纯 Rust + egui 从零实现的桌面 Markdown 编辑器。**不套 Web 内核，不用 Tauri/Electron，不依赖任何现成的编辑器组件** —— 从 Markdown 解析到屏幕上的每一个像素，都由 Markd 自己绘制。
 
-## 这是什么
+## 为什么是 Markd
 
-Markd 是一个桌面 Markdown 编辑器。Markdown 解析、块级实时渲染、代码高亮、流程图绘制全部自研，不依赖现成的编辑器内核。打开即写：**当前块显示源码，其余块实时渲染**（Hybrid View）。
+| 维度 | Markd | 基于 Electron/WebView 的编辑器 |
+| --- | --- | --- |
+| 启动体积 | 单文件可执行，几 MB | 动辄 100 MB+，捆绑 Chromium |
+| 内存占用 | 原生 GUI，几十 MB | 一个 Chromium 进程起步 |
+| 渲染 | egui 立即模式，GPU 直出 | DOM + CSS 排版，间接层叠 |
+| 长文档 | 50 万字单文件流畅编辑 | 大文档滚动/输入常见卡顿 |
+| 解析 | 自研 AST，源码无损往返 | 经过 HTML 中间层，格式易漂移 |
 
-## 功能
+## 核心概念：Hybrid View
 
-- **Hybrid View**：点击任意段落进入编辑，当前块显示 Markdown 源码，其余块渲染成富文本，源码无损往返。
-- **块级 WYSIWYG**：标题、段落、引用、列表（含任务列表）、表格、代码块（自研词法高亮 + 一键复制 + 语言切换）、公式、Mermaid 流程图、图片、脚注、YAML Front Matter、`[TOC]`。
-- **工作区**：打开文件夹、扫描 Markdown 文件树、大纲跳转、拖拽打开文件。
-- **写作模式**：源码模式、专注模式、打字机模式、自动保存。
-- **特色功能**：命令面板、快速打开、工作区全文搜索、双向链接关系图、写作统计、版本快照（时间机器）。
-- **集成终端**：基于 PTY 的交互式 shell（VS Code 风格），支持彩色输出、备用屏（vim / less / htop），面板缩放自动同步行列。
-- **2 套主题**：浅色 / 深色。
-- **导出**：自包含 HTML（可用浏览器打印为 PDF）。
-- **macOS 原生菜单栏**，自定义标题栏：系统红绿灯右侧是命令面板 / 快速打开 / 搜索 / 保存 / 终端快捷按钮。
+**当前块显示源码，其余块实时渲染。** 点击任意段落进入编辑态，那一块变成 Markdown 源码让你精确修改字符；焦点移开，立即回到富文本。既保留了 Typora 这类 WYSIWYG 编辑器的直观，又不会被自动格式化「吃掉」源文件里的细节（缩进、空行、原始标记顺序）。
+
+## 功能全景
+
+### 编辑体验
+- **Hybrid View 块级所见即所得**：标题、段落、引用、列表（含任务列表）、表格、代码块、公式、Mermaid、图片、脚注、YAML Front Matter、`[TOC]`。
+- **跨块拖选**：鼠标从标题拖进段落、跨越代码块/图片/公式，选择框连续不破碎；活动块在拖拽期间保持编辑态避免布局跳动。
+- **右键上下文菜单**：段落 / 格式 / 插入子菜单，剪切 / 拷贝 / 粘贴，「复制为 / 粘贴为」多种目标格式（Markdown、纯文本、HTML）。
+- **完整快捷键体系**：标题级别、行内格式、块级插入、模式切换、命令面板等 30+ 快捷键（见下文表格），`F1` 随时呼出速查。
+- **行内高亮 `==text==`**：与加粗、斜体、删除线、行内代码同级的原生标记，可嵌套可混合。
+
+### Markdown 语法
+- **基础**：ATX/Setext 标题、段落、有序/无序/嵌套列表、引用（支持嵌套块）、链接、图片、水平线、硬换行。
+- **GFM 扩展**：表格（含对齐）、删除线、任务列表 `- [ ]` / `- [x]`、围栏代码块带语言标记。
+- **行内格式**：`**粗**`、`*斜*`、`` `代码` ``、`~~删~~`、`==高亮==`、上/下标、`[链接](url)`、`![图片](src)`、自动链接。
+- **脚注**：`[^1]` 引用 + `[^1]: 内容` 定义，自动编号。
+- **Front Matter**：顶部 YAML 块独立渲染，不混入正文。
+
+### 数学公式（RaTeX 原生显示列表）
+- **三种语法**：行内 `$...$`、块级 `$$...$$`、代码块 ` ```math ... ``` `。
+- **零栅格化**：RaTeX 把 LaTeX 排版成显示列表（字形轮廓、贝塞尔路径、线段、矩形），Markd 用 lyon 按 NonZero / EvenOdd 环绕规则细分成三角形，交给 epaint `Mesh` 直接上 GPU。**没有 PNG、没有纹理上传、没有位图缓存**。
+- **基线对齐**：行内公式嵌入文本流，按文字基线对齐；块级公式独占一行、居中，超宽时等比缩小。
+- **显示模式**：行内自动用 `\textstyle`，块级用 `\displaystyle`，与 LaTeX 行为一致。
+- **结果缓存**：按 `(公式串, 字号, 显示模式)` 缓存细分后的形状，每帧只是 Mesh 绘制。
+
+### Mermaid 图表（25+ 类型，全自绘）
+不调用 mermaid.js，每种图都有独立的 Rust 渲染器：
+`flowchart`、`sequence`、`class`、`er`、`gantt`、`journey`、`gitGraph`、`mindmap`、`timeline`、`pie`、`quadrantChart`、`radar`、`sankey`、`treemap`、`xychart`、`kanban`、`C4`、`requirementDiagram`、`cynefin`、`packet`、`railroad`、`swimlane`、`blockDiagram`、`boxes` 等。
+
+### 代码块
+- 自研词法高亮，覆盖 Rust / Python / JavaScript / C 系 / Markup / CSS / 数据格式 / Shell / SQL 等 10 个语言家族。
+- 一键复制、语言标签可切换、行号、当前行高亮。
+
+### 工作区
+- 打开文件夹 → 扫描 Markdown 文件树（带 4000 文件 / 6 万条目上限兜底）。
+- 大纲面板：从标题层级生成，点击跳转。
+- 快速打开 `Cmd/Ctrl+Shift+O`：模糊搜索工作区文件。
+- 双向链接关系图：`[[wiki-link]]` 自动建图，可视化笔记互联。
+- 全文搜索：跨文件关键词匹配。
+- 写作统计：字数、段落、阅读时长。
+- 版本快照（时间机器）：自动/手动快照，历史随时回看。
+- 拖拽文件到窗口直接打开。
+
+### 写作模式
+- **源码模式**：纯文本编辑，不做渲染。
+- **专注模式 `F8`**：只高亮当前段落，其余淡出。
+- **打字机模式 `F9`**：编辑行始终保持在视口中央。
+- **自动保存**：可配置间隔。
+
+### 集成终端
+- 基于 PTY 的交互式 shell（VS Code 风格），支持彩色输出与备用屏（vim / less / htop）。
+- 面板缩放自动同步终端行列（`SIGWINCH`）。
+- 终端获得焦点时，除 `Cmd/Ctrl+J` 外的应用快捷键让位给 shell。
+
+### 导出
+- **自包含 HTML**：内联 CSS，可直接用浏览器打印为 PDF。
+- 公式、代码高亮、Mermaid、表格样式全部内联，无需外部资源。
+
+### 外观
+- **2 套主题**：浅色 / 深色，语法高亮与公式颜色随主题切换。
+- **macOS 原生菜单栏** + 自定义标题栏：系统红绿灯右侧是命令面板 / 快速打开 / 搜索 / 保存 / 终端快捷按钮。
+- 侧栏 220+ 个 SVG 图标编译期嵌入，运行时一次栅格化进纹理缓存。
 
 ## 安装
 
@@ -30,9 +92,12 @@ Markd 是一个桌面 Markdown 编辑器。Markdown 解析、块级实时渲染�
   - `Markd-*-macos-intel.dmg`：Intel 芯片
   - `Markd-*-macos-apple-silicon.dmg`：Apple Silicon（M 系列）芯片
   - `Markd-*-macos-universal.dmg`：通用二进制，两种芯片都能跑
-  - 打开后把 Markd 拖进 Applications 即可。
+  - 打开后把 Markd 拖进 Applications 即可。首次运行若提示「无法验证开发者」：`xattr -d com.apple.quarantine /Applications/Markd.app`。
 - **Windows**：`Markd-*-windows-setup.exe`，安装向导里可选目录，会自动创建开始菜单与桌面快捷方式。
-- **Linux**：`Markd-*-linux-amd64.deb`（`sudo dpkg -i Markd-*.deb`）、`Markd-*-linux-amd64.rpm`（`sudo rpm -i Markd-*.rpm`），都会注册应用菜单项；或直接用 `.tar.gz` 里的二进制。
+- **Linux**：
+  - `Markd-*-linux-amd64.deb`：`sudo dpkg -i Markd-*.deb`
+  - `Markd-*-linux-amd64.rpm`：`sudo rpm -i Markd-*.rpm`
+  - 两者都会注册应用菜单项；也可以直接解压 `.tar.gz` 跑二进制。
 
 ## 运行
 
@@ -94,15 +159,35 @@ sudo apt-get install -y libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev \
 Cargo workspace，依赖方向严格单向：
 
 ```text
-markd-core → markd-platform → markd-ui → markd (bin)
+┌─────────────────────────────────────────────────────────────┐
+│ markd (bin)                                                 │  入口 + 图标资源
+└─────────────────────────────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│ markd-ui                                                    │
+│  ├─ app/        应用状态、动作分发、对话框、菜单、标签栏    │
+│  ├─ editor/     Hybrid View 编辑器、选择、光标、撤销        │
+│  ├─ render/     块级渲染（含 math/diagram/inline）          │
+│  ├─ terminal/   PTY 终端                                    │
+│  ├─ sidebar.rs  文件树 / 大纲 / 搜索                        │
+│  └─ icons.rs    220+ 编译期 SVG 图标                        │
+└─────────────────────────────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│ markd-platform                                              │  macOS 原生菜单栏（muda）/ 字体加载
+└─────────────────────────────────────────────────────────────┘
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│ markd-core                                                  │
+│  ├─ ast.rs        自研 Markdown AST                         │
+│  ├─ document.rs   文档模型 + 撤销栈                         │
+│  ├─ command.rs    Command 抽象（编辑/格式/插入/导航）       │
+│  ├─ export.rs     HTML 导出                                 │
+│  ├─ workspace.rs  工作区扫描 / 双链索引                     │
+│  ├─ image_host.rs 图床上传                                  │
+│  └─ theme.rs      主题与语法高亮配色                        │
+└─────────────────────────────────────────────────────────────┘
 ```
-
-| crate | 说明 |
-| --- | --- |
-| `markd-core` | Markdown 解析（自研 AST）、文档模型与撤销栈、`Command` 定义、主题、工作区与配置持久化、HTML 导出 |
-| `markd-platform` | macOS 原生菜单栏（muda）与系统中文字体加载 |
-| `markd-ui` | egui 界面：块级渲染、Hybrid View 编辑器、侧栏、PTY 终端、各类浮层 |
-| `markd` | 二进制入口 |
 
 ## 性能：50 万字长文打开不卡顿
 
@@ -115,6 +200,7 @@ Markd 的渲染管线为超长文档做过专门设计——**几十万字的单
 - **撤销栈节流**。快照按 450ms 节流记录（上限 200 条），连续输入不会把撤销栈打爆，也不会每键复制一次全文。
 - **懒加载的工作区**。文件树扫描有 4000 文件 / 6 万条目上限兜底；快速打开与双链关系图都只在面板打开时才后台扫描，绝不在启动阶段同步扫盘。
 - **图标零运行时开销**。侧栏 220+ 个 SVG 图标编译期嵌入二进制，运行时只栅格化一次进纹理缓存，之后每帧只是纹理绘制。
+- **公式零栅格化**。RaTeX 显示列表直接转 epaint Mesh，形状按 `(公式, 字号, 显示模式)` 缓存，每帧只是三角形绘制。
 - **开发构建也够快**。`[profile.dev.package."*"] opt-level = 3` 只对依赖做全量优化，`cargo run` 直接可日用，自己代码仍可断点调试。
 
 实测基线（10 万字 / 989 块）：全文解析 ~11ms（仅打开时一次）；单块编辑增量写回 ~3µs；编辑器单帧 ~9.5ms。50 万字文档约为该基线 5 倍体量，打开与编辑同样全程流畅。
@@ -122,6 +208,13 @@ Markd 的渲染管线为超长文档做过专门设计——**几十万字的单
 ## 配置
 
 配置与版本快照保存在用户目录 `~/.markd/`，不写入项目目录。
+
+```
+~/.markd/
+├── config.toml      # 主题、字体、自动保存等
+├── fonts/           # 自定义字体（优先 Regular 字重）
+└── snapshots/       # 版本快照（时间机器）
+```
 
 ## 字体
 
@@ -134,6 +227,8 @@ GitHub Actions 会在 macOS / Windows / Linux 三个平台自动构建（`.githu
 - push 到 `main` / `master` 或提 PR 时执行编译与测试；
 - 编译产物上传为 Actions Artifacts，可直接下载运行；
 - 推送 `v*` / `20*` 标签时自动创建 Release：macOS 产出 Intel / Apple Silicon / 通用三种 DMG（`scripts/package-macos.sh`，本地与 CI 同一份逻辑），Linux 产出 `.deb` / `.rpm` / `.tar.gz`，Windows 产出 NSIS 安装程序。
+
+CI runner 版本固定（`ubuntu-26.04` / `macos-latest` / `windows-latest`），不追 `*-latest` 以避免 GitHub 迁移横幅。
 
 ## 许可
 
