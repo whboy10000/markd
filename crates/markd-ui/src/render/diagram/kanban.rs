@@ -60,9 +60,7 @@ pub(crate) fn draw_kanban(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui:
     let lane_h = card_galleys
         .iter()
         .map(|gs| {
-            gs.iter()
-                .map(|g| g.size().y + card_pad * 2.0)
-                .sum::<f32>()
+            gs.iter().map(|g| g.size().y + card_pad * 2.0).sum::<f32>()
                 + card_gap * gs.len().saturating_sub(1) as f32
         })
         .fold(0.0, f32::max);
@@ -71,7 +69,8 @@ pub(crate) fn draw_kanban(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui:
     let p = ui.painter();
     for (li, lane) in lanes.iter().enumerate() {
         let x = rect.left() + li as f32 * (col_w + gap);
-        let lane_rect = Rect::from_min_size(Pos2::new(x, rect.top() + 6.0), Vec2::new(col_w, h - 12.0));
+        let lane_rect =
+            Rect::from_min_size(Pos2::new(x, rect.top() + 6.0), Vec2::new(col_w, h - 12.0));
         p.rect_filled(lane_rect, 6.0, theme.code_header);
         p.text(
             Pos2::new(x + col_w / 2.0, lane_rect.top() + 5.0),
@@ -83,10 +82,7 @@ pub(crate) fn draw_kanban(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui:
         let mut cy = lane_rect.top() + header_h + 8.0;
         for (ci, g) in card_galleys[li].iter().enumerate() {
             let ch = g.size().y + card_pad * 2.0;
-            let cr = Rect::from_min_size(
-                Pos2::new(x + 6.0, cy),
-                Vec2::new(col_w - 12.0, ch),
-            );
+            let cr = Rect::from_min_size(Pos2::new(x + 6.0, cy), Vec2::new(col_w - 12.0, ch));
             p.rect_filled(cr, 4.0, palette_color(theme, ci));
             p.rect_stroke(
                 cr,

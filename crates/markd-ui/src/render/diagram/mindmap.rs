@@ -64,13 +64,7 @@ pub(crate) fn parse_mindmap(code: &str) -> Vec<MindNode> {
     nodes
 }
 
-fn assign_y(
-    idx: usize,
-    children: &[Vec<usize>],
-    y: &mut [f32],
-    cursor: &mut f32,
-    row_h: f32,
-) {
+fn assign_y(idx: usize, children: &[Vec<usize>], y: &mut [f32], cursor: &mut f32, row_h: f32) {
     if children[idx].is_empty() {
         *cursor += row_h;
         y[idx] = *cursor - row_h / 2.0;
@@ -123,7 +117,9 @@ pub(crate) fn draw_mindmap(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui
         assign_y(r, &children, &mut ys, &mut cursor, row_h);
     }
     let content_w = xs[max_depth] + col_w[max_depth];
-    let w = (content_w + 20.0).max(280.0).min(ui.available_width().max(280.0));
+    let w = (content_w + 20.0)
+        .max(280.0)
+        .min(ui.available_width().max(280.0));
     let h = cursor + 16.0;
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, h), Sense::click());
     let p = ui.painter();
@@ -144,12 +140,7 @@ pub(crate) fn draw_mindmap(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui
         let mid = (start.x + end.x) / 2.0;
         let color = palette_color(theme, nodes[i].branch);
         p.add(egui::epaint::CubicBezierShape::from_points_stroke(
-            [
-                start,
-                Pos2::new(mid, start.y),
-                Pos2::new(mid, end.y),
-                end,
-            ],
+            [start, Pos2::new(mid, start.y), Pos2::new(mid, end.y), end],
             false,
             Color32::TRANSPARENT,
             Stroke::new(1.4, color),
@@ -160,7 +151,11 @@ pub(crate) fn draw_mindmap(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui
         let c = center_of(i);
         let r = Rect::from_center_size(c, sizes[i]);
         let fill = palette_color(theme, n.branch);
-        let radius = if n.parent.is_none() { r.height() / 2.0 } else { 6.0 };
+        let radius = if n.parent.is_none() {
+            r.height() / 2.0
+        } else {
+            6.0
+        };
         p.rect_filled(r, radius, fill);
         p.rect_stroke(
             r,

@@ -182,12 +182,7 @@ pub(crate) fn parse_blockdiagram(code: &str) -> (BNode, Vec<(String, String, Str
 }
 
 /// 递归测量并放置：返回 (本层高度, 已放置节点)。
-fn layout_nodes(
-    nodes: &[BNode],
-    columns: usize,
-    origin: Pos2,
-    width: f32,
-) -> (Vec<Placed>, f32) {
+fn layout_nodes(nodes: &[BNode], columns: usize, origin: Pos2, width: f32) -> (Vec<Placed>, f32) {
     if nodes.is_empty() {
         return (Vec::new(), 0.0);
     }
@@ -220,12 +215,8 @@ fn layout_nodes(
             let span = n.span.clamp(1, columns);
             let w = cell_w * span as f32 + gap * (span.saturating_sub(1)) as f32;
             let h = if n.container {
-                let (_, ih) = layout_nodes(
-                    &n.children,
-                    n.columns,
-                    Pos2::ZERO,
-                    (w - 16.0).max(20.0),
-                );
+                let (_, ih) =
+                    layout_nodes(&n.children, n.columns, Pos2::ZERO, (w - 16.0).max(20.0));
                 34.0 + ih + 8.0
             } else {
                 32.0
@@ -249,12 +240,8 @@ fn layout_nodes(
                     Pos2::new(r.left() + 8.0, r.top() + 24.0),
                     Pos2::new(r.right() - 8.0, r.bottom() - 8.0),
                 );
-                let (placed_children, _) = layout_nodes(
-                    &n.children,
-                    n.columns,
-                    inner.min,
-                    inner.width(),
-                );
+                let (placed_children, _) =
+                    layout_nodes(&n.children, n.columns, inner.min, inner.width());
                 placed_children
             } else {
                 Vec::new()
@@ -274,19 +261,14 @@ fn layout_nodes(
     (placed, total_h)
 }
 
-pub(crate) fn draw_block(
-    ui: &mut egui::Ui,
-    code: &str,
-    theme: &Theme,
-) -> egui::Response {
+pub(crate) fn draw_block(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui::Response {
     let (root, arrows) = parse_blockdiagram(code);
     if root.children.is_empty() {
         return raw_code(ui, code, theme);
     }
     let avail = ui.available_width().max(320.0).min(900.0);
     let (placed, h) = layout_nodes(&root.children, root.columns, Pos2::ZERO, avail - 8.0);
-    let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(avail, h + 12.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(avail, h + 12.0), Sense::click());
     let p = ui.painter();
     let offset = Vec2::new(rect.left() + 4.0, rect.top() + 6.0);
     let mut rects: HashMap<String, Rect> = HashMap::new();

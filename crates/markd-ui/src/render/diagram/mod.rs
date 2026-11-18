@@ -6,8 +6,8 @@ use crate::theme::Theme;
 use egui::{self, Align2, Color32, FontFamily, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use std::collections::HashMap;
 
-mod boxes;
 mod blockdiagram;
+mod boxes;
 mod c4;
 mod class;
 mod cynefin;
@@ -32,7 +32,7 @@ mod treemap;
 mod xychart;
 
 pub(crate) use self::{
-    boxes::*, blockdiagram::*, c4::*, class::*, cynefin::*, er::*, flow::*, gantt::*, git::*,
+    blockdiagram::*, boxes::*, c4::*, class::*, cynefin::*, er::*, flow::*, gantt::*, git::*,
     journey::*, kanban::*, mindmap::*, packet::*, pie::*, quadrant::*, radar::*, railroad::*,
     requirement::*, sankey::*, sequence::*, swimlane::*, timeline::*, treemap::*, xychart::*,
 };

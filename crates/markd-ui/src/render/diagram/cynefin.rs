@@ -15,10 +15,7 @@ pub(crate) fn parse_cynefin(code: &str) -> (String, Vec<(String, String)>) {
             continue;
         }
         if let Some(rest) = l.strip_prefix("domain") {
-            let mut parts = rest
-                .split('"')
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
+            let mut parts = rest.split('"').map(str::trim).filter(|s| !s.is_empty());
             let name = parts.next().unwrap_or("").to_string();
             let desc = parts.next().unwrap_or("").to_string();
             if !name.is_empty() {
@@ -57,7 +54,10 @@ pub(crate) fn draw_cynefin(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui
     let cell = (side - gap) / 2.0;
     let quad = |r: usize, c: usize| {
         Rect::from_min_size(
-            Pos2::new(grid.left() + c as f32 * (cell + gap), grid.top() + r as f32 * (cell + gap)),
+            Pos2::new(
+                grid.left() + c as f32 * (cell + gap),
+                grid.top() + r as f32 * (cell + gap),
+            ),
             Vec2::splat(cell),
         )
     };

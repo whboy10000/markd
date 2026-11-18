@@ -389,6 +389,12 @@ impl Theme {
         self.body * factor
     }
 
+    /// 光标所在行的整行底色：主题强调色的低透明度版本（约 10%），
+    /// 浅色主题下接近 VS Code 的 editor.lineHighlightBackground，不遮挡文字。
+    pub fn line_highlight(&self) -> Color32 {
+        Color32::from_rgba_unmultiplied(self.accent.r(), self.accent.g(), self.accent.b(), 26)
+    }
+
     pub fn fmt(&self, size: f32) -> egui::text::TextFormat {
         egui::text::TextFormat {
             font_id: FontId::new(size, FontFamily::Proportional),

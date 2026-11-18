@@ -69,8 +69,12 @@ pub(crate) fn parse_quadrant(code: &str) -> QuadrantData {
         if let Some((name, rest)) = l.split_once(':')
             && let Some((x, y)) = rest.split_once(',')
         {
-            let x = x.trim().trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
-            let y = y.trim().trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
+            let x = x
+                .trim()
+                .trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
+            let y = y
+                .trim()
+                .trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
             if let (Ok(x), Ok(y)) = (x.parse::<f32>(), y.parse::<f32>()) {
                 d.points.push(QuadrantPoint {
                     label: quoted(name),
@@ -113,17 +117,26 @@ pub(crate) fn draw_quadrant(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egu
         Rect::from_min_size(Pos2::new(g.left() + half, g.top()), Vec2::splat(half)),
         Rect::from_min_size(g.min, Vec2::splat(half)),
         Rect::from_min_size(Pos2::new(g.left(), g.top() + half), Vec2::splat(half)),
-        Rect::from_min_size(Pos2::new(g.left() + half, g.top() + half), Vec2::splat(half)),
+        Rect::from_min_size(
+            Pos2::new(g.left() + half, g.top() + half),
+            Vec2::splat(half),
+        ),
     ];
     for (i, cell) in cells.iter().enumerate() {
         p.rect_filled(*cell, 0.0, palette_color(theme, i).gamma_multiply(0.55));
     }
     p.line_segment(
-        [Pos2::new(g.center().x, g.top()), Pos2::new(g.center().x, g.bottom())],
+        [
+            Pos2::new(g.center().x, g.top()),
+            Pos2::new(g.center().x, g.bottom()),
+        ],
         Stroke::new(1.2, theme.border),
     );
     p.line_segment(
-        [Pos2::new(g.left(), g.center().y), Pos2::new(g.right(), g.center().y)],
+        [
+            Pos2::new(g.left(), g.center().y),
+            Pos2::new(g.right(), g.center().y),
+        ],
         Stroke::new(1.2, theme.border),
     );
     p.rect_stroke(

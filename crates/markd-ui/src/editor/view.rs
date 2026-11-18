@@ -1381,6 +1381,51 @@ pub fn show_editor(
                                 cursor_idx = a;
                             }
                             let cr = out.cursor_range;
+                            // VS Code 风格的当前行高亮：从行号栏右侧铺到编辑区右缘，
+                            // 半透明垫在文字之上也不会影响阅读；编辑器失焦时仍然保留。
+                            // 失焦后 TextEdit 不再返回 cursor_range，用上次记录的光标位置兜底。
+                            {
+                                let caret_idx = cr
+                                    .map(|r| r.primary.index.0)
+                                    .unwrap_or_else(|| {
+                                        state.last_cursor.min(active_buf.chars().count())
+                                    });
+                                let mut acc = 0usize;
+                                let mut band: Option<(f32, f32)> = None;
+                                for row in &out.galley.rows {
+                                    let n = row.char_count_including_newline().0;
+                                    if caret_idx < acc + n {
+                                        band =
+                                            Some((out.galley_pos.y + row.pos.y, row.row.size.y));
+                                        break;
+                                    }
+                                    acc += n;
+                                }
+                                if band.is_none() {
+                                    if let Some(row) = out.galley.rows.last() {
+                                        band =
+                                            Some((out.galley_pos.y + row.pos.y, row.row.size.y));
+                                    }
+                                }
+                                // 空块的 galley 只有一条高度为 0 的空 row，
+                                // 用编辑框实际高度兜底，光标停在空行时也能看到整行高亮。
+                                let band = band.filter(|(_, h)| *h > 0.5).or_else(|| {
+                                    let r = out.response.rect;
+                                    (r.height() > 0.0).then_some((r.top(), r.height()))
+                                });
+                                if let Some((top, h)) = band {
+                                    let left = clip.left() + gutter_w + pad;
+                                    let right = (clip.right() - 4.0).max(left + 1.0);
+                                    ui.painter().rect_filled(
+                                        egui::Rect::from_min_max(
+                                            egui::Pos2::new(left, top),
+                                            egui::Pos2::new(right, top + h),
+                                        ),
+                                        0.0,
+                                        theme.line_highlight(),
+                                    );
+                                }
+                            }
                             let resp = out.response;
                             // 活动块（含空行）起拖由 text_response 的兜底分支接管：
                             // 拖出本块落到别的渲染态块时以光标为锚点建立跨块选区。

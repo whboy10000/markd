@@ -45,27 +45,28 @@ impl MarkdApp {
             };
             ui.label(RichText::new(title).strong().color(self.theme.dim));
 
-            // 右侧：命令面板 / 快速打开 / 搜索 / 保存 / 终端图标
+            // 右侧：终端图标
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(8.0);
-                // 搜索按钮已移到编辑区上方的工具条（统计右侧），这里只留保存 / 终端。
-                if ui
-                    .button("保存")
-                    .on_hover_cursor(egui::CursorIcon::Default)
-                    .clicked()
-                {
-                    chosen = Some(Command::Save);
-                }
-                ui.add_space(2.0);
-                if ui
-                    .selectable_label(
-                        self.terminal.open,
-                        RichText::new(">_").monospace().size(13.0),
-                    )
-                    .on_hover_cursor(egui::CursorIcon::Default)
-                    .on_hover_text("终端 (Cmd/Ctrl+J)")
-                    .clicked()
-                {
+                // 保存按钮已移除，保存仍可通过菜单 / Cmd+S 触发。
+                // 终端开关：Codicon 线性图标。面板收起时显示 panel（底部停靠），
+                // 展开时显示 panel-close（面板 + ×），16px、无背景无边框，
+                // 悬停只把前景色调亮。
+                let (icon_rect, icon_resp) =
+                    ui.allocate_exact_size(egui::vec2(22.0, 18.0), egui::Sense::click());
+                let icon_tint = if icon_resp.hovered() {
+                    self.theme.text.lerp_to_gamma(egui::Color32::WHITE, 0.3)
+                } else {
+                    self.theme.text
+                };
+                let icon_key = if self.terminal.open {
+                    "ui:panel-close"
+                } else {
+                    "ui:panel"
+                };
+                self.icons
+                    .paint_ui(ui, icon_rect, icon_key, 16.0, icon_tint);
+                if icon_resp.on_hover_text("终端 (Cmd/Ctrl+J)").clicked() {
                     self.terminal.toggle();
                 }
                 // 剩余空白 = 拖动区（双击 = 最大化）
@@ -258,6 +259,21 @@ impl MarkdApp {
     /// 编辑区顶部的标签栏：首页页签 + 每个打开的文件一个页签。
     /// 点页签切换，页签末尾的 × 关闭；它声明在 left 面板之后，所以只占编辑区宽度。
     pub(super) fn tabbar(&mut self, ui: &mut egui::Ui) {
+        use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke};
+        // 页签之间的分隔线：1px 低对比灰，上下内缩 5px，不顶到容器边缘。
+        fn divider(ui: &mut egui::Ui) {
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(1.0, 14.0), egui::Sense::hover());
+            let x = rect.center().x;
+            let y = rect.center().y;
+            ui.painter().line_segment(
+                [Pos2::new(x, y - 7.0), Pos2::new(x, y + 7.0)],
+                Stroke::new(
+                    1.0,
+                    Color32::from_rgba_unmultiplied(128, 128, 128, 89),
+                ),
+            );
+        }
         ui.style_mut().interaction.selectable_labels = false;
         ui.style_mut().spacing.item_spacing.x = 4.0;
         let mut switch: Option<usize> = None;
@@ -278,17 +294,9 @@ impl MarkdApp {
             {
                 self.home = true;
             }
-            // 加号紧跟在「首页」右侧：新建一个 Markdown 文档标签（首次保存时再选路径）。
-            if ui
-                .button("+")
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("新建 Markdown 文档 (Cmd/Ctrl+N)")
-                .clicked()
-            {
-                self.new_document();
-            }
-            ui.separator();
+            // 首页之后直接排文件页签，每个页签前加一条细竖线。
             for i in 0..self.tabs.len() {
+                divider(ui);
                 let active = !self.home && i == self.active;
                 let mut text = self.tab_label(i);
                 if self.tab_dirty(i) {
@@ -304,29 +312,139 @@ impl MarkdApp {
                     .as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "未保存的文档".to_string());
-                let resp = ui
-                    .selectable_label(active, RichText::new(text).color(color))
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text(tip);
-                if resp.clicked() {
+                // 整个页签是一块可点击的「胶囊」：文字与关闭按钮共用同一个
+                // 背景和 hover 反馈，不再像并排的两个独立控件。
+                let font = FontId::proportional(12.5);
+                let galley = ui.fonts_mut(|f| f.layout(text.clone(), font, color, f32::INFINITY));
+                let pad_l = 10.0;
+                let pad_r = 5.0;
+                let close_w = 18.0;
+                let gap = 4.0;
+                let tab_w = pad_l + galley.size().x + gap + close_w + pad_r;
+                let (rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(tab_w, 24.0), egui::Sense::click());
+                let painter = ui.painter().clone();
+                // 页签 hover 用指针位置判断：关闭按钮叠在页签内部，
+                // 两者不能互相抢 hover，否则 × 会一边淡入一边闪。
+                let pointer = ui.input(|i| i.pointer.hover_pos());
+                let hovered = pointer.is_some_and(|p| rect.contains(p));
+                if active {
+                    painter.rect_filled(rect, 5.0, self.theme.bg);
+                    painter.rect_stroke(
+                        rect,
+                        5.0,
+                        Stroke::new(1.0, self.theme.border),
+                        egui::StrokeKind::Inside,
+                    );
+                    // 底部一条主题色短线，强化「当前页签」。
+                    painter.line_segment(
+                        [
+                            Pos2::new(rect.left() + 6.0, rect.bottom() - 1.0),
+                            Pos2::new(rect.right() - 6.0, rect.bottom() - 1.0),
+                        ],
+                        Stroke::new(2.0, self.theme.accent),
+                    );
+                } else if hovered {
+                    painter.rect_filled(rect, 5.0, self.theme.border.gamma_multiply(0.35));
+                }
+                painter.galley(
+                    Pos2::new(rect.left() + pad_l, rect.center().y - galley.size().y / 2.0),
+                    galley,
+                    color,
+                );
+                // 关闭按钮默认完全隐藏，鼠标悬停页签时淡入；位置固定在文字右侧
+                // 4pt 处、与文字垂直居中，宽度始终占位，避免 hover 时页签跳动。
+                let close_alpha = ui.ctx().animate_bool_with_time(
+                    ui.scope_id().with(("tab_close_fade", i)),
+                    hovered,
+                    0.15,
+                );
+                let fade = |c: Color32, a: f32| {
+                    Color32::from_rgba_unmultiplied(
+                        c.r(),
+                        c.g(),
+                        c.b(),
+                        (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+                    )
+                };
+                let close_rect = Rect::from_center_size(
+                    Pos2::new(rect.right() - pad_r - close_w / 2.0, rect.center().y),
+                    egui::vec2(close_w, 18.0),
+                );
+                let close_shown = close_alpha > 0.01;
+                if close_shown {
+                    let close_resp = ui.interact(
+                        close_rect,
+                        ui.scope_id().with(("tab_close", i)),
+                        egui::Sense::click(),
+                    );
+                    let close_hovered = close_resp.hovered();
+                    if close_hovered {
+                        painter.circle_filled(
+                            close_rect.center(),
+                            8.0,
+                            fade(self.theme.dim, 0.18 * close_alpha),
+                        );
+                    }
+                    painter.text(
+                        close_rect.center(),
+                        Align2::CENTER_CENTER,
+                        "×",
+                        FontId::proportional(14.0),
+                        fade(
+                            if close_hovered {
+                                self.theme.text
+                            } else {
+                                self.theme.dim
+                            },
+                            close_alpha,
+                        ),
+                    );
+                    if close_resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("关闭标签")
+                        .clicked()
+                    {
+                        close = Some(i);
+                    }
+                }
+                // 指针落在已显示的 × 上时不要顺带切页签。
+                let on_close = close_shown && pointer.is_some_and(|p| close_rect.contains(p));
+                if resp.clicked() && !on_close {
                     switch = Some(i);
                 }
                 if resp.middle_clicked() {
                     close = Some(i);
                 }
-                // 关闭按钮：加大字号与点击热区（20×20），悬停时亮色反馈。
-                let x = ui.add(
-                    egui::Button::new(RichText::new("×").size(15.0).color(self.theme.dim))
-                        .min_size(egui::vec2(22.0, 20.0))
-                        .frame(false),
-                );
-                if x.hovered() {
-                    ui.painter()
-                        .rect_filled(x.rect, 4.0, self.theme.dim.gamma_multiply(0.25));
-                }
-                if x.on_hover_text("关闭标签").clicked() {
-                    close = Some(i);
-                }
+                resp.on_hover_text(tip);
+            }
+            // 最后一个页签与「+」之间同样加竖线；「+」右侧不再加。
+            divider(ui);
+            // 新建页签按钮紧跟在最后一个页签后面（浏览器风格），不固定到行尾。
+            // 尺寸、圆角和 hover 底色与页签保持一致。
+            let (plus_rect, plus_resp) =
+                ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+            let painter = ui.painter().clone();
+            if plus_resp.hovered() {
+                painter.rect_filled(plus_rect, 5.0, self.theme.border.gamma_multiply(0.35));
+            }
+            painter.text(
+                plus_rect.center(),
+                Align2::CENTER_CENTER,
+                "+",
+                FontId::proportional(15.0),
+                if plus_resp.hovered() {
+                    self.theme.text
+                } else {
+                    self.theme.dim
+                },
+            );
+            if plus_resp
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("新建 Markdown 文档 (Cmd/Ctrl+N)")
+                .clicked()
+            {
+                self.new_document();
             }
         });
         // 一帧内关闭优先：关掉标签后下标会变，不再处理切换。

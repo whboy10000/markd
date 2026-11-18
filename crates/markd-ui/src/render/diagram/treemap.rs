@@ -198,7 +198,14 @@ pub(crate) fn draw_treemap(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui
                     Pos2::new(r.left() + 3.0, r.top() + header),
                     Pos2::new(r.right() - 3.0, r.bottom() - 3.0),
                 );
-                layout_items(&items[idx].children, inner, &items, &values, gi, &mut placed);
+                layout_items(
+                    &items[idx].children,
+                    inner,
+                    &items,
+                    &values,
+                    gi,
+                    &mut placed,
+                );
             }
         }
     }
@@ -224,11 +231,8 @@ pub(crate) fn draw_treemap(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui
                 (r.width() - 8.0).max(10.0),
             )
         });
-        p.with_clip_rect(*r).galley(
-            Pos2::new(r.left() + 4.0, r.top() + 3.0),
-            g,
-            theme.text,
-        );
+        p.with_clip_rect(*r)
+            .galley(Pos2::new(r.left() + 4.0, r.top() + 3.0), g, theme.text);
         if !is_container {
             p.with_clip_rect(*r).text(
                 Pos2::new(r.left() + 4.0, r.top() + 17.0),
@@ -246,12 +250,7 @@ pub(crate) fn draw_treemap(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui
 /// 用于顶层分组，返回 (下标, 矩形)。
 fn split_rects(order: &[usize], values: &[f32], rect: Rect) -> Vec<(usize, Rect)> {
     let mut out = Vec::new();
-    fn rec(
-        list: &[usize],
-        values: &[f32],
-        rect: Rect,
-        out: &mut Vec<(usize, Rect)>,
-    ) {
+    fn rec(list: &[usize], values: &[f32], rect: Rect, out: &mut Vec<(usize, Rect)>) {
         if list.is_empty() {
             return;
         }
@@ -273,12 +272,32 @@ fn split_rects(order: &[usize], values: &[f32], rect: Rect) -> Vec<(usize, Rect)
         let frac = (a.iter().map(|&i| values[i]).sum::<f32>() / total).clamp(0.05, 0.95);
         if rect.width() >= rect.height() {
             let x = rect.left() + rect.width() * frac;
-            rec(a, values, Rect::from_min_max(rect.min, Pos2::new(x, rect.bottom())), out);
-            rec(b, values, Rect::from_min_max(Pos2::new(x, rect.top()), rect.max), out);
+            rec(
+                a,
+                values,
+                Rect::from_min_max(rect.min, Pos2::new(x, rect.bottom())),
+                out,
+            );
+            rec(
+                b,
+                values,
+                Rect::from_min_max(Pos2::new(x, rect.top()), rect.max),
+                out,
+            );
         } else {
             let y = rect.top() + rect.height() * frac;
-            rec(a, values, Rect::from_min_max(rect.min, Pos2::new(rect.right(), y)), out);
-            rec(b, values, Rect::from_min_max(Pos2::new(rect.left(), y), rect.max), out);
+            rec(
+                a,
+                values,
+                Rect::from_min_max(rect.min, Pos2::new(rect.right(), y)),
+                out,
+            );
+            rec(
+                b,
+                values,
+                Rect::from_min_max(Pos2::new(rect.left(), y), rect.max),
+                out,
+            );
         }
     }
     rec(order, values, rect, &mut out);

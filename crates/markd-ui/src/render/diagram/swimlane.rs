@@ -46,7 +46,12 @@ pub(crate) fn draw_swimlane(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egu
     let step_h = 30.0;
     let gap = 26.0;
     let lane_gap = 8.0;
-    let max_steps = lanes.iter().map(|l| l.steps.len()).max().unwrap_or(1).max(1);
+    let max_steps = lanes
+        .iter()
+        .map(|l| l.steps.len())
+        .max()
+        .unwrap_or(1)
+        .max(1);
     let content_w = max_steps as f32 * (step_w + gap);
     let avail = ui.available_width().max(320.0);
     let w = (label_w + content_w + 16.0).min(avail.max(320.0));
@@ -67,15 +72,16 @@ pub(crate) fn draw_swimlane(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egu
     let body_top = rect.top() + title_h;
     for (li, lane) in lanes.iter().enumerate() {
         let y = body_top + li as f32 * lane_h;
-        let lane_rect = Rect::from_min_size(
-            Pos2::new(rect.left(), y),
-            Vec2::new(w, lane_h),
+        let lane_rect = Rect::from_min_size(Pos2::new(rect.left(), y), Vec2::new(w, lane_h));
+        p.rect_filled(
+            lane_rect,
+            4.0,
+            if li % 2 == 0 {
+                theme.code_header
+            } else {
+                theme.code_bg
+            },
         );
-        p.rect_filled(lane_rect, 4.0, if li % 2 == 0 {
-            theme.code_header
-        } else {
-            theme.code_bg
-        });
         p.text(
             Pos2::new(rect.left() + label_w / 2.0, lane_rect.center().y),
             Align2::CENTER_CENTER,

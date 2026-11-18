@@ -86,18 +86,10 @@ fn all_mermaid_templates_render_graphics() {
     for (label, tpl) in crate::app::menu::MERMAID_TEMPLATES {
         let doc = crate::document::Document::new(tpl, None);
         assert_eq!(doc.blocks.len(), 1, "{label} 应解析为单块");
-        let first = tpl
-            .lines()
-            .nth(1)
-            .unwrap_or_default()
-            .trim()
-            .to_lowercase();
+        let first = tpl.lines().nth(1).unwrap_or_default().trim().to_lowercase();
         let (texts, height) = render_texts(&doc.blocks[0]);
         assert!(height > 40.0, "{label} 应画出有高度的图形，实际 {height}");
-        if texts
-            .iter()
-            .any(|t| t.trim().to_lowercase() == first)
-        {
+        if texts.iter().any(|t| t.trim().to_lowercase() == first) {
             missing.push(label);
         }
         for need in expected_texts(label) {

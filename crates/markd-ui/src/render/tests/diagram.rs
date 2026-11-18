@@ -235,7 +235,11 @@ fn parse_timeline_continuation_and_breaks() {
     );
     assert_eq!(periods[1].label, "2021");
     assert!(periods[1].events.is_empty(), "纯时间段不带事件");
-    assert_eq!(periods[2].events, vec!["上\n下".to_string()], "<br> 应转换为换行");
+    assert_eq!(
+        periods[2].events,
+        vec!["上\n下".to_string()],
+        "<br> 应转换为换行"
+    );
 }
 
 /// 时间线必须画出来且可点击：此前落到代码回退分支，插入后看起来「不显示」。
@@ -306,7 +310,10 @@ fn state_diagram_is_compact() {
     let flow = transform_state_to_flow(code);
     let mut h = 0.0;
     let mut out = ctx.run_ui(
-        egui::RawInput { screen_rect: Some(screen), ..Default::default() },
+        egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        },
         |root| {
             egui::CentralPanel::default().show(root, |ui| {
                 h = draw_flow(ui, &flow, &theme).rect.height();

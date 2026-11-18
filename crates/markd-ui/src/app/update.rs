@@ -58,7 +58,9 @@ impl eframe::App for MarkdApp {
         // 自定义标题栏：让系统红绿灯垂直居中于菜单栏这一行（非 macOS 为空操作）。
         let r = menubar.response.rect;
         frame.set_traffic_lights_position(&ctx, egui::Rangef::new(r.min.y, r.max.y), 12.0);
-        egui::Panel::top("toolbar").show(&mut *root_ui, |ui| self.toolbar(ui, &ctx2));
+        if self.config.show_toolbar {
+            egui::Panel::top("toolbar").show(&mut *root_ui, |ui| self.toolbar(ui, &ctx2));
+        }
         // bottom 必须先于 left 声明：bottom 只收窄父 Ui 的 y 轴，此时 x 仍是整窗宽度，
         // 状态栏才能横跨整个窗口；若放在 left 之后，x 起点会被推到侧栏右缘而只剩中央区域。
         egui::Panel::bottom("statusbar").show(&mut *root_ui, |ui| self.statusbar(ui, &ctx2));
@@ -129,9 +131,9 @@ impl eframe::App for MarkdApp {
             }
         }
 
-        // 标签栏：紧贴编辑区上方，一直显示（首页页签与加号都在这条里）。
+        // 标签栏：紧贴编辑区上方，可在偏好设置里关闭以节省纵向空间。
         // 声明在 left 之后，横向只占侧栏右侧的区域。
-        {
+        if self.config.show_tabbar {
             egui::Panel::top("tabbar")
                 .frame(
                     egui::Frame::NONE
