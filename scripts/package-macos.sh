@@ -9,7 +9,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION=$(awk -F'"' '/^version/{print $2; exit}' Cargo.toml)
+# CI 在 tag 构建时会注入 MARKD_VERSION（与 Release tag 一致），优先使用；
+# 本地/滚动构建回落到 Cargo.toml 的 version。
+VERSION="${MARKD_VERSION:-$(awk -F'\"' '/^version/{print $2; exit}' Cargo.toml)}"
 
 # PATH 里 /opt/local/bin 的 MacPorts rustc 排在 rustup shim 之前，会让 cargo
 # 实际用 MacPorts 工具链编译（它没有交叉 target 的 std，报 can't find crate
