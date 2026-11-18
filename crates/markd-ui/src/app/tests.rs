@@ -312,7 +312,9 @@ fn sidebar_click_toggles_and_switches() {
 /// 快照目录，其余字段与 MarkdApp::new 相同，用来在测试里驱动
 /// `eframe::App::ui` 这条真实的完整帧路径（含终端面板 / read_only 逻辑）。
 fn test_app() -> MarkdApp {
-    let config = Config::default();
+    let mut config = Config::default();
+    // 首次启动默认隐藏工具条；测试需要点击工具条按钮，这里显式打开。
+    config.show_toolbar = true;
     let mut theme = Theme::get(config.theme);
     theme.body = config.font_size;
     theme.mono = (config.font_size * 0.84).max(11.0);

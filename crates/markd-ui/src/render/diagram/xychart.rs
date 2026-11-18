@@ -99,7 +99,11 @@ pub(crate) fn draw_xychart(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui
         .chain(c.line.iter())
         .copied()
         .fold(c.y_max, f32::max);
-    let max_val = if max_val > c.y_min { max_val } else { c.y_min + 1.0 };
+    let max_val = if max_val > c.y_min {
+        max_val
+    } else {
+        c.y_min + 1.0
+    };
     let avail = ui.available_width().max(320.0).min(760.0);
     let title_h = if c.title.is_empty() { 0.0 } else { 22.0 };
     let plot_h = 190.0;

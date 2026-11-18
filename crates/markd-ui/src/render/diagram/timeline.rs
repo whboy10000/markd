@@ -59,10 +59,7 @@ pub(crate) fn parse_timeline(code: &str) -> (String, Vec<TimelineSection>) {
         let sec = sections.last_mut().expect("刚插入过默认段");
         let mut parts = l.split(':');
         let head = parts.next().unwrap_or_default().trim();
-        let events: Vec<String> = parts
-            .map(timeline_text)
-            .filter(|e| !e.is_empty())
-            .collect();
+        let events: Vec<String> = parts.map(timeline_text).filter(|e| !e.is_empty()).collect();
         if head.is_empty() {
             // 续行 `: 事件`：追加到上一个时间段。
             if let Some(period) = sec.periods.last_mut() {
@@ -131,16 +128,14 @@ pub(crate) fn draw_timeline(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egu
     let title_galley = if title.is_empty() {
         None
     } else {
-        Some(
-            ui.fonts_mut(|f| {
-                f.layout(
-                    title.clone(),
-                    FontId::proportional(13.5),
-                    theme.heading,
-                    (canvas_w - 24.0).max(80.0),
-                )
-            }),
-        )
+        Some(ui.fonts_mut(|f| {
+            f.layout(
+                title.clone(),
+                FontId::proportional(13.5),
+                theme.heading,
+                (canvas_w - 24.0).max(80.0),
+            )
+        }))
     };
 
     let has_sections = sections.iter().any(|s| !s.name.is_empty());
@@ -266,7 +261,11 @@ pub(crate) fn draw_timeline(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egu
     let mut ci = 0usize;
     for (si, sec) in sections.iter().enumerate() {
         let base = palette_color(theme, si);
-        let fill = if dark { base.gamma_multiply(0.75) } else { base };
+        let fill = if dark {
+            base.gamma_multiply(0.75)
+        } else {
+            base
+        };
         let text_color = if dark { theme.text } else { theme.heading };
         for _ in &sec.periods {
             let cx = x0 + col_w * (ci as f32 + 0.5);
@@ -291,10 +290,8 @@ pub(crate) fn draw_timeline(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egu
                 ey += bh + ev_gap;
             }
             // 时间段名。
-            let pr = Rect::from_min_size(
-                Pos2::new(left, period_top),
-                Vec2::new(width, period_box_h),
-            );
+            let pr =
+                Rect::from_min_size(Pos2::new(left, period_top), Vec2::new(width, period_box_h));
             p.rect_filled(pr, 5.0, base);
             p.rect_stroke(
                 pr,
@@ -313,11 +310,7 @@ pub(crate) fn draw_timeline(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egu
             );
             // 轴上的时间点。
             p.circle_filled(Pos2::new(cx, axis_y), 3.0, base);
-            p.circle_stroke(
-                Pos2::new(cx, axis_y),
-                3.0,
-                Stroke::new(1.0, theme.border),
-            );
+            p.circle_stroke(Pos2::new(cx, axis_y), 3.0, Stroke::new(1.0, theme.border));
             ci += 1;
         }
     }

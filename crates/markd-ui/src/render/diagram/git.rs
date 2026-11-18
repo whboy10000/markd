@@ -48,11 +48,7 @@ pub(crate) fn draw_git(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui::Re
             continue;
         }
         if lower.starts_with("merge ") {
-            let src = lower[6..]
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim();
+            let src = lower[6..].split_whitespace().next().unwrap_or("").trim();
             if let Some(i) = lanes.iter().position(|ln| ln.name == src) {
                 seq += 1;
                 let label = quoted_after(l, "tag:").unwrap_or_default();

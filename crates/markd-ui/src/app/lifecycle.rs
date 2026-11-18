@@ -4,7 +4,14 @@ use super::*;
 
 impl MarkdApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial: Option<PathBuf>) -> Self {
-        let config = Config::load();
+        // 首次启动（还没有配置文件）：不显示文件/大纲侧栏，直接进整个编辑区。
+        let first_run = !Config::dir().join("config.json").is_file();
+        let mut config = Config::load();
+        if first_run {
+            config.show_sidebar = false;
+            config.show_outline = false;
+            config.show_toolbar = false;
+        }
         let mut theme = Theme::get(config.theme);
         theme.body = config.font_size;
         theme.mono = (config.font_size * 0.84).max(11.0);
@@ -35,6 +42,8 @@ impl MarkdApp {
             }
         });
         let start_file = initial.clone();
+        // 首次启动直接给一个空白文档，不再停在首页欢迎页。
+        let open_blank = first_run && start_file.is_none();
         let (doc, root) = if let Some(p) = initial {
             let text = workspace::read(&p).unwrap_or_else(|_| WELCOME.to_string());
             let r = p.parent().map(|x| x.to_path_buf());
@@ -76,7 +85,7 @@ impl MarkdApp {
             .unwrap_or_default();
 
         let stats_cache = doc.stats();
-        let app = Self {
+        let mut app = Self {
             stats: WritingStats::new(&doc),
             stats_cache,
             stats_at: std::time::Instant::now(),
@@ -144,6 +153,10 @@ impl MarkdApp {
             delete_confirm: None,
             new_dialog: None,
         };
+        if open_blank {
+            app.new_document();
+            app.status.clear();
+        }
         app
     }
 

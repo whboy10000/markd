@@ -93,7 +93,10 @@ pub(crate) fn draw_radar(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egui::
     };
     let point_at = |i: usize, t: f32| -> Pos2 {
         let a = angle(i);
-        Pos2::new(center.x + a.cos() * radius * t, center.y + a.sin() * radius * t)
+        Pos2::new(
+            center.x + a.cos() * radius * t,
+            center.y + a.sin() * radius * t,
+        )
     };
     // 同心多边形。
     for ring in 1..=4 {

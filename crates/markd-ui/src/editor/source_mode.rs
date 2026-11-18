@@ -98,20 +98,26 @@ pub(super) fn show_source_mode(
             let edit_w = (ui.available_width() - gutter_w).max(content_w);
 
             // 当前光标行的整行淡色底：必须在 TextEdit 之前画才能垫在文字下层。
-            if show_line_numbers {
+            // 从行号栏右侧延伸到编辑区右缘；未显示行号时从正文左缘开始。
+            {
                 let band = rows_state
                     .borrow()
                     .iter()
                     .find(|(l, _, _)| *l == cur_line)
                     .map(|(_, y, h)| (*y, *h));
                 if let Some((y, h)) = band {
+                    let left = if show_line_numbers {
+                        vpl + gutter_w
+                    } else {
+                        vpl
+                    };
                     ui.painter().rect_filled(
                         egui::Rect::from_min_max(
-                            egui::Pos2::new(vpl, ui.cursor().top() + y),
+                            egui::Pos2::new(left, ui.cursor().top() + y),
                             egui::Pos2::new(vpr, ui.cursor().top() + y + h),
                         ),
                         0.0,
-                        theme.table_head,
+                        theme.line_highlight(),
                     );
                 }
             }

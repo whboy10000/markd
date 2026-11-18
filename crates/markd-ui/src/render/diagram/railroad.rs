@@ -90,10 +90,7 @@ pub(crate) fn draw_railroad(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egu
     for (i, item) in items.iter().enumerate() {
         let w = widths[i];
         p.line_segment(
-            [
-                Pos2::new(x - gap, cy),
-                Pos2::new(x, cy),
-            ],
+            [Pos2::new(x - gap, cy), Pos2::new(x, cy)],
             Stroke::new(1.2, theme.dim),
         );
         let r = Rect::from_min_size(Pos2::new(x, cy - item_h / 2.0), Vec2::new(w, item_h));
@@ -125,7 +122,13 @@ pub(crate) fn draw_railroad(ui: &mut egui::Ui, code: &str, theme: &Theme) -> egu
         [Pos2::new(x, cy), Pos2::new(end_x, cy)],
         Stroke::new(1.2, theme.dim),
     );
-    paint_arrow_head(p, Pos2::new(end_x + 8.0, cy), (1.0, 0.0), theme.dim, ArrowHead::Triangle);
+    paint_arrow_head(
+        p,
+        Pos2::new(end_x + 8.0, cy),
+        (1.0, 0.0),
+        theme.dim,
+        ArrowHead::Triangle,
+    );
     p.line_segment(
         [Pos2::new(end_x, cy), Pos2::new(end_x + 8.0, cy)],
         Stroke::new(1.2, theme.dim),

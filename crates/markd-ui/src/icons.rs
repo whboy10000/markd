@@ -52,6 +52,32 @@ impl IconCache {
                 .sense(egui::Sense::hover()),
         )
     }
+
+    /// 画一个 16×16 画布的单色 UI 图标（Codicon 风格），用 `tint` 上色。
+    ///
+    /// 与文件图标不同：这里不做内容包围盒归一化，保留素材本身的留白和线宽，
+    /// 这样 16px 下才是 VS Code 那种标准网格里的线性图标。
+    pub fn paint_ui(
+        &mut self,
+        ui: &Ui,
+        rect: egui::Rect,
+        key: &str,
+        size: f32,
+        tint: egui::Color32,
+    ) {
+        let texture = match self.textures.get(key) {
+            Some(t) => t.clone(),
+            None => {
+                let bytes = ui_icon_bytes(key).unwrap_or_default();
+                let image = rasterize_canvas(bytes, PIXELS);
+                let handle = ui.ctx().load_texture(key, image, TextureOptions::LINEAR);
+                self.textures.insert(key.to_string(), handle.clone());
+                handle
+            }
+        };
+        let r = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
+        egui::Image::new(&texture).tint(tint).paint_at(ui, r);
+    }
 }
 
 /// SVG → egui 图像。resvg 输出预乘 RGBA，正好对应 `from_rgba_premultiplied`。
@@ -99,6 +125,26 @@ fn rasterize(bytes: &[u8], px: u32) -> ColorImage {
     };
     let transform = resvg::tiny_skia::Transform::from_scale(scale, scale)
         .post_translate(px as f32 / 2.0 - cx * scale, px as f32 / 2.0 - cy * scale);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    ColorImage::from_rgba_premultiplied([px as usize, px as usize], pixmap.data())
+}
+
+/// 直接按 SVG 画布等比渲染，不做内容包围盒归一化。
+/// 用于需要保持 Codicon 原始 16×16 网格留白的 UI 图标。
+fn rasterize_canvas(bytes: &[u8], px: u32) -> ColorImage {
+    let tree = match resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default()) {
+        Ok(t) => t,
+        Err(_) => {
+            return ColorImage::filled([px as usize, px as usize], egui::Color32::TRANSPARENT);
+        }
+    };
+    let mut pixmap = match resvg::tiny_skia::Pixmap::new(px, px) {
+        Some(p) => p,
+        None => return ColorImage::filled([px as usize, px as usize], egui::Color32::TRANSPARENT),
+    };
+    let canvas = tree.size();
+    let scale = px as f32 / canvas.width().max(canvas.height()).max(1.0);
+    let transform = resvg::tiny_skia::Transform::from_scale(scale, scale);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
     ColorImage::from_rgba_premultiplied([px as usize, px as usize], pixmap.data())
 }
@@ -285,6 +331,22 @@ pub fn file_icon(name: &str) -> &'static str {
         "node" | "nodejs" => "nodejs",
         "wasm" => "webassembly",
         _ => "file",
+    }
+}
+
+/// 编译期嵌入的 UI 图标（单色 SVG，绘制时 tint 上色）。
+fn ui_icon_bytes(key: &str) -> Option<&'static [u8]> {
+    macro_rules! icons {
+        ($($name:literal => $file:literal),* $(,)?) => {
+            match key {
+                $($name => Some(include_bytes!(concat!("../../../assets/ui-icons/", $file))),)*
+                _ => None,
+            }
+        };
+    }
+    icons! {
+        "ui:panel" => "panel.svg",
+        "ui:panel-close" => "panel-close.svg",
     }
 }
 

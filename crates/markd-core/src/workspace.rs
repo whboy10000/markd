@@ -41,6 +41,12 @@ pub struct Config {
     pub sidebar_width: f32,
     #[serde(default = "default_show_workspace_bar")]
     pub show_workspace_bar: bool,
+    /// 编辑区上方的格式工具条；首次启动默认隐藏，可在偏好设置中打开。
+    #[serde(default = "default_true")]
+    pub show_toolbar: bool,
+    /// 编辑区上方的标签栏；可在偏好设置中关闭，让编辑区直接顶到工具条下面。
+    #[serde(default = "default_true")]
+    pub show_tabbar: bool,
     /// 编辑区是否显示行号（源码模式整栏行号 + 混合模式逐块行号）。
     #[serde(default = "default_show_line_numbers")]
     pub show_line_numbers: bool,
@@ -148,14 +154,16 @@ impl Default for Config {
             focus_mode: false,
             typewriter: false,
             source_mode: false,
-            show_sidebar: true,
-            show_outline: true,
+            show_sidebar: false,
+            show_outline: false,
             auto_save: true,
             font_size: 16.0,
             workspace: None,
             show_sidebar_header: true,
             sidebar_width: 240.0,
             show_workspace_bar: false,
+            show_toolbar: false,
+            show_tabbar: true,
             show_line_numbers: true,
             auto_pair: true,
             tab_size: 2,
@@ -381,6 +389,10 @@ mod tests {
         assert!(c.show_sidebar_header);
         assert_eq!(c.sidebar_width, 240.0);
         assert!(!c.show_workspace_bar);
+        // 旧配置缺字段时保留工具条，避免老用户升级后功能栏突然消失。
+        assert!(c.show_toolbar);
+        // 全新配置则默认隐藏工具条（首次启动只看编辑区）。
+        assert!(!Config::default().show_toolbar);
     }
 
     #[test]
@@ -390,12 +402,14 @@ mod tests {
         c.show_outline = false;
         c.sidebar_width = 320.0;
         c.show_workspace_bar = true;
+        c.show_toolbar = false;
         let s = serde_json::to_string(&c).unwrap();
         let back: Config = serde_json::from_str(&s).unwrap();
         assert!(!back.show_sidebar_header);
         assert!(!back.show_outline);
         assert_eq!(back.sidebar_width, 320.0);
         assert!(back.show_workspace_bar);
+        assert!(!back.show_toolbar);
     }
 
     /// 旧配置没有图床字段：应回退到「关闭」+ 预置仓库信息，不能反序列化失败。
