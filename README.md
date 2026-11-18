@@ -9,6 +9,15 @@
 
 纯 Rust + egui 从零实现的桌面 Markdown 编辑器。**不套 Web 内核，不用 Tauri/Electron，不依赖任何现成的编辑器组件** —— 从 Markdown 解析到屏幕上的每一个像素，都由 Markd 自己绘制。
 
+![Markd 浅色主题](assets/screenshots/main-light.png)
+
+<details>
+<summary>深色主题</summary>
+
+![Markd 深色主题](assets/screenshots/main-dark.png)
+
+</details>
+
 ## 为什么是 Markd
 
 | 维度 | Markd | 基于 Electron/WebView 的编辑器 |

@@ -9,6 +9,15 @@
 
 A desktop Markdown editor built from scratch in pure Rust + egui. **No web kernel, no Tauri/Electron, no off-the-shelf editor component** — from Markdown parsing to every pixel on screen, Markd draws it all itself.
 
+![Markd light theme](assets/screenshots/main-light.png)
+
+<details>
+<summary>Dark theme</summary>
+
+![Markd dark theme](assets/screenshots/main-dark.png)
+
+</details>
+
 ## Why Markd
 
 | Dimension | Markd | Electron / WebView-based editors |
