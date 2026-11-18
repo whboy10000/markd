@@ -46,6 +46,18 @@ jobs:
             artifact: markd-windows
     steps:
       - uses: actions/checkout@v6
+      # tag 构建时把 tag 名写回 Cargo.toml，让后续打包脚本（macOS/Linux/Windows）
+      # 读到的版本号与 Release tag 一致，避免「tag 是 2026.11.19.1 但产物是
+      # Markd-2026.11.18-*」这种错位。master 滚动构建保持 Cargo.toml 原值。
+      - name: Sync version from tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          sed -i.bak "0,/^version = \".*\"$/s//version = \"${VERSION}\"/" Cargo.toml
+          rm -f Cargo.toml.bak
+          echo "Synced Cargo.toml version -> ${VERSION}"
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -218,7 +230,14 @@ jobs:
       - name: Resolve version
         id: ver
         run: |
-          VERSION=$(awk -F'"' '/^version/{print $2; exit}' Cargo.toml)
+          # tag 构建直接用 tag 名当版本号，与产物文件名保持一致；
+          # master 滚动构建仍读 Cargo.toml。
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION=$(awk -F'"' '/^version/{print $2; exit}' Cargo.toml)
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Resolve tag
         id: tag
