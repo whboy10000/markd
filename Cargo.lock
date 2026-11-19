@@ -1966,7 +1966,7 @@ dependencies = [
 
 [[package]]
 name = "markd"
-version = "2026.11.18"
+version = "2026.11.19"
 dependencies = [
  "eframe",
  "egui",
@@ -1978,7 +1978,7 @@ dependencies = [
 
 [[package]]
 name = "markd-core"
-version = "2026.11.18"
+version = "2026.11.19"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "markd-platform"
-version = "2026.11.18"
+version = "2026.11.19"
 dependencies = [
  "egui",
  "markd-core",
@@ -2001,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "markd-ui"
-version = "2026.11.18"
+version = "2026.11.19"
 dependencies = [
  "ab_glyph",
  "arboard",
