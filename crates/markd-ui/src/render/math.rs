@@ -270,18 +270,26 @@ fn glyph_mesh(
     let scale = em / units_per_em;
 
     let mut builder = LyonPath::builder();
-    let mut last_end: Option<Point> = None;
+    // 轮廓连续性判断必须在「缩放后的像素坐标」下做，与 RaTeX 官方
+    // build_outline_path 一致。此前用未缩放的字体单位比较、阈值 0.01，
+    // 在 units_per_em≈1000 下相当于 0.00001em，远严于浮点误差：相邻曲线
+    // 端点本应相等却因误差被判为断点，插入多余的 close()+begin()，把字形
+    // 轮廓拆成多段——表现就是「字母笔画断断续续」。改在像素坐标下比较可
+    // 容忍这类误差。
+    let mut last_end: Option<(f32, f32)> = None;
     for curve in curves.iter() {
         let (start, end) = curve_endpoints(curve);
+        let (sx, sy) = (px + start.x * scale, py - start.y * scale);
+        let (ex, ey) = (px + end.x * scale, py - end.y * scale);
         let need_move = match last_end {
             None => true,
-            Some(p) => (p.x - start.x).abs() > 0.01 || (p.y - start.y).abs() > 0.01,
+            Some((lx, ly)) => (lx - sx).abs() > 0.01 || (ly - sy).abs() > 0.01,
         };
         if need_move {
             if last_end.is_some() {
                 builder.close();
             }
-            builder.begin(point(px + start.x * scale, py - start.y * scale));
+            builder.begin(point(sx, sy));
         }
         match curve {
             OutlineCurve::Line(_, p1) => {
@@ -301,7 +309,7 @@ fn glyph_mesh(
                 );
             }
         }
-        last_end = Some(end);
+        last_end = Some((ex, ey));
     }
     if last_end.is_some() {
         builder.close();
@@ -370,7 +378,10 @@ fn path_shape(
 fn fill_path_to_mesh(path: &LyonPath, rule: FillRule, color: Color32) -> Option<epaint::Mesh> {
     let mut geometry: VertexBuffers<Vtx, u32> = VertexBuffers::new();
     let mut tessellator = FillTessellator::new();
-    let options = FillOptions::tolerance(0.5).with_fill_rule(rule);
+    // 轮廓已在像素坐标下；公式字形（尤其行内小字号）曲线很细，0.5px 容差会把
+    // 弧线折成明显的多边形，配合无 MSAA 时看起来像笔画断续。收紧到 0.1px 让
+    // 曲线更贴合字形轮廓；公式字形数很少，多出的三角形开销可忽略。
+    let options = FillOptions::tolerance(0.1).with_fill_rule(rule);
     tessellator
         .tessellate_path(
             path,
@@ -399,7 +410,7 @@ fn fill_path_to_mesh(path: &LyonPath, rule: FillRule, color: Color32) -> Option<
 fn stroke_path_to_shape(path: &LyonPath, color: Color32) -> Option<Shape> {
     let mut geometry: VertexBuffers<Vtx, u32> = VertexBuffers::new();
     let mut tessellator = StrokeTessellator::new();
-    let options = StrokeOptions::tolerance(0.5).with_line_width(1.5);
+    let options = StrokeOptions::tolerance(0.1).with_line_width(1.5);
     tessellator
         .tessellate_path(
             path,
@@ -552,6 +563,32 @@ mod tests {
         let display = render_formula("x^2 + y^2", 22.0, MathDisplay::Display).expect("display");
         // 块级上下标间距更大，高度一般不小于行内。
         assert!(display.size.y >= inline.size.y - 0.5);
+    }
+
+    /// 多个字形与符号都必须各自产出三角形网格，不能因轮廓连续性误判而漏掉
+    /// 笔画（回归：此前用字体单位做 0.01 阈值，曲线端点容差被放大导致轮廓
+    /// 被拆段，字母看起来断断续续）。
+    #[test]
+    fn glyphs_produce_triangles_at_inline_size() {
+        // 行内小字号最容易触发轮廓断裂；覆盖普通字母、斜体数学字母、数字、
+        // 运算符与分数（含横线 Path）。
+        let formula = "E = mc^2, \\frac{a}{b} + \\alpha \\leq \\sqrt{x}";
+        let r = render_formula(formula, 14.0, MathDisplay::Inline).expect("应成功渲染");
+        let mesh_count = r
+            .shapes
+            .iter()
+            .filter(|s| matches!(s, Shape::Mesh(_)))
+            .count();
+        let triangle_count: usize = r
+            .shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Mesh(m) => Some(m.indices.len() / 3),
+                _ => None,
+            })
+            .sum();
+        assert!(mesh_count >= 10, "应产出多个字形网格，实际 {mesh_count}");
+        assert!(triangle_count >= 100, "字形网格应有足够三角形，实际 {triangle_count}");
     }
 
     /// 空 / 非法公式不应崩溃，返回 None 即可。

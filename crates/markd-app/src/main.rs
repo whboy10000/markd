@@ -67,6 +67,10 @@ fn main() -> eframe::Result<()> {
     }
     let options = eframe::NativeOptions {
         viewport,
+        // 公式（line/box diagram）用 epaint Mesh 直接上 GPU，Mesh 本身没有抗锯齿；
+        // MSAA 默认关闭，导致公式/图形在小字号下边缘锯齿、笔画看起来断断续续，
+        // 与做了 feathering 的正文文字格格不入。开 4x MSAA 让所有 Mesh 边缘平滑。
+        multisampling: 4,
         ..Default::default()
     };
     eframe::run_native(
