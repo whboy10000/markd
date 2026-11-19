@@ -248,12 +248,23 @@ pub(crate) fn text_response(
     // 之外。这里给编辑区留一点容差，否则从贴着视口顶部的标题起拖会完全
     // 建立不了选区（用户反馈的「有时候怎么拖都选不中」）。
     let press_area = clip.expand2(egui::vec2(48.0, 8.0));
-    let press_in_viewport = ui
-        .input(|i| i.pointer.press_origin())
-        .is_some_and(|p| press_area.contains(p));
+    let press_origin = ui.input(|i| i.pointer.press_origin());
+    let press_in_viewport = press_origin.is_some_and(|p| press_area.contains(p));
     let over_this = pointer.is_some_and(|p| resp.rect.contains(p));
-    if pressed_now && in_viewport && over_this {
-        if let Some(p) = pointer {
+    // 锚定必须用「锁定的按下点」press_origin，而不是当前 pointer：按下帧当前指针
+    // 常因事件批处理已微移、或落在块间距/视口边缘，导致 over_this 判定失败——
+    // 那一帧一旦没锚定，后面就只能用上一次点击的 last_cursor 兜底，选区就跑到
+    // 别的块去了（用户反馈的「时出现时不出现、选区乱跑」）。
+    // 竖直方向按 ±3px 容差命中（正好铺满块间 6px 空档、彼此不重叠），横向覆盖
+    // 整行到右边距；这样点标题/引用/行内代码段落的文字、行尾空白、块边缘都能锚定。
+    let press_hit = press_origin.is_some_and(|p| {
+        p.y >= resp.rect.top() - 3.0
+            && p.y <= resp.rect.bottom() + 3.0
+            && p.x >= resp.rect.min.x
+            && p.x <= ui.max_rect().right()
+    });
+    if pressed_now && press_in_viewport && press_hit {
+        if let Some(p) = press_origin {
             let local = p - resp.rect.min;
             let c = galley.cursor_from_pos(local).index.0;
             env.actions.push(Action::CrossDrag(idx, c, true));

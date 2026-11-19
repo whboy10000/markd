@@ -10,6 +10,7 @@ pub use markd_core::{ast, command, document, export, image_host, theme, workspac
 pub use markd_platform::native_menu;
 
 pub mod app;
+pub(crate) mod clipboard;
 pub mod editor;
 pub mod features;
 pub mod find;

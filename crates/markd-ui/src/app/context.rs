@@ -305,8 +305,9 @@ impl MarkdApp {
     fn context_action(&mut self, action: ContextAction, ctx: &egui::Context) {
         match action {
             ContextAction::Cut => {
+                let html = self.selection_html();
                 if let Some(text) = editor::cut_selection(&mut self.doc, &mut self.editor) {
-                    ctx.copy_text(text);
+                    crate::clipboard::copy_rich(ctx, &text, html.as_deref().unwrap_or(""));
                     self.notify(ctx, "已剪切".to_string());
                     self.on_changed();
                 } else {
@@ -315,7 +316,8 @@ impl MarkdApp {
             }
             ContextAction::Copy => {
                 if let Some(text) = editor::copy_selection(&self.doc, &self.editor) {
-                    ctx.copy_text(text);
+                    let html = self.selection_html().unwrap_or_default();
+                    crate::clipboard::copy_rich(ctx, &text, &html);
                     self.notify(ctx, "已复制".to_string());
                 } else {
                     self.notify(ctx, "没有可复制的内容".to_string());

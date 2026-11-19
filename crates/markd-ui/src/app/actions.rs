@@ -262,6 +262,14 @@ impl MarkdApp {
             if cut && self.cut_cross_sel(ctx) {
                 return;
             }
+            // 没有跨块选区时，活动块内的文本选区也走带格式复制/剪切。
+            // 成功后会从输入里移除对应 Event，阻止 TextEdit 用纯文本覆盖剪贴板。
+            if copy && self.copy_single_sel_rich(ctx) {
+                return;
+            }
+            if cut && self.cut_single_sel_rich(ctx) {
+                return;
+            }
         }
 
         // ---- 无修饰键：Typora 的 F8 专注 / F9 打字机 / F1 快捷键速查 ----
@@ -395,11 +403,8 @@ impl MarkdApp {
         } else if key(egui::Key::Backslash) {
             self.execute(Command::ClearFormat, ctx);
         } else if key(egui::Key::C) {
-            // 跨块选区（渲染态拖选）的复制：无编辑态焦点，不会与 TextEdit 冲突。
-            // 没有跨块选区时不拦截，单块选区交给 TextEdit 原生复制。
-            if let Some(text) = editor::cross_sel_text(&self.doc, self.editor.cross_sel) {
-                ctx.copy_text(text);
-                self.notify(ctx, "已复制".to_string());
+            // 带格式复制：跨块选区优先，其次是活动块内的单块选区。
+            if self.copy_cross_sel(ctx) || self.copy_single_sel_rich(ctx) {
                 return;
             }
         } else if key(egui::Key::Backtick) && shift {

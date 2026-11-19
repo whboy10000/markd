@@ -105,6 +105,20 @@ pub fn show_editor(
         state.press_caret = None;
         state.table_drag_from = None;
     }
+    // 新按下（非 Shift、且按在编辑区内）时清掉上一次残留的跨块选区。否则若这次
+    // 按下的命中判定失败（点在标记区/块间空档/布局切换中），锚点没被重新锁定，
+    // 兜底逻辑会沿用旧 cross_sel 的起点，把新选区锚到上一次拖拽/点击的块——
+    // 表现为「间歇性选不中、选区跑到别处」。Shift+点击要扩选、工具条/视口外的
+    // 点击不能动正文选区，故排除。
+    let press_in_editor = ctx
+        .input(|i| i.pointer.press_origin())
+        .is_some_and(|p| ui.clip_rect().contains(p));
+    if ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
+        && !shift
+        && press_in_editor
+    {
+        state.cross_sel = None;
+    }
     let typed_pair: Option<String> = ctx.input(|i| {
         i.events.iter().find_map(|e| match e {
             egui::Event::Text(t) => pair_close(t).map(|s| s.to_string()),
@@ -381,7 +395,9 @@ pub fn show_editor(
                                                     )
                                                     .clicked()
                                                 {
-                                                    ctx.copy_text(table_source(grid, aligns));
+                                                    let src = table_source(grid, aligns);
+                                                    let html = crate::export::source_html(&src);
+                                                    crate::clipboard::copy_rich(ctx, &src, &html);
                                                     actions.push(render::Action::Notify(
                                                         "复制成功".to_string(),
                                                     ));
@@ -932,7 +948,8 @@ pub fn show_editor(
                                 });
                                 let fr = hr.inner;
                                 if copied {
-                                    ctx.copy_text(active_buf.clone());
+                                    let html = crate::export::source_html(&active_buf);
+                                    crate::clipboard::copy_rich(ctx, &active_buf, &html);
                                     actions.push(Action::Notify("复制成功".to_string()));
                                 }
                                 // 整块矩形（左侧引用缩进 + 功能栏 + 代码区）：
@@ -1100,7 +1117,9 @@ pub fn show_editor(
                                 });
                                 let fr = hr.inner;
                                 if copied {
-                                    ctx.copy_text(items[tab].code.clone());
+                                    let code = items[tab].code.clone();
+                                    let html = crate::export::source_html(&code);
+                                    crate::clipboard::copy_rich(ctx, &code, &html);
                                     actions.push(render::Action::Notify("复制成功".to_string()));
                                 }
                                 // 点代码区留白聚焦编辑框；点标签/按钮不抢焦点。
@@ -1517,6 +1536,29 @@ pub fn show_editor(
                                 let ci = out.galley.cursor_from_pos(p - out.galley_pos).index.0;
                                 let ci = render::plain_char_index(&out.galley, ci);
                                 state.press_caret = Some((idx, ci.min(plain_len)));
+                            }
+                            // 编辑态文本块内直接拖动也要建立跨块选区。此前活动块
+                            // 完全依赖 TextEdit 原生选区，而标题（大字号、无自定义
+                            // layouter）和含行内代码/加粗等隐藏标记的段落，原生选区
+                            // 在这类 galley 上常常只定位光标、拖不出高亮（用户反馈
+                            // 「点标题能动光标，拖却选不中」）。这里在按下锚点已记录、
+                            // 且确认为拖动后，用所见文本坐标主动建立 cross_sel，
+                            // 终点由上面的分支逐帧延伸，高亮由 selection_shapes 统一绘制。
+                            if selected_text_block
+                                && state.cross_sel.is_none()
+                                && ui.input(|i| i.pointer.primary_down())
+                                && ui.input(|i| i.pointer.is_decidedly_dragging())
+                                && let Some((pa, pc)) = state.press_caret
+                                && pa == idx
+                                && let Some(p) = ui.input(|i| i.pointer.interact_pos())
+                                && resp.response.rect.union(row_resp.rect).contains(p)
+                            {
+                                let buf_ci = out.galley.cursor_from_pos(p - out.galley_pos).index.0;
+                                let ci = render::plain_char_index(&out.galley, buf_ci);
+                                // 起点用按下锚点、终点用当前指针；CrossDrag(start) 会
+                                // 让帧末聚合以锚点建选区，随后再延伸终点。
+                                actions.push(Action::CrossDrag(idx, pc.min(plain_len), true));
+                                actions.push(Action::CrossDrag(idx, ci.min(plain_len), false));
                             }
                             // 格式按钮（加粗/斜体等）用完选区后，把文本框里存的
                             // 旧选区收敛成单点光标，不然那段文字会一直保持选中。

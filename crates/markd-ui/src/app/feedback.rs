@@ -4,26 +4,91 @@ use super::*;
 
 impl MarkdApp {
     /// 复制渲染态拖选出的跨块选区；没有选区时返回 false（交给 TextEdit 原生复制）。
+    /// 同时写入带格式的 HTML 与纯文本，粘贴到富文本编辑器时保留块/行内格式。
     pub(super) fn copy_cross_sel(&mut self, ctx: &egui::Context) -> bool {
-        let Some(text) = editor::cross_sel_text(&self.doc, self.editor.cross_sel) else {
+        let Some(sel) = self.editor.cross_sel else {
             return false;
         };
-        ctx.copy_text(text);
+        let Some(text) = editor::cross_sel_text(&self.doc, Some(sel)) else {
+            return false;
+        };
+        let html = crate::export::cross_sel_html(&self.doc.blocks, sel);
+        crate::clipboard::copy_rich(ctx, &text, &html);
         self.notify(ctx, "已复制".to_string());
         true
     }
 
-    /// 剪切跨块选区：先复制到剪贴板，再删除选中的内容。
+    /// 剪切跨块选区：先复制（带格式）到剪贴板，再删除选中的内容。
     /// 没有选区时返回 false（交给 TextEdit 原生剪切）。
     pub(super) fn cut_cross_sel(&mut self, ctx: &egui::Context) -> bool {
+        let Some(sel) = self.editor.cross_sel else {
+            return false;
+        };
+        let html = crate::export::cross_sel_html(&self.doc.blocks, sel);
         let Some(text) = editor::cut_cross_sel(&mut self.doc, &mut self.editor) else {
             return false;
         };
-        ctx.copy_text(text);
+        crate::clipboard::copy_rich(ctx, &text, &html);
         self.notify(ctx, "已剪切".to_string());
         self.on_changed();
         ctx.request_repaint();
         true
+    }
+
+    /// 复制活动块内的单块文本选区（无跨块选区时）。写入带格式的 HTML。
+    /// 没有单块选区时返回 false（例如只有光标、或焦点在终端）。
+    /// 处理成功后会从 egui 输入里移除 `Event::Copy`，阻止 TextEdit 随后用
+    /// 纯文本再次复制并覆盖剪贴板——这是让单块复制也带格式的关键。
+    pub(super) fn copy_single_sel_rich(&mut self, ctx: &egui::Context) -> bool {
+        let Some((idx, _, _, text)) = editor::selection_text(&self.doc, &self.editor) else {
+            return false;
+        };
+        let html = self
+            .doc
+            .blocks
+            .get(idx)
+            .map(|b| crate::export::selected_text_html(b, &text))
+            .unwrap_or_default();
+        crate::clipboard::copy_rich(ctx, &text, &html);
+        ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Copy)));
+        self.notify(ctx, "已复制".to_string());
+        true
+    }
+
+    /// 剪切活动块内的单块文本选区：带格式复制后删除选中文字。
+    /// 处理成功后移除 `Event::Cut`，避免 TextEdit 再走原生纯文本剪切。
+    pub(super) fn cut_single_sel_rich(&mut self, ctx: &egui::Context) -> bool {
+        let Some((idx, _, _, text)) = editor::selection_text(&self.doc, &self.editor) else {
+            return false;
+        };
+        let html = self
+            .doc
+            .blocks
+            .get(idx)
+            .map(|b| crate::export::selected_text_html(b, &text))
+            .unwrap_or_default();
+        let Some(cut_text) = editor::cut_selection(&mut self.doc, &mut self.editor) else {
+            return false;
+        };
+        crate::clipboard::copy_rich(ctx, &cut_text, &html);
+        ctx.input_mut(|i| i.events.retain(|e| !matches!(e, egui::Event::Cut)));
+        self.notify(ctx, "已剪切".to_string());
+        self.on_changed();
+        ctx.request_repaint();
+        let _ = text;
+        true
+    }
+
+    /// 为当前选区（跨块优先，其次单块）生成带格式的 HTML；供右键「复制/剪切」复用。
+    pub(super) fn selection_html(&self) -> Option<String> {
+        if let Some(sel) = self.editor.cross_sel {
+            return Some(crate::export::cross_sel_html(&self.doc.blocks, sel));
+        }
+        let (idx, _, _, text) = editor::selection_text(&self.doc, &self.editor)?;
+        self.doc
+            .blocks
+            .get(idx)
+            .map(|b| crate::export::selected_text_html(b, &text))
     }
 
     /// 更新状态栏文字并弹出轻提示（底部居中浮层，自动淡出），同时播放一声轻音效。
