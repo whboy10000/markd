@@ -1,9 +1,11 @@
 //! VT100/xterm 屏幕模型与 ANSI 序列处理。
 
 use super::*;
+use unicode_width::UnicodeWidthChar;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Cell {
+    /// `'\0'` 是宽字符（CJK 等）右半格的占位标记，不渲染字形。
     pub(super) ch: char,
     pub(super) fg: Option<Color32>,
     pub(super) bg: Option<Color32>,
@@ -203,6 +205,20 @@ impl Screen {
         self.bg = None;
         self.bold = false;
         self.inverse = false;
+    }
+
+    /// 覆盖写入会拆散已有的宽字符对，把落单的半边清成空白，避免残留半个字形。
+    fn clear_wide_halves(&mut self, r: usize, c: usize, w: usize) {
+        let blank = self.erase_blank();
+        let row = &mut self.grid[r];
+        if row[c].ch == '\0' && c > 0 {
+            row[c - 1] = blank;
+        }
+        for i in c..(c + w).min(row.len()) {
+            if row[i].ch != '\0' && i + 1 < row.len() && row[i + 1].ch == '\0' {
+                row[i + 1] = blank;
+            }
+        }
     }
 
     fn reset(&mut self) {
@@ -414,7 +430,9 @@ pub(super) fn pv(v: &[u16], i: usize, def: u16) -> u16 {
 
 impl vte::Perform for Screen {
     fn print(&mut self, c: char) {
-        if self.wrap_pending {
+        let w = if c.width() == Some(2) { 2 } else { 1 };
+        // 宽字符只剩最后一列放不下时，先换行（xterm 行为）。
+        if self.wrap_pending || (w == 2 && self.cur_c + 1 >= self.cols) {
             self.cur_c = 0;
             self.linefeed();
         }
@@ -422,6 +440,7 @@ impl vte::Perform for Screen {
         if self.cur_r >= self.grid.len() || self.cur_c >= self.cols {
             return;
         }
+        self.clear_wide_halves(self.cur_r, self.cur_c, w);
         self.grid[self.cur_r][self.cur_c] = Cell {
             ch: c,
             fg: self.fg,
@@ -429,12 +448,23 @@ impl vte::Perform for Screen {
             bold: self.bold,
             inverse: self.inverse,
         };
-        if self.cur_c + 1 >= self.cols {
+        if w == 2 && self.cur_c + 1 < self.cols {
+            self.grid[self.cur_r][self.cur_c + 1] = Cell {
+                ch: '\0',
+                fg: self.fg,
+                bg: self.bg,
+                bold: self.bold,
+                inverse: self.inverse,
+            };
+        }
+        let next = self.cur_c + w;
+        if next >= self.cols {
             if self.auto_wrap {
                 self.wrap_pending = true;
             }
+            self.cur_c = (next - 1).min(self.cols - 1);
         } else {
-            self.cur_c += 1;
+            self.cur_c = next;
         }
     }
 
@@ -442,6 +472,15 @@ impl vte::Perform for Screen {
         match b {
             0x08 => {
                 self.cur_c = self.cur_c.saturating_sub(1);
+                // 退到宽字符右半格时再退一格，落在字形起点。
+                if self.cur_c > 0
+                    && self
+                        .grid
+                        .get(self.cur_r)
+                        .is_some_and(|row| row[self.cur_c].ch == '\0')
+                {
+                    self.cur_c -= 1;
+                }
                 self.wrap_pending = false;
             }
             0x09 => {

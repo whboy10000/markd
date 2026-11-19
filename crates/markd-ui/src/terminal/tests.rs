@@ -85,6 +85,39 @@ fn bracketed_paste_mode_toggles() {
 }
 
 #[test]
+fn wide_chars_take_two_columns() {
+    let (mut s, mut p) = new_screen(3, 10);
+    p.advance(&mut s, "中文ab".as_bytes());
+    assert_eq!(s.grid[0][0].ch, '中');
+    assert_eq!(s.grid[0][1].ch, '\0');
+    assert_eq!(s.grid[0][2].ch, '文');
+    assert_eq!(s.grid[0][3].ch, '\0');
+    assert_eq!(s.grid[0][4].ch, 'a');
+    assert_eq!(s.grid[0][5].ch, 'b');
+    assert_eq!(s.cur_c, 6);
+}
+
+#[test]
+fn wide_char_wraps_at_last_column() {
+    let (mut s, mut p) = new_screen(3, 5);
+    p.advance(&mut s, "abcd中".as_bytes());
+    assert_eq!(row_text(&s, 0), "abcd");
+    assert_eq!(s.grid[1][0].ch, '中');
+    assert_eq!(s.grid[1][1].ch, '\0');
+    assert_eq!(s.cur_c, 2);
+}
+
+#[test]
+fn overwriting_wide_char_clears_halves() {
+    let (mut s, mut p) = new_screen(3, 10);
+    p.advance(&mut s, "中文\rX".as_bytes());
+    assert_eq!(s.grid[0][0].ch, 'X');
+    assert_eq!(s.grid[0][1].ch, ' ');
+    assert_eq!(s.grid[0][2].ch, '文');
+    assert_eq!(s.grid[0][3].ch, '\0');
+}
+
+#[test]
 fn maps_special_keys_to_pty_bytes() {
     let none = egui::Modifiers::NONE;
     assert_eq!(
@@ -200,4 +233,31 @@ fn pty_shell_executes_command() {
     }
     term.write_bytes(b"exit\r");
     assert!(text.contains("246912"), "PTY 没有回显命令结果：\n{text}");
+}
+
+/// 回归：中文输出必须按宽字符落格，复制出的纯文本不能含占位符或丢字。
+#[cfg(not(windows))]
+#[test]
+fn pty_echoes_chinese() {
+    let ctx = egui::Context::default();
+    let mut term = Terminal::new(std::env::temp_dir());
+    term.start(&ctx);
+    assert!(term.master.is_some(), "PTY 未启动：{:?}", term.error);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    term.write_bytes("echo 你好终端\r".as_bytes());
+    let mut text = String::new();
+    for _ in 0..60 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        term.poll();
+        text = term.plain_text();
+        if text.matches("你好终端").count() >= 2 {
+            break;
+        }
+    }
+    term.write_bytes(b"exit\r");
+    assert!(
+        text.matches("你好终端").count() >= 2,
+        "PTY 中文回显/输出不完整：\n{text}"
+    );
+    assert!(!text.contains('\0'), "纯文本不应含宽字符占位符");
 }

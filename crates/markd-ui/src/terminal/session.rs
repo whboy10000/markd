@@ -95,6 +95,12 @@ impl Terminal {
         cmd.cwd(&self.cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // 从 Dock/Finder 启动的 GUI 进程没有 LANG，shell 会落到 C locale，
+        // ls 等命令把非 ASCII 文件名输出成 '?'。
+        #[cfg(not(windows))]
+        if std::env::var_os("LANG").is_none() {
+            cmd.env("LANG", "en_US.UTF-8");
+        }
 
         let child = match slave.spawn_command(cmd) {
             Ok(c) => c,
@@ -191,20 +197,16 @@ impl Terminal {
         let mut s = String::new();
         for row in self.screen.scrollback.iter().chain(self.screen.grid.iter()) {
             for cell in row {
-                s.push(cell.ch);
+                if cell.ch != '\0' {
+                    s.push(cell.ch);
+                }
             }
             s.push('\n');
         }
         s
     }
 
-    fn cell_format(
-        &self,
-        cell: &Cell,
-        theme: &Theme,
-        font_id: &FontId,
-        line_height: f32,
-    ) -> TextFormat {
+    fn cell_colors(&self, cell: &Cell, theme: &Theme) -> (Color32, Color32) {
         let (mut fg, bg) = if cell.inverse {
             (
                 cell.bg.unwrap_or(theme.panel),
@@ -223,14 +225,7 @@ impl Terminal {
                 fg.b().saturating_add(40),
             );
         }
-        TextFormat {
-            font_id: font_id.clone(),
-            color: fg,
-            background: bg,
-            expand_bg: 0.0,
-            line_height: Some(line_height),
-            ..Default::default()
-        }
+        (fg, bg)
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, theme: &Theme) {
@@ -286,61 +281,147 @@ impl Terminal {
         let cursor_line = self.screen.scrollback.len() + self.screen.cur_r;
         let cursor_col = self.screen.cur_c;
         let show_cursor = self.screen.cursor_visible && self.focused;
-        let mut job = LayoutJob::default();
-        job.wrap.max_width = f32::INFINITY;
-        let newline_fmt = TextFormat {
-            font_id: font_id.clone(),
-            color: theme.text,
-            line_height: Some(rh),
-            ..Default::default()
-        };
-        for (li, row) in self
-            .screen
-            .scrollback
-            .iter()
-            .chain(self.screen.grid.iter())
-            .enumerate()
-        {
-            if li > 0 {
-                job.append("\n", 0.0, newline_fmt.clone());
-            }
-            let mut last = 0;
-            for (ci, cell) in row.iter().enumerate() {
-                if cell.ch != ' ' || cell.bg.is_some() || cell.inverse {
-                    last = ci + 1;
-                }
-            }
-            if li == cursor_line {
-                last = last.max(cursor_col + 1);
-            }
-            for (ci, cell) in row.iter().take(last.min(row.len())).enumerate() {
-                let mut fmt = self.cell_format(cell, theme, &font_id, rh);
-                if show_cursor && li == cursor_line && ci == cursor_col {
-                    fmt.background = theme.accent;
-                    fmt.color = theme.panel;
-                }
-                job.append(&cell.ch.to_string(), 0.0, fmt);
-            }
-            if last == 0 {
-                job.append(" ", 0.0, newline_fmt.clone());
-            }
-        }
+        let sb = self.screen.scrollback.len();
+        let total_lines = sb + self.screen.grid.len();
 
         ScrollArea::vertical()
             .id_salt("terminal_output")
             .auto_shrink([false, false])
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                // 先把文本排版好，再把整块可见区域做成可点击/可聚焦控件。
-                // 只让文字本身可点的话，短输出时几乎点不中，表现就是「怎么点都没反应」。
-                let galley = ui.fonts_mut(|f| f.layout_job(job));
                 let body_w = (avail.x - 12.0).max(1.0);
-                let size = egui::vec2(body_w.max(galley.size().x), avail.y.max(galley.size().y));
+                let size = egui::vec2(
+                    body_w.max(cols as f32 * cw),
+                    avail.y.max(total_lines as f32 * rh),
+                );
                 // 用稳定 id，才能可靠地在帧间保持/让出焦点。
                 let id = self.body_id;
+                // 整块可见区域做成可点击/可聚焦控件：只让文字本身可点的话，
+                // 短输出时几乎点不中，表现就是「怎么点都没反应」。
                 let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
                 let response = ui.interact(rect, id, Sense::click() | Sense::FOCUSABLE);
-                ui.painter().galley(response.rect.min, galley, theme.text);
+
+                // 按固定网格逐格绘制：CJK 宽字符占两列，若用比例排版，
+                // 字形宽度与格宽不一致，字会互相叠压，看起来就是乱码。
+                let painter = ui.painter();
+                let clip = ui.clip_rect();
+                let first =
+                    (((clip.top() - rect.min.y) / rh).floor().max(0.0) as usize).min(total_lines);
+                let last =
+                    (((clip.bottom() - rect.min.y) / rh).ceil().max(0.0) as usize).min(total_lines);
+                let row_at = |li: usize| -> &Vec<Cell> {
+                    if li < sb {
+                        &self.screen.scrollback[li]
+                    } else {
+                        &self.screen.grid[li - sb]
+                    }
+                };
+                for li in first..last {
+                    let row = row_at(li);
+                    let y = rect.min.y + li as f32 * rh;
+                    let mut ci = 0;
+                    while ci < row.len() {
+                        let cell = &row[ci];
+                        let (fg, bg) = self.cell_colors(cell, theme);
+                        let x = rect.min.x + ci as f32 * cw;
+                        if cell.ch == '\0' {
+                            if bg != Color32::TRANSPARENT {
+                                painter.rect_filled(
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(x, y),
+                                        egui::vec2(cw, rh),
+                                    ),
+                                    0.0,
+                                    bg,
+                                );
+                            }
+                            ci += 1;
+                            continue;
+                        }
+                        let wide = ci + 1 < row.len() && row[ci + 1].ch == '\0';
+                        if wide || !cell.ch.is_ascii() {
+                            // 宽字符与非 ASCII 单独按列定位画，避免 fallback 字体宽度漂移。
+                            let w = if wide { 2 } else { 1 };
+                            if bg != Color32::TRANSPARENT {
+                                painter.rect_filled(
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(x, y),
+                                        egui::vec2(w as f32 * cw, rh),
+                                    ),
+                                    0.0,
+                                    bg,
+                                );
+                            }
+                            if cell.ch != ' ' {
+                                painter.text(
+                                    egui::pos2(x, y),
+                                    egui::Align2::LEFT_TOP,
+                                    cell.ch.to_string(),
+                                    font_id.clone(),
+                                    fg,
+                                );
+                            }
+                            ci += w;
+                        } else {
+                            // 同样式连续 ASCII 合并成一次绘制，等宽字体步进恰为 cw。
+                            let start = ci;
+                            let mut text = String::new();
+                            while ci < row.len() {
+                                let c2 = &row[ci];
+                                if c2.ch == '\0'
+                                    || !c2.ch.is_ascii()
+                                    || self.cell_colors(c2, theme) != (fg, bg)
+                                {
+                                    break;
+                                }
+                                text.push(c2.ch);
+                                ci += 1;
+                            }
+                            let sx = rect.min.x + start as f32 * cw;
+                            if bg != Color32::TRANSPARENT {
+                                painter.rect_filled(
+                                    egui::Rect::from_min_size(
+                                        egui::pos2(sx, y),
+                                        egui::vec2((ci - start) as f32 * cw, rh),
+                                    ),
+                                    0.0,
+                                    bg,
+                                );
+                            }
+                            painter.text(
+                                egui::pos2(sx, y),
+                                egui::Align2::LEFT_TOP,
+                                text,
+                                font_id.clone(),
+                                fg,
+                            );
+                        }
+                    }
+                }
+                if show_cursor && cursor_line >= first && cursor_line < last {
+                    let x = rect.min.x + cursor_col as f32 * cw;
+                    let y = rect.min.y + cursor_line as f32 * rh;
+                    let crect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cw, rh));
+                    painter.rect_filled(crect, 0.0, theme.accent);
+                    // 光标下的字符反色重绘；宽字符只重绘落在光标格里的那一半。
+                    let row = row_at(cursor_line);
+                    if let Some(cell) = row.get(cursor_col) {
+                        let (gx, ch) = if cell.ch == '\0' && cursor_col > 0 {
+                            (x - cw, row[cursor_col - 1].ch)
+                        } else {
+                            (x, cell.ch)
+                        };
+                        if ch != ' ' && ch != '\0' {
+                            painter.with_clip_rect(crect).text(
+                                egui::pos2(gx, y),
+                                egui::Align2::LEFT_TOP,
+                                ch.to_string(),
+                                font_id.clone(),
+                                theme.panel,
+                            );
+                        }
+                    }
+                }
                 if response.clicked() {
                     response.request_focus();
                 }

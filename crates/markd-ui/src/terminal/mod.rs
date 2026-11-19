@@ -10,7 +10,6 @@
 //! `keys` 把按键映射成写入 PTY 的字节序列。
 
 use crate::theme::Theme;
-use egui::text::{LayoutJob, TextFormat};
 use egui::{self, Color32, FontFamily, FontId, RichText, ScrollArea, Sense};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtyPair, PtySize, native_pty_system};
 use std::collections::VecDeque;

@@ -17,6 +17,7 @@ markd-core.workspace = true
 markd-platform.workspace = true
 portable-pty = "0.9.0"
 vte = "0.15.0"
+unicode-width = "0.2"
 # 侧栏图标是 SVG，编译期嵌入、运行时用 resvg 栅格化。
 # 关掉默认特性（文字/系统字体/位图嵌入）后体积和编译时间都小很多，图标只有路径。
 resvg = { version = "0.47.0", default-features = false }
