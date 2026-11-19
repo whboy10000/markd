@@ -12,7 +12,7 @@ impl MarkdApp {
             config.show_outline = false;
             config.show_toolbar = false;
         }
-        let mut theme = Theme::get(config.theme);
+        let mut theme = Theme::get_with_overrides(config.theme, &config.color_overrides);
         theme.body = config.font_size;
         theme.mono = (config.font_size * 0.84).max(11.0);
         theme.apply(&cc.egui_ctx);
@@ -160,12 +160,19 @@ impl MarkdApp {
         app
     }
 
-    /// 把配置里的外观项应用到主题/缩放/编辑器。
-    pub(super) fn apply_config(&mut self, ctx: &egui::Context) {
-        self.theme = Theme::get(self.config.theme);
+    /// 按当前配置（主题类型 + 用户颜色覆盖 + 字号）重建主题并标脏。
+    /// 所有改主题的入口统一走这里，避免漏掉颜色覆盖。
+    pub(super) fn rebuild_theme(&mut self) {
+        self.theme =
+            Theme::get_with_overrides(self.config.theme, &self.config.color_overrides);
         self.theme.body = self.config.font_size;
         self.theme.mono = (self.config.font_size * 0.84).max(11.0);
         self.theme_dirty = true;
+    }
+
+    /// 把配置里的外观项应用到主题/缩放/编辑器。
+    pub(super) fn apply_config(&mut self, ctx: &egui::Context) {
+        self.rebuild_theme();
         ctx.set_zoom_factor(self.config.ui_scale.clamp(0.8, 1.6));
         self.editor.tab_size = self.config.tab_size.max(1);
         self.editor.auto_pair = self.config.auto_pair;

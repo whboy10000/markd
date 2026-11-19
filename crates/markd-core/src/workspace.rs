@@ -2,7 +2,7 @@
 
 //! 工作区文件系统：目录扫描、Markdown 读写、配置持久化、路径解析。
 
-use crate::theme::ThemeKind;
+use crate::theme::{ColorOverrides, ThemeKind};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -114,6 +114,9 @@ pub struct Config {
     /// 可选的自定义访问前缀（CDN）；留空按平台默认规则生成 URL。
     #[serde(default)]
     pub image_host_public_base: String,
+    /// 用户对主题颜色的覆盖；每项 None 表示跟随当前主题默认色。
+    #[serde(default)]
+    pub color_overrides: ColorOverrides,
 }
 
 fn default_true() -> bool {
@@ -192,6 +195,7 @@ impl Default for Config {
             image_host_path: default_image_host_path(),
             image_host_token: String::new(),
             image_host_public_base: String::new(),
+            color_overrides: ColorOverrides::default(),
         }
     }
 }
@@ -393,6 +397,26 @@ mod tests {
         assert!(c.show_toolbar);
         // 全新配置则默认隐藏工具条（首次启动只看编辑区）。
         assert!(!Config::default().show_toolbar);
+        // 旧配置没有颜色覆盖字段，应安全地得到空覆盖（跟随主题默认色）。
+        assert!(c.color_overrides.is_empty());
+    }
+
+    #[test]
+    fn config_color_overrides_roundtrip() {
+        use crate::theme::ThemeColor;
+        let mut c = Config::default();
+        c.color_overrides.set(ThemeColor::Heading, Some([1, 2, 3]));
+        c.color_overrides.set(ThemeColor::Bg, Some([250, 251, 252]));
+        let json = serde_json::to_string(&c).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.color_overrides.get(ThemeColor::Heading), Some([1, 2, 3]));
+        assert_eq!(back.color_overrides.get(ThemeColor::Bg), Some([250, 251, 252]));
+        assert_eq!(back.color_overrides.get(ThemeColor::Link), None);
+        // 空覆盖也能 round-trip。
+        let empty = Config::default();
+        let json = serde_json::to_string(&empty).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert!(back.color_overrides.is_empty());
     }
 
     #[test]

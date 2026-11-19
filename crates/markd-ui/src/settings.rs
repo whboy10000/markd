@@ -2,7 +2,7 @@
 
 //! 设置弹窗：左侧分类 + 右侧选项，风格对齐 Typora 的偏好设置。
 
-use crate::theme::{Theme, ThemeKind};
+use crate::theme::{Theme, ThemeColor, ThemeKind};
 use crate::workspace::Config;
 use egui::RichText;
 
@@ -167,6 +167,44 @@ impl Settings {
                             }
                         });
                 });
+                // ---- 自定义颜色：每项一个取色器 + 独立的「恢复默认」----
+                ui.add_space(10.0);
+                ui.label(RichText::new("自定义颜色").strong());
+                ui.label(
+                    RichText::new("修改后立即生效；「恢复默认」只清除该项并跟随当前主题。")
+                        .small()
+                        .color(theme.dim),
+                );
+                // 默认值取自当前主题类型（Theme::get 是默认配色唯一来源），
+                // 不用传进来的 theme——它可能已带覆盖。
+                let defaults = Theme::get(cfg.theme);
+                egui::Grid::new("settings_theme_colors")
+                    .num_columns(3)
+                    .spacing([8.0, 4.0])
+                    .show(ui, |ui| {
+                        for c in ThemeColor::ALL {
+                            ui.label(c.label());
+                            let customized = cfg.color_overrides.get(c).is_some();
+                            let mut rgb = cfg
+                                .color_overrides
+                                .get(c)
+                                .unwrap_or_else(|| c.rgb_of(&defaults));
+                            if ui.color_edit_button_srgb(&mut rgb).changed() {
+                                cfg.color_overrides.set(c, Some(rgb));
+                                changed = true;
+                            }
+                            if ui
+                                .add_enabled(customized, egui::Button::new("恢复默认"))
+                                .on_hover_text("恢复为当前主题的默认颜色")
+                                .clicked()
+                            {
+                                cfg.color_overrides.set(c, None);
+                                changed = true;
+                            }
+                            ui.end_row();
+                        }
+                    });
+
                 ui.add_space(6.0);
                 ui.label("正文字号");
                 changed |= ui
@@ -510,6 +548,34 @@ mod tests {
         for w in ys.windows(2) {
             assert!(w[1] - w[0] > 10.0, "字段应各占一行：{ys:?}");
         }
+    }
+
+    /// 外观页应为每个可自定义颜色提供标签与「恢复默认」按钮。
+    #[test]
+    fn appearance_tab_has_custom_color_pickers() {
+        let mut cfg = Config::default();
+        let shapes = render(Tab::Appearance, &mut cfg);
+        // 记录每个标签的 y，确认 14 项颜色标签都渲染出来、且纵向依次排列。
+        let ys: Vec<f32> = ThemeColor::ALL
+            .iter()
+            .filter_map(|c| find_y(&shapes, c.label()))
+            .collect();
+        assert_eq!(ys.len(), 14, "应渲染全部 14 项颜色标签，实际 {ys:?}");
+        for w in ys.windows(2) {
+            assert!(w[1] >= w[0], "颜色项应自上而下排列：{ys:?}");
+        }
+        // 14 个单项「恢复默认」+ 底部 1 个全局「恢复默认」= 15。
+        let restore_count = shapes
+            .iter()
+            .filter(|cs| match &cs.shape {
+                egui::Shape::Text(t) => t.galley.text() == "恢复默认",
+                _ => false,
+            })
+            .count();
+        assert!(
+            restore_count >= 15,
+            "每项颜色都应有独立的恢复默认按钮，实际按钮数 {restore_count}"
+        );
     }
 
     /// 编辑器设置里应提供「显示行号栏」开关（用户可自行关闭行号）。

@@ -324,12 +324,8 @@ impl MarkdApp {
             .position(|t| *t == self.config.theme)
             .unwrap_or(0);
         self.config.theme = all[(i + 1) % all.len()];
-        let mut t = Theme::get(self.config.theme);
-        t.body = self.config.font_size;
-        t.mono = (self.config.font_size * 0.84).max(11.0);
-        self.theme = t;
+        self.rebuild_theme();
         self.config.save();
-        self.theme_dirty = true;
         self.status = format!("主题: {}", self.theme.kind.name());
     }
 

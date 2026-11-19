@@ -80,12 +80,8 @@ impl MarkdApp {
                         for t in ThemeKind::ALL {
                             if ui.button(t.name()).clicked() {
                                 self.config.theme = t;
-                                let mut nt = Theme::get(t);
-                                nt.body = self.config.font_size;
-                                nt.mono = (self.config.font_size * 0.84).max(11.0);
-                                self.theme = nt;
+                                self.rebuild_theme();
                                 self.config.save();
-                                self.theme_dirty = true;
                                 dismiss = true;
                             }
                         }

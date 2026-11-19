@@ -58,6 +58,199 @@ fn rgb(r: u8, g: u8, b: u8) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
+/// 用户可自定义的主题颜色项。数据驱动的 UI 与覆盖逻辑共用此枚举，
+/// 避免为 14 个颜色字段各写一遍重复代码。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThemeColor {
+    Bg,
+    Panel,
+    Text,
+    Dim,
+    Accent,
+    CodeBg,
+    CodeHeader,
+    Border,
+    Heading,
+    Link,
+    Quote,
+    TableHead,
+    TableLine,
+    Selection,
+}
+
+impl ThemeColor {
+    pub const ALL: [ThemeColor; 14] = [
+        ThemeColor::Bg,
+        ThemeColor::Panel,
+        ThemeColor::Text,
+        ThemeColor::Dim,
+        ThemeColor::Accent,
+        ThemeColor::CodeBg,
+        ThemeColor::CodeHeader,
+        ThemeColor::Border,
+        ThemeColor::Heading,
+        ThemeColor::Link,
+        ThemeColor::Quote,
+        ThemeColor::TableHead,
+        ThemeColor::TableLine,
+        ThemeColor::Selection,
+    ];
+
+    /// 设置面板里显示的中文名。
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeColor::Bg => "编辑区背景",
+            ThemeColor::Panel => "侧栏背景",
+            ThemeColor::Text => "正文文字",
+            ThemeColor::Dim => "次要文字",
+            ThemeColor::Accent => "强调色",
+            ThemeColor::CodeBg => "代码块背景",
+            ThemeColor::CodeHeader => "代码块标题栏",
+            ThemeColor::Border => "边框",
+            ThemeColor::Heading => "标题",
+            ThemeColor::Link => "链接",
+            ThemeColor::Quote => "引用",
+            ThemeColor::TableHead => "表头背景",
+            ThemeColor::TableLine => "表格线",
+            ThemeColor::Selection => "选中高亮",
+        }
+    }
+
+    /// 从主题里读出该项颜色的 RGB。
+    pub fn rgb_of(self, t: &Theme) -> [u8; 3] {
+        let c = match self {
+            ThemeColor::Bg => t.bg,
+            ThemeColor::Panel => t.panel,
+            ThemeColor::Text => t.text,
+            ThemeColor::Dim => t.dim,
+            ThemeColor::Accent => t.accent,
+            ThemeColor::CodeBg => t.code_bg,
+            ThemeColor::CodeHeader => t.code_header,
+            ThemeColor::Border => t.border,
+            ThemeColor::Heading => t.heading,
+            ThemeColor::Link => t.link,
+            ThemeColor::Quote => t.quote,
+            ThemeColor::TableHead => t.table_head,
+            ThemeColor::TableLine => t.table_line,
+            ThemeColor::Selection => t.selection,
+        };
+        [c.r(), c.g(), c.b()]
+    }
+
+    /// 某个主题下该项的默认 RGB（默认配色的唯一来源仍是 `Theme::get`）。
+    pub fn default_rgb(self, kind: ThemeKind) -> [u8; 3] {
+        self.rgb_of(&Theme::get(kind))
+    }
+
+    /// 该项在主题里的可变引用，供覆盖写入。
+    fn field_mut<'a>(self, t: &'a mut Theme) -> &'a mut Color32 {
+        match self {
+            ThemeColor::Bg => &mut t.bg,
+            ThemeColor::Panel => &mut t.panel,
+            ThemeColor::Text => &mut t.text,
+            ThemeColor::Dim => &mut t.dim,
+            ThemeColor::Accent => &mut t.accent,
+            ThemeColor::CodeBg => &mut t.code_bg,
+            ThemeColor::CodeHeader => &mut t.code_header,
+            ThemeColor::Border => &mut t.border,
+            ThemeColor::Heading => &mut t.heading,
+            ThemeColor::Link => &mut t.link,
+            ThemeColor::Quote => &mut t.quote,
+            ThemeColor::TableHead => &mut t.table_head,
+            ThemeColor::TableLine => &mut t.table_line,
+            ThemeColor::Selection => &mut t.selection,
+        }
+    }
+}
+
+/// 用户对主题颜色的覆盖。`None` 表示未覆盖（跟随当前主题默认色），
+/// `Some(rgb)` 表示用户自定义。每项独立，故「恢复默认」只需写回 None。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ColorOverrides {
+    #[serde(default)]
+    pub bg: Option<[u8; 3]>,
+    #[serde(default)]
+    pub panel: Option<[u8; 3]>,
+    #[serde(default)]
+    pub text: Option<[u8; 3]>,
+    #[serde(default)]
+    pub dim: Option<[u8; 3]>,
+    #[serde(default)]
+    pub accent: Option<[u8; 3]>,
+    #[serde(default)]
+    pub code_bg: Option<[u8; 3]>,
+    #[serde(default)]
+    pub code_header: Option<[u8; 3]>,
+    #[serde(default)]
+    pub border: Option<[u8; 3]>,
+    #[serde(default)]
+    pub heading: Option<[u8; 3]>,
+    #[serde(default)]
+    pub link: Option<[u8; 3]>,
+    #[serde(default)]
+    pub quote: Option<[u8; 3]>,
+    #[serde(default)]
+    pub table_head: Option<[u8; 3]>,
+    #[serde(default)]
+    pub table_line: Option<[u8; 3]>,
+    #[serde(default)]
+    pub selection: Option<[u8; 3]>,
+}
+
+impl ColorOverrides {
+    pub fn get(&self, c: ThemeColor) -> Option<[u8; 3]> {
+        match c {
+            ThemeColor::Bg => self.bg,
+            ThemeColor::Panel => self.panel,
+            ThemeColor::Text => self.text,
+            ThemeColor::Dim => self.dim,
+            ThemeColor::Accent => self.accent,
+            ThemeColor::CodeBg => self.code_bg,
+            ThemeColor::CodeHeader => self.code_header,
+            ThemeColor::Border => self.border,
+            ThemeColor::Heading => self.heading,
+            ThemeColor::Link => self.link,
+            ThemeColor::Quote => self.quote,
+            ThemeColor::TableHead => self.table_head,
+            ThemeColor::TableLine => self.table_line,
+            ThemeColor::Selection => self.selection,
+        }
+    }
+
+    pub fn set(&mut self, c: ThemeColor, value: Option<[u8; 3]>) {
+        let slot = match c {
+            ThemeColor::Bg => &mut self.bg,
+            ThemeColor::Panel => &mut self.panel,
+            ThemeColor::Text => &mut self.text,
+            ThemeColor::Dim => &mut self.dim,
+            ThemeColor::Accent => &mut self.accent,
+            ThemeColor::CodeBg => &mut self.code_bg,
+            ThemeColor::CodeHeader => &mut self.code_header,
+            ThemeColor::Border => &mut self.border,
+            ThemeColor::Heading => &mut self.heading,
+            ThemeColor::Link => &mut self.link,
+            ThemeColor::Quote => &mut self.quote,
+            ThemeColor::TableHead => &mut self.table_head,
+            ThemeColor::TableLine => &mut self.table_line,
+            ThemeColor::Selection => &mut self.selection,
+        };
+        *slot = value;
+    }
+
+    /// 把覆盖项盖到主题上（只动 Some 的项）。
+    pub fn apply_to(&self, t: &mut Theme) {
+        for c in ThemeColor::ALL {
+            if let Some(rgb) = self.get(c) {
+                *c.field_mut(t) = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        ThemeColor::ALL.iter().all(|c| self.get(*c).is_none())
+    }
+}
+
 /// 语法高亮的语言分组：决定用哪套 token 配色，让不同语言有区分度。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LangFamily {
@@ -168,6 +361,14 @@ impl Theme {
                 border
             },
         }
+    }
+
+    /// 按主题默认配色 + 用户覆盖构造主题。默认配色仍唯一来源于 `get()`，
+    /// 这里只在其上盖一层用户自定义颜色。
+    pub fn get_with_overrides(kind: ThemeKind, overrides: &ColorOverrides) -> Self {
+        let mut theme = Self::get(kind);
+        overrides.apply_to(&mut theme);
+        theme
     }
 
     /// 加粗文字的强调色：中文加粗只靠字重不够醒目，
@@ -449,5 +650,65 @@ impl Theme {
         visuals.widgets.hovered.bg_fill = self.border;
         visuals.widgets.active.bg_fill = self.selection;
         ctx.set_visuals(visuals);
+    }
+}
+
+#[cfg(test)]
+mod override_tests {
+    use super::*;
+
+    fn colors_eq(a: &Theme, b: &Theme) -> bool {
+        ThemeColor::ALL.iter().all(|c| c.rgb_of(a) == c.rgb_of(b))
+    }
+
+    #[test]
+    fn overrides_only_touch_selected_fields() {
+        for kind in ThemeKind::ALL {
+            let base = Theme::get(kind);
+            let mut o = ColorOverrides::default();
+            o.set(ThemeColor::Heading, Some([1, 2, 3]));
+            o.set(ThemeColor::Bg, Some([10, 20, 30]));
+            let themed = Theme::get_with_overrides(kind, &o);
+            assert_eq!(themed.heading, Color32::from_rgb(1, 2, 3));
+            assert_eq!(themed.bg, Color32::from_rgb(10, 20, 30));
+            // 其余颜色必须与默认主题一致。
+            let mut base_rest = base.clone();
+            base_rest.heading = themed.heading;
+            base_rest.bg = themed.bg;
+            assert!(
+                colors_eq(&themed, &base_rest),
+                "未覆盖的颜色不应被改动 ({:?})",
+                kind
+            );
+            // 字号不受影响。
+            assert_eq!(themed.body, base.body);
+            assert_eq!(themed.mono, base.mono);
+        }
+    }
+
+    #[test]
+    fn clearing_override_restores_default() {
+        let mut o = ColorOverrides::default();
+        assert!(o.is_empty());
+        o.set(ThemeColor::Link, Some([9, 9, 9]));
+        assert!(!o.is_empty());
+        let changed = Theme::get_with_overrides(ThemeKind::Light, &o);
+        assert_eq!(changed.link, Color32::from_rgb(9, 9, 9));
+        o.set(ThemeColor::Link, None);
+        assert!(o.is_empty());
+        let restored = Theme::get_with_overrides(ThemeKind::Light, &o);
+        assert_eq!(restored.link, Theme::get(ThemeKind::Light).link);
+    }
+
+    #[test]
+    fn defaults_follow_kind() {
+        assert_ne!(
+            ThemeColor::Heading.default_rgb(ThemeKind::Light),
+            ThemeColor::Heading.default_rgb(ThemeKind::Dark)
+        );
+        assert_eq!(
+            ThemeColor::Bg.default_rgb(ThemeKind::Light),
+            [255, 255, 255]
+        );
     }
 }

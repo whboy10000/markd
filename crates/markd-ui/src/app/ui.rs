@@ -672,13 +672,22 @@ impl MarkdApp {
                 }
                 ui.label(
                     RichText::new(format!(
-                        "块 {}/{} · {}",
+                        "块 {}/{}",
                         self.editor.active + 1,
                         self.doc.blocks.len(),
-                        self.theme.kind.name()
                     ))
                     .color(self.theme.dim),
                 );
+                // 主题按钮：显示当前主题，点击在浅色 / 深色之间切换。
+                let theme_txt = RichText::new(self.theme.kind.name()).color(self.theme.accent);
+                if ui
+                    .selectable_label(false, theme_txt)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("点击切换浅色 / 深色主题")
+                    .clicked()
+                {
+                    chosen = Some(Command::ThemeNext);
+                }
                 ui.separator();
                 for (label, active, cmd) in [
                     ("打字机", self.config.typewriter, Command::ToggleTypewriter),
