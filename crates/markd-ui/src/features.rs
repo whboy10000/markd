@@ -531,12 +531,14 @@ pub struct WritingStats {
 }
 
 impl WritingStats {
-    pub fn new(doc: &Document) -> Self {
+    /// `words` 由调用方给：打开文档时已经做过一次全文统计，
+    /// 为同一个数再扫一遍全文不值得（1000 万字一遍约 275ms）。
+    pub fn new(words: usize) -> Self {
         Self {
             open: false,
             session_start: now(),
-            start_words: doc.stats().words,
-            history: vec![(now(), doc.stats().words)],
+            start_words: words,
+            history: vec![(now(), words)],
         }
     }
 

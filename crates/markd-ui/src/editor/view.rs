@@ -183,16 +183,16 @@ pub fn show_editor(
     let scroll_out = egui::ScrollArea::vertical()
         .id_salt("editor_scroll")
         .auto_shrink([false, false])
-        .show(ui, |ui| {
-            let blocks = &doc.blocks;
-            // 每个块起始的源码行号（Document::source 以 \n 连接各块源码）。
-            // 用于编辑区左侧的行号显示。
-            let mut block_start_lines = Vec::with_capacity(blocks.len());
-            let mut line_acc = 1usize;
-            for b in blocks.iter() {
-                block_start_lines.push(line_acc);
-                line_acc += b.source().split('\n').count();
-            }
+        // `show_viewport` 而不是 `show`：回调里能拿到「内容坐标系中的视口矩形」，
+        // 于是可以只排版看得见的那几十块。帧成本原先与块数成正比
+        // （实测每块约 23µs：1000 万字 24 万块 → 静置一帧 5.7s、首帧 13.9s），
+        // 裁剪后只与视口内块数有关。
+        .show_viewport(ui, |ui, view| {
+            // ---------------- 排版表：本帧到底要排哪几块 ----------------
+            let n = doc.blocks.len();
+            // 模型的块级变更先落到表上：只作废受影响的区间，其余块高继续复用。
+            state.layout.apply(&doc.take_changes());
+            state.layout.sync(n);
             // 正文宽度随窗口浮动，固定占可用宽度的约 90%；不设死宽度，
             // 所有块都按这个宽度换行，窄窗口下也不会把长段落横向裁掉。
             // 行号栏固定锚定在编辑区最左侧（70px，与源码模式共用），不参与版心
@@ -201,6 +201,47 @@ pub fn show_editor(
             let page_w = (outer_w * 0.9).max(200.0);
             let gutter_w = gutter_width(show_line_numbers);
             let viewport_left = ui.clip_rect().left();
+            // 版心宽度、正文字号、专注模式、行号栏都会改变块高：任一变了就整篇重测。
+            state.layout.rebase([
+                page_w as i32,
+                theme.body as i32,
+                focus_mode as i32,
+                show_line_numbers as i32,
+            ]);
+            if show_line_numbers && state.layout.lines_missing() > 0 {
+                // 行数只在「表里还缺」时扫源码：打开文档扫一次，之后只补新增/改动块。
+                state.layout.fill_lines(&doc.blocks);
+            }
+            // 内容原点（绝对坐标）：未滚动时等于视口上缘，向下滚动后会往上移出视口。
+            // `view.min.y` 是内容坐标系里的滚动量，两者相加才是屏幕上的实际位置。
+            let content_top = ui.max_rect().top();
+            // 内容总高必须按整篇给，否则滚动条长度与可滚范围会缩水成一屏。
+            let total_h = state.layout.total_height();
+            ui.set_height(total_h);
+            let range = state.layout.visible_range(view.min.y, view.height());
+            let mut order: Vec<usize> = if n == 0 {
+                Vec::new()
+            } else {
+                (range.start..range.end).collect()
+            };
+            // 活动块即使被滚出视口也要排版：它的 TextEdit 是本帧唯一的键盘入口，
+            // 少排一帧就等于吞掉一个按键。
+            if n > 0 && active < n && (active < range.start || active >= range.end) {
+                order.push(active);
+                order.sort_unstable();
+            }
+            // 顶边 / 估算高度 / 起始行号都在排版借用语义之外先取好，
+            // 循环体内就不再碰 `state.layout`（体内要改 state 的其它字段）。
+            // 行号（Document::source 以 \n 连接各块）：画在编辑区左侧固定行号栏里。
+            let mut anchors: Vec<f32> = Vec::with_capacity(order.len());
+            let mut ests: Vec<f32> = Vec::with_capacity(order.len());
+            let mut line_nos: Vec<u32> = Vec::with_capacity(order.len());
+            for &idx in order.iter() {
+                anchors.push(content_top + state.layout.top(idx));
+                ests.push(state.layout.height_of(idx));
+                line_nos.push(state.layout.lines_before(idx) + 1);
+            }
+            let blocks = &doc.blocks;
             ui.horizontal_top(|ui| {
                 // 显示行号时行号栏从最左侧开始，正文紧随其后；关闭行号时保持版心居中。
                 let pad = if show_line_numbers {
@@ -236,8 +277,27 @@ pub fn show_editor(
                     // 行号统一画在编辑区左侧固定列里，正文左缘不可用 resp.rect.left()
                     // 推：列表/任务项的 resp 是去掉行首缩进与标记（复选框/圆点/编号）
                     // 后的内容 Label，按它会算出落在正文里的 x，行号就叠进任务列表了。
-                    for idx in 0..blocks.len() {
-                        let block = &blocks[idx];
+                    // 列左缘与列宽由外层 horizontal/vertical 定好；块与块之间不再靠
+                    // 流式推进，而是各自按绝对矩形排版，这样才允许中间「跳」一块。
+                    let col_x = ui.cursor().min.x;
+                    let col_w = ui.available_width();
+                    let mut y = 0.0f32;
+                    let mut measured: Vec<(usize, f32)> = Vec::with_capacity(order.len());
+                    for (k, &idx) in order.iter().enumerate() {
+                        // 连续的块接着上一块排版后的位置往下走，与整篇流式排版逐像素一致；
+                        // 只有「视口外的活动块」那一处会跳，跳回高度表里它自己的顶边。
+                        if k == 0 || idx != order[k - 1] + 1 {
+                            y = anchors[k];
+                        }
+                        let band = egui::Rect::from_min_max(
+                            egui::pos2(col_x, y),
+                            egui::pos2(col_x + col_w, y + ests[k].max(1.0)),
+                        );
+                        // 子 Ui 的裁剪矩形继承父级（视口），所以估算矩形比内容矮
+                        // 也不会把这一块裁掉，只是下一帧会用实测值修正。
+                        let adv = ui
+                            .scope_builder(egui::UiBuilder::new().max_rect(band), |ui| {
+                            let block = &blocks[idx];
                         let compact = matches!(block, Block::ListItem { .. } | Block::Blank { .. });
                         // 连续引用行之间只留最小间距，左侧竖线才能连成一条。
                         // 引用里的代码块同样算作引用行，竖线保持连续。
@@ -1647,7 +1707,7 @@ pub fn show_editor(
                                 ui.painter().text(
                                     egui::Pos2::new(num_x, resp.rect.top() + theme.body * 0.5),
                                     egui::Align2::RIGHT_CENTER,
-                                    &block_start_lines[idx].to_string(),
+                                    &line_nos[k].to_string(),
                                     egui::FontId::proportional(theme.body),
                                     theme.dim.gamma_multiply(0.75),
                                 );
@@ -1686,11 +1746,27 @@ pub fn show_editor(
                                 state.sel = None;
                             }
                         }
-                        if quote_run {
-                            ui.add_space(1.0);
-                        } else {
-                            ui.add_space(if compact { 1.0 } else { 6.0 });
-                        }
+                            if quote_run {
+                                ui.add_space(1.0);
+                            } else {
+                                ui.add_space(if compact { 1.0 } else { 6.0 });
+                            }
+                            // 本块这一帧实际推进了多少（含块后间距），回写排版表；
+                            // 下一帧的可见区间与滚动条长度都靠它。
+                            ui.cursor().min.y - band.min.y
+                        })
+                        .inner;
+                        measured.push((idx, adv));
+                        y += adv;
+                    }
+                    // 实测高度统一回写：放在循环之外，避免和循环体内对 state 的借用打架。
+                    // 行数顺带算准（只算可见块），行号表因此无需整篇重扫。
+                    for (idx, adv) in measured {
+                        let lines = blocks
+                            .get(idx)
+                            .map(|b| b.source().split('\n').count() as u32)
+                            .unwrap_or(1);
+                        state.layout.measure(idx, adv, lines);
                     }
                     // 连续引用的竖线要连成一条：egui 会在相邻块之间自动留
                     // item_spacing，单块各自的竖线在块间距处会断开。这里用同色

@@ -7,6 +7,7 @@
 //! - `text`：字符位置与行首标记工具；
 //! - `commands`：块级格式命令；
 //! - `inline_ops`：行内样式与链接；
+//! - `layout`：块高/行号排版表（视口裁剪的几何基础）；
 //! - `table`：表格结构操作；
 //! - `edit_kind`：编辑态块的源码重建；
 //! - `selection`：跨块选区；
@@ -24,6 +25,7 @@ mod commands;
 mod edit_kind;
 mod folds;
 mod inline_ops;
+mod layout;
 mod selection;
 mod source_mode;
 mod table;
@@ -33,7 +35,10 @@ mod text;
 mod view;
 
 pub(crate) use self::edit_kind::*;
-pub use self::{commands::*, folds::*, inline_ops::*, selection::*, table::*, view::*};
+pub use self::{
+    commands::*, folds::*, inline_ops::*, layout::BlockLayout, selection::*,
+    source_mode::SourceCache, table::*, view::*,
+};
 use self::{source_mode::*, text::*};
 
 #[derive(Default)]
@@ -86,6 +91,10 @@ pub struct EditorState {
     pub folded: HashSet<usize>,
     /// 代码组当前显示的标签：(块下标 → 标签下标)。
     pub code_group_tab: HashMap<usize, usize>,
+    /// 块高/行号排版表：主绘制循环靠它只排版视口内的块。
+    pub layout: BlockLayout,
+    /// 源码模式的整篇派生数据（源码串、行首表、最长行宽度），按文档修订号失效。
+    pub source: SourceCache,
 }
 
 impl EditorState {

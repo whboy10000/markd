@@ -321,7 +321,7 @@ fn test_app() -> MarkdApp {
     let doc = Document::new("", None);
     let stats_cache = doc.stats();
     MarkdApp {
-        stats: WritingStats::new(&doc),
+        stats: WritingStats::new(stats_cache.words),
         stats_cache,
         stats_at: std::time::Instant::now(),
         doc,

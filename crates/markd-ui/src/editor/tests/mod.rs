@@ -12,6 +12,8 @@ mod layout;
 mod probes;
 mod selection;
 mod selection_text;
+mod stress;
 mod support;
 mod tables;
 mod typing;
+mod viewport;

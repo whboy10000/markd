@@ -20,3 +20,18 @@ pub mod render;
 pub mod settings;
 pub mod sidebar;
 pub mod terminal;
+
+/// 打开文档的分阶段耗时探针，`MARKD_TRACE_OPEN=1` 时打到 stderr。
+/// 用来定位「大文档开起来卡在哪一步」，平时只有一次环境变量判断的开销。
+#[macro_export]
+macro_rules! trace_open {
+    ($tag:literal, $elapsed:expr) => {
+        if std::env::var_os("MARKD_TRACE_OPEN").is_some() {
+            eprintln!(
+                "OPEN {} {:.1}ms",
+                $tag,
+                $elapsed.as_secs_f64() * 1000.0
+            );
+        }
+    };
+}

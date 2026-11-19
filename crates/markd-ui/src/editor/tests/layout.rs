@@ -291,8 +291,120 @@ fn source_mode_gutter_x_stays_put_across_enter() {
     }
 }
 
+/// 一帧里画出来的行号数字：锚点、字形矩形（相对锚点）、所在裁剪区左缘。
+#[derive(Clone, Debug, PartialEq)]
+struct NumberShape {
+    text: String,
+    pos: egui::Pos2,
+    rect: egui::Rect,
+    clip_left: f32,
+}
+
+/// 源码模式跑一帧，返回画出的行号。`time` 必须逐帧推进：egui 的滚轮是跨帧
+/// 平滑的，时间不动画面就永远滚不到位。
+#[allow(clippy::too_many_arguments)]
+fn source_frame_numbers(
+    doc: &mut Document,
+    state: &mut EditorState,
+    ctx: &egui::Context,
+    theme: &Theme,
+    images: &mut ImageCache,
+    actions: &mut Vec<crate::render::Action>,
+    events: Vec<egui::Event>,
+    time: f64,
+) -> Vec<NumberShape> {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(800.0, 900.0),
+        )),
+        time: Some(time),
+        events,
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |root| {
+        egui::CentralPanel::default().show(root, |ui| {
+            let c = ui.ctx().clone();
+            let _ = show_editor(
+                ui,
+                doc,
+                state,
+                theme,
+                &c,
+                images,
+                None,
+                &[],
+                true,
+                false,
+                false,
+                true,
+                1,
+                actions,
+            );
+        });
+    });
+    let mut nums: Vec<NumberShape> = Vec::new();
+    for cs in &out.shapes {
+        if let egui::Shape::Text(t) = &cs.shape {
+            let s = t.galley.text();
+            if !s.is_empty() && s.chars().all(|ch| ch.is_ascii_digit()) {
+                nums.push(NumberShape {
+                    text: s.to_string(),
+                    pos: t.pos,
+                    rect: t.galley.rect,
+                    clip_left: cs.clip_rect.left(),
+                });
+            }
+        }
+    }
+    out.textures_delta.clear();
+    nums
+}
+
+/// 一路向下滚到文末，等画面停稳后返回最后可见的那批行号。
+/// 虚拟化之后 4 位数行号只有滚到文末才画得出来，测试要看它就得真滚过去。
+fn scroll_source_to_bottom(
+    doc: &mut Document,
+    state: &mut EditorState,
+    ctx: &egui::Context,
+    theme: &Theme,
+    images: &mut ImageCache,
+    actions: &mut Vec<crate::render::Action>,
+    time: &mut f64,
+) -> Vec<NumberShape> {
+    let wheel = egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        // 负号 = 内容上移 = 往下翻；一次给够，余量由滚动区自己钳住。
+        delta: egui::vec2(0.0, -50_000.0),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
+        modifiers: Default::default(),
+    };
+    *time += 1.0 / 60.0;
+    let mut prev = source_frame_numbers(
+        doc,
+        state,
+        ctx,
+        theme,
+        images,
+        actions,
+        vec![egui::Event::PointerMoved(egui::pos2(400.0, 300.0)), wheel],
+        *time,
+    );
+    for _ in 0..600 {
+        *time += 1.0 / 60.0;
+        let next = source_frame_numbers(doc, state, ctx, theme, images, actions, vec![], *time);
+        if next == prev && !ctx.input(|i| i.is_scrolling()) {
+            return next;
+        }
+        prev = next;
+    }
+    panic!("滚动 600 帧后画面还没稳定");
+}
+
 /// 跨过 999 行的边界表现：行号栏宽度固定，不随位数 3→4 变化，
 /// 所有行号 x 坐标保持不变（不再有"变宽一整个数字位"的跳动）。
+/// 行号虚拟化后一帧只画视口内的行，4 位数那一档靠滚到文末来验。
 #[test]
 fn source_mode_gutter_stays_fixed_past_999_lines() {
     let theme = Theme::get(crate::theme::ThemeKind::Light);
@@ -306,71 +418,32 @@ fn source_mode_gutter_stays_fixed_past_999_lines() {
     let mut doc = Document::new(&src, None);
     let mut state = EditorState::default();
     let ctx = egui::Context::default();
-
-    let mut run = |doc: &mut Document,
-                   state: &mut EditorState,
-                   events: Vec<egui::Event>|
-     -> Vec<(String, egui::Pos2)> {
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(800.0, 900.0),
-            )),
+    let mut t = 0.0f64;
+    let mut frame = |events: Vec<egui::Event>, t: &mut f64| {
+        *t += 1.0 / 60.0;
+        source_frame_numbers(
+            &mut doc,
+            &mut state,
+            &ctx,
+            &theme,
+            &mut images,
+            &mut actions,
             events,
-            ..Default::default()
-        };
-        let mut nums: Vec<(String, egui::Pos2)> = Vec::new();
-        let mut out = ctx.run_ui(input, |root| {
-            egui::CentralPanel::default().show(root, |ui| {
-                let c = ui.ctx().clone();
-                let _ = show_editor(
-                    ui,
-                    doc,
-                    state,
-                    &theme,
-                    &c,
-                    &mut images,
-                    None,
-                    &[],
-                    true,
-                    false,
-                    false,
-                    true,
-                    1,
-                    &mut actions,
-                );
-            });
-        });
-        for cs in &out.shapes {
-            if let egui::Shape::Text(t) = &cs.shape {
-                let s = t.galley.text();
-                if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
-                    nums.push((s.to_string(), t.pos));
-                }
-            }
-        }
-        out.textures_delta.clear();
-        nums
+            *t,
+        )
     };
 
-    let key = |pressed: bool| -> Vec<egui::Event> {
-        vec![egui::Event::Key {
-            key: egui::Key::Enter,
-            physical_key: None,
-            pressed,
-            repeat: false,
-            modifiers: Default::default(),
-        }]
-    };
-    let click = egui::pos2(400.0, 100.0);
-
-    let before = run(&mut doc, &mut state, vec![]);
-    assert_eq!(before.len(), 999, "应有 999 个行号数字");
+    let before = frame(vec![], &mut t);
+    assert!(!before.is_empty(), "首屏该有行号");
+    assert!(
+        before.len() < 200,
+        "虚拟化后一帧只该画视口内的行号，实际 {}",
+        before.len()
+    );
 
     // 聚焦后回车：999 → 1000 行，跨过位数边界
-    run(
-        &mut doc,
-        &mut state,
+    let click = egui::pos2(400.0, 100.0);
+    frame(
         vec![
             egui::Event::PointerMoved(click),
             egui::Event::PointerButton {
@@ -380,41 +453,90 @@ fn source_mode_gutter_stays_fixed_past_999_lines() {
                 modifiers: Default::default(),
             },
         ],
+        &mut t,
     );
-    run(
-        &mut doc,
-        &mut state,
+    frame(
         vec![egui::Event::PointerButton {
             pos: click,
             button: egui::PointerButton::Primary,
             pressed: false,
             modifiers: Default::default(),
         }],
+        &mut t,
     );
-    run(&mut doc, &mut state, key(true));
-    run(&mut doc, &mut state, key(false));
+    let key = |pressed: bool| -> Vec<egui::Event> {
+        vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Default::default(),
+        }]
+    };
+    frame(key(true), &mut t);
+    frame(key(false), &mut t);
 
-    let after = run(&mut doc, &mut state, vec![]);
-    assert_eq!(after.len(), 1000, "回车后应有 1000 个行号数字");
-
-    // 行号栏宽度固定：跨过 999 行（3→4 位）时所有共有行号 x 坐标不变，
-    // 不应有"变宽一整个数字位、整体右移"的跳动。
-    for (text, before_pos) in &before {
+    let after = frame(vec![], &mut t);
+    assert!(
+        after.len() < 200,
+        "回车后一帧仍只该画视口内的行号，实际 {}",
+        after.len()
+    );
+    // 行号栏宽度固定：跨过 999 行（3→4 位）时所有共有行号 x 坐标不变。
+    for b in &before {
         let matched = after
             .iter()
-            .find(|(t, _)| t == text)
-            .map(|(_, p)| *p)
-            .expect("回车后原有行号应仍在");
-        let shift = matched.x - before_pos.x;
+            .find(|n| n.text == b.text)
+            .unwrap_or_else(|| panic!("回车后原有行号 {} 不见了", b.text));
+        let shift = matched.pos.x - b.pos.x;
         assert!(
             shift.abs() < 0.5,
-            "行号 {text} 右移 {shift:.2}px，行号栏宽度应固定不随位数变化"
+            "行号 {} 右移 {shift:.2}px，行号栏宽度应固定不随位数变化",
+            b.text
         );
     }
+
+    // 文末：4 位数行号与同一屏的 3 位数、与首屏行号共用一个右对齐锚点。
+    let bottom = scroll_source_to_bottom(
+        &mut doc,
+        &mut state,
+        &ctx,
+        &theme,
+        &mut images,
+        &mut actions,
+        &mut t,
+    );
+    assert!(
+        bottom.iter().any(|n| n.text == "1000"),
+        "该滚到最后一行，实际 {:?}",
+        bottom.iter().map(|n| &n.text).collect::<Vec<_>>()
+    );
+    // 行号右对齐到 gutter 内一条固定竖线：`Painter::text` 存的锚点是字形
+    // 矩形左上角，位数变多时左缘自然左移，所以「同一列」要比右缘。
+    let right = |n: &NumberShape| n.pos.x + n.rect.max.x;
+    let four = bottom
+        .iter()
+        .find(|n| n.text.len() == 4)
+        .expect("文末有 4 位数行号");
+    let three = bottom
+        .iter()
+        .find(|n| n.text.len() == 3)
+        .expect("文末有 3 位数行号");
+    assert!(
+        (right(four) - right(three)).abs() < 0.5,
+        "位数 3→4 把行号右缘挪了 {:.2}px",
+        right(four) - right(three)
+    );
+    assert!(
+        (right(four) - right(&after[0])).abs() < 0.5,
+        "文末行号右缘与首屏不一致：{:.2} vs {:.2}",
+        right(four),
+        right(&after[0])
+    );
 }
 
-/// 行号数字必须完整显示：三位行号（999 行文档）的 galley 矩形
-/// 不得越过 ScrollArea 裁剪区左缘，否则数字被裁得只剩部分。
+/// 行号数字必须完整显示：字形矩形左缘不得越过滚动区裁剪区左缘，
+/// 否则数字被裁得只剩一部分。首屏（1〜2 位）与文末（3→4 位最宽一档）都查。
 #[test]
 fn source_mode_line_numbers_not_clipped() {
     let theme = Theme::get(crate::theme::ThemeKind::Light);
@@ -427,53 +549,54 @@ fn source_mode_line_numbers_not_clipped() {
     let mut doc = Document::new(&src, None);
     let mut state = EditorState::default();
     let ctx = egui::Context::default();
-    let input = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(800.0, 900.0),
-        )),
-        ..Default::default()
-    };
-    let mut out = ctx.run_ui(input, |root| {
-        egui::CentralPanel::default().show(root, |ui| {
-            let c = ui.ctx().clone();
-            let _ = show_editor(
-                ui,
-                &mut doc,
-                &mut state,
-                &theme,
-                &c,
-                &mut images,
-                None,
-                &[],
-                true,
-                false,
-                false,
-                true,
-                1,
-                &mut actions,
+    let mut t = 0.0f64;
+    let check = |nums: &[NumberShape], where_: &str| {
+        for n in nums {
+            // galley 矩形是相对锚点的，屏幕左缘 = pos.x + rect.left()
+            let screen_left = n.pos.x + n.rect.left();
+            assert!(
+                screen_left >= n.clip_left - 0.5,
+                "{where_}的行号 {} 左缘 {screen_left:.1} 越过裁剪区左缘 {:.1}，被裁剪",
+                n.text,
+                n.clip_left
             );
-        });
-    });
-    out.textures_delta.clear();
-
-    let mut checked = 0usize;
-    for cs in &out.shapes {
-        if let egui::Shape::Text(t) = &cs.shape {
-            let s = t.galley.text();
-            if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
-                // galley 矩形是相对锚点的，屏幕左缘 = pos.x + rect.left()
-                let screen_left = t.pos.x + t.galley.rect.left();
-                assert!(
-                    screen_left >= cs.clip_rect.left() - 0.5,
-                    "行号 {s} 左缘 {screen_left:.1} 越过裁剪区左缘 {:.1}，被裁剪",
-                    cs.clip_rect.left()
-                );
-                checked += 1;
-            }
         }
-    }
-    assert!(checked >= 900, "至少应检查 900 个行号，实际 {checked}");
+    };
+
+    t += 1.0 / 60.0;
+    let nums = source_frame_numbers(
+        &mut doc,
+        &mut state,
+        &ctx,
+        &theme,
+        &mut images,
+        &mut actions,
+        vec![],
+        t,
+    );
+    check(&nums, "首屏");
+    assert!(nums.len() >= 10, "视口内该画出一批行号，实际 {}", nums.len());
+    assert!(
+        nums.len() < 200,
+        "一帧不该再画完整篇 999 个行号，实际 {}",
+        nums.len()
+    );
+
+    let bottom = scroll_source_to_bottom(
+        &mut doc,
+        &mut state,
+        &ctx,
+        &theme,
+        &mut images,
+        &mut actions,
+        &mut t,
+    );
+    check(&bottom, "文末");
+    assert!(
+        bottom.iter().any(|n| n.text == "999"),
+        "该滚到最后一行，实际 {:?}",
+        bottom.iter().map(|n| &n.text).collect::<Vec<_>>()
+    );
 }
 
 /// 代码块编辑态与渲染态的按钮行位置必须一致：

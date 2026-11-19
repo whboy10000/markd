@@ -329,7 +329,45 @@ fn parse_link(c: &[char], open: usize) -> Option<(String, String, usize)> {
     Some((label, url, k + 1))
 }
 
+/// 行内语法的「触发字符」：主循环只在这些字符上尝试构造语法，其余一律当作文字。
+const INLINE_TRIGGERS: [u8; 11] = [
+    b'\\', b'\n', b'`', b'!', b'[', b'$', b'*', b'_', b'<', b'~', b'=',
+];
+
+/// 256 格查找表，`TRIG[b]` 表示字节 `b` 是否是行内触发字符。
+/// 多字节汉字的每个字节都 >= 0x80，永远落在这张表的 false 侧，所以按字节扫是安全的。
+const fn trigger_table() -> [bool; 256] {
+    let mut t = [false; 256];
+    let mut i = 0usize;
+    while i < INLINE_TRIGGERS.len() {
+        t[INLINE_TRIGGERS[i] as usize] = true;
+        i += 1;
+    }
+    t
+}
+static TRIG: [bool; 256] = trigger_table();
+
+/// 文本里是否可能出现行内语法。
+fn has_trigger(s: &str) -> bool {
+    s.as_bytes().iter().any(|b| TRIG[*b as usize])
+}
+
 pub fn parse_inline(s: &str) -> Vec<Inline> {
+    // 一个触发字符都没有 ⇒ 主循环只会把每个字符原样塞进 buf，结果必是单个 Text。
+    // 提前返回省掉「整段转 Vec<char>」这次大分配：1000 万字里它占了解析时间的大头。
+    if !has_trigger(s) {
+        return if s.is_empty() {
+            Vec::new()
+        } else {
+            vec![Inline::Text(s.to_string())]
+        };
+    }
+    parse_inline_slow(s)
+}
+
+/// 逐字符的主循环。留在 `parse_inline_slow` 里不只是为了分层：
+/// 测试用它作为参考实现，校验上面那条快路径逐字符等价。
+fn parse_inline_slow(s: &str) -> Vec<Inline> {
     let c: Vec<char> = s.chars().collect();
     let mut out = Vec::new();
     let mut buf = String::new();
@@ -758,9 +796,154 @@ pub fn math_fence_tex(source: &str) -> Option<String> {
     None
 }
 
+/// 一条待解析的行内文本。能借用原文的一律借用（标题/引用/列表项/脚注/单行段落
+/// 都是 `src` 的切片），只有需要拼行或切格子的才 own 一份，避免多一次全文拷贝。
+enum JobText<'a> {
+    Borrowed(&'a str),
+    Owned(String),
+}
+
+impl JobText<'_> {
+    fn as_str(&self) -> &str {
+        match self {
+            JobText::Borrowed(s) => s,
+            JobText::Owned(s) => s,
+        }
+    }
+}
+
+/// 表格各单元格的输入下标，形状与 `Block::Table` 的 `head` / `rows` 一致。
+struct TableShape {
+    head: Vec<usize>,
+    rows: Vec<Vec<usize>>,
+}
+
+/// 块扫描登记、扫描结束后统一执行的行内解析任务。
+///
+/// 为什么要摊开：`parse_inline` 是纯函数（同输入必同输出，且与块结构无关），
+/// 而它连同其内部的 `Vec<char>`／`Vec<Inline>` 分配占到大文档解析时间的一半以上。
+/// 摊平之后可以分片给多核，块结构、块源码、块下标仍由单线程扫描器原样决定，
+/// 并行只影响「谁来算这份行内树」，不影响任何结构语义。
+struct InlineJobs<'a> {
+    inputs: Vec<JobText<'a>>,
+    /// `(块下标, 输入下标)`：段落/标题/引用/列表项/脚注，一块一条。
+    singles: Vec<(usize, usize)>,
+    tables: Vec<(usize, TableShape)>,
+}
+
+impl<'a> InlineJobs<'a> {
+    fn new() -> Self {
+        Self {
+            inputs: Vec::new(),
+            singles: Vec::new(),
+            tables: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, text: JobText<'a>) -> usize {
+        self.inputs.push(text);
+        self.inputs.len() - 1
+    }
+
+    fn borrow(&mut self, s: &'a str) -> usize {
+        self.add(JobText::Borrowed(s))
+    }
+
+    fn owned(&mut self, s: String) -> usize {
+        self.add(JobText::Owned(s))
+    }
+
+    fn single(&mut self, block: usize, input: usize) {
+        self.singles.push((block, input));
+    }
+
+    fn table(&mut self, block: usize, head: Vec<usize>, rows: Vec<Vec<usize>>) {
+        self.tables.push((block, TableShape { head, rows }));
+    }
+
+    /// 跑完所有行内解析并写回。写回是「搬走」而不是复制：每个输入下标只被用一次。
+    fn fill(self, blocks: &mut [Block], threads: usize) {
+        let mut results = parse_inlines(&self.inputs, threads);
+        for (b, n) in &self.singles {
+            set_content(&mut blocks[*b], std::mem::take(&mut results[*n]));
+        }
+        for (b, shape) in &self.tables {
+            let head: Vec<Vec<Inline>> = shape
+                .head
+                .iter()
+                .map(|n| std::mem::take(&mut results[*n]))
+                .collect();
+            let rows: Vec<Vec<Vec<Inline>>> = shape
+                .rows
+                .iter()
+                .map(|r| {
+                    r.iter()
+                        .map(|n| std::mem::take(&mut results[*n]))
+                        .collect()
+                })
+                .collect();
+            match &mut blocks[*b] {
+                Block::Table { head: h, rows: w, .. } => {
+                    *h = head;
+                    *w = rows;
+                }
+                other => panic!("表格的行内结果写到了非表格块：{other:?}"),
+            }
+        }
+    }
+}
+
+/// 行内分片用的线程数：上限 8，小文档在 `parse_inlines` 里另走串行。
+fn inline_threads() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get().min(8))
+        .unwrap_or(1)
+}
+
+/// 把一批行内文本解析成行内树：量少串行（起线程比解析本身贵），量大分片到多核。
+fn parse_inlines(inputs: &[JobText], threads: usize) -> Vec<Vec<Inline>> {
+    let serial = || inputs.iter().map(|t| parse_inline(t.as_str())).collect();
+    if inputs.len() < 512 || threads < 2 {
+        return serial();
+    }
+    let mut out = vec![Vec::<Inline>::new(); inputs.len()];
+    let chunk = inputs.len().div_ceil(threads);
+    std::thread::scope(|s| {
+        for (dst, src) in out.chunks_mut(chunk).zip(inputs.chunks(chunk)) {
+            s.spawn(move || {
+                for (d, t) in dst.iter_mut().zip(src) {
+                    *d = parse_inline(t.as_str());
+                }
+            });
+        }
+    });
+    out
+}
+
+/// 把行内树写回它所属的块。只支持「带行内内容」的那几种块，
+/// 写错类型说明扫描器与任务登记表脱节了——那是内部不变量被破坏，直接崩比丢内容好。
+fn set_content(b: &mut Block, content: Vec<Inline>) {
+    match b {
+        Block::Heading { content: c, .. }
+        | Block::Paragraph { content: c, .. }
+        | Block::Quote { content: c, .. }
+        | Block::Footnote { content: c, .. } => *c = content,
+        Block::ListItem { item, .. } => item.content = content,
+        other => panic!("行内结果写到了不支持行内的块：{other:?}"),
+    }
+}
+
+/// 块级解析入口：结构与行内内容都算好。
 pub fn parse(src: &str) -> Vec<Block> {
+    parse_with(src, inline_threads())
+}
+
+/// `parse` 的实现，但行内阶段固定用 `threads` 个分片。
+/// 暴露给测试：并行与串行的结果必须逐块相同，这是「并行不改语义」的证明。
+pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
     let lines: Vec<&str> = src.split('\n').collect();
     let mut out: Vec<Block> = Vec::new();
+    let mut jobs = InlineJobs::new();
     let mut i = 0usize;
 
     // YAML Front Matter（仅文档开头）
@@ -963,11 +1146,13 @@ pub fn parse(src: &str) -> Vec<Block> {
             continue;
         }
         if let Some((level, rest)) = heading(t) {
+            let job = jobs.borrow(rest);
             out.push(Block::Heading {
                 level,
-                content: parse_inline(rest),
+                content: Vec::new(),
                 source: line.to_string(),
             });
+            jobs.single(out.len() - 1, job);
             i += 1;
             continue;
         }
@@ -975,62 +1160,66 @@ pub fn parse(src: &str) -> Vec<Block> {
             let raw = t.trim_start_matches('>');
             let level = t.len() - t.trim_start_matches('>').len();
             let body = raw.trim_start_matches(' ');
+            let job = jobs.borrow(body);
             out.push(Block::Quote {
                 level,
-                content: parse_inline(body),
+                content: Vec::new(),
                 source: line.to_string(),
             });
+            jobs.single(out.len() - 1, job);
             i += 1;
             continue;
         }
         if is_table_start(&lines, i) {
-            let head: Vec<Vec<Inline>> = split_cells(lines[i])
-                .iter()
-                .map(|c| parse_inline(c))
-                .collect();
+            let head_cells = split_cells(lines[i]);
             let align = parse_align(lines[i + 1]);
-            let mut rows: Vec<Vec<Vec<Inline>>> = Vec::new();
+            let mut row_cells: Vec<Vec<String>> = Vec::new();
             let mut j = i + 2;
             while j < lines.len() && !lines[j].trim().is_empty() && lines[j].contains('|') {
-                rows.push(
-                    split_cells(lines[j])
-                        .iter()
-                        .map(|c| parse_inline(c))
-                        .collect(),
-                );
+                row_cells.push(split_cells(lines[j]));
                 j += 1;
             }
             let source = lines[i..j].join("\n");
+            let head: Vec<usize> = head_cells.into_iter().map(|c| jobs.owned(c)).collect();
+            let rows: Vec<Vec<usize>> = row_cells
+                .into_iter()
+                .map(|r| r.into_iter().map(|c| jobs.owned(c)).collect())
+                .collect();
             out.push(Block::Table {
-                head,
-                rows,
+                head: Vec::new(),
+                rows: Vec::new(),
                 align,
                 source,
             });
+            jobs.table(out.len() - 1, head, rows);
             i = j;
             continue;
         }
         if let Some((indent, marker, checked, body)) = list_marker(line) {
+            let job = jobs.borrow(body);
             let item = ListItem {
                 indent,
                 marker,
                 checked,
-                content: parse_inline(body),
+                content: Vec::new(),
                 line: line.to_string(),
             };
             out.push(Block::ListItem {
                 item,
                 source: line.to_string(),
             });
+            jobs.single(out.len() - 1, job);
             i += 1;
             continue;
         }
         if let Some((id, body)) = footnote_def(t) {
+            let job = jobs.borrow(body);
             out.push(Block::Footnote {
                 id: id.to_string(),
-                content: parse_inline(body),
+                content: Vec::new(),
                 source: line.to_string(),
             });
+            jobs.single(out.len() - 1, job);
             i += 1;
             continue;
         }
@@ -1057,10 +1246,17 @@ pub fn parse(src: &str) -> Vec<Block> {
             i += 1;
         }
         let source = lines[start..i].join("\n");
+        // 只有一行时源码就是那一行本身，任务直接借用原始文本，不再拷一份
+        let job = if i == start + 1 {
+            jobs.borrow(lines[start])
+        } else {
+            jobs.owned(source.clone())
+        };
         out.push(Block::Paragraph {
-            content: parse_inline(&source),
+            content: Vec::new(),
             source,
         });
+        jobs.single(out.len() - 1, job);
     }
 
     if out.is_empty() {
@@ -1068,6 +1264,7 @@ pub fn parse(src: &str) -> Vec<Block> {
             source: String::new(),
         });
     }
+    jobs.fill(&mut out, threads);
     out
 }
 
@@ -1103,10 +1300,133 @@ mod tests {
         assert!(matches!(parse("$$\nE = mc^2\n$$")[0], Block::Math { .. }));
     }
 
+    /// 快路径必须与逐字符主循环逐结果相同。触发字符表一旦与实际语法脱节，
+    /// 表现是「某类标记悄悄不生效」，只有这种对照测试能拦住。
+    #[test]
+    fn inline_fast_path_matches_char_loop() {
+        let mut cases: Vec<String> = vec![
+            String::new(),
+            "纯文本".into(),
+            "hello world 123".into(),
+            "第一段很长的中文正文，没有任何标记。".into(),
+            "**加粗**普通*斜体*混排".into(),
+            "`代码`与 [链接](http://a.b) ".into(),
+            "[[双链]]与[^注1]".into(),
+            "$x^2$ 与 $$块$$".into(),
+            "==高亮== 与 ~~删除~~".into(),
+            "<u>下划线</u><em>斜体</em><strong>粗</strong>".into(),
+            "<https://a.b>".into(),
+            "转义 \\* 不是斜体".into(),
+            "换行\n第二行".into(),
+            "落单的 = 号 与 < 号 与 ~ 号".into(),
+            "! 感叹号 后面不是图片".into(),
+        ];
+        // 每个 ASCII 字符嵌进「甲X乙」，覆盖表里表外的全部取值
+        for b in 0u8..128 {
+            cases.push(format!("甲{}乙", b as char));
+            cases.push(format!("甲{}{}乙", b as char, b as char));
+        }
+        for s in &cases {
+            assert_eq!(
+                parse_inline(s),
+                parse_inline_slow(s),
+                "快路径与主循环结果不一致：{s:?}"
+            );
+        }
+    }
+
+    /// 行内解析被推迟到扫描结束后分片执行，写回必须「谁的正文回谁的块」。
+    /// 这里给每个块一个独有标号，逐块核对正文里只出现自己的标号；
+    /// 登记表与块下标一旦错位，别的块的标号就会串进来。
+    #[test]
+    fn deferred_inline_fills_the_right_block() {
+        let mut src = String::new();
+        for k in 0..60usize {
+            src.push_str(&format!("# 标题{k} **粗{k}**\n\n"));
+            src.push_str(&format!("段落{k} `码{k}` 与 [链{k}](http://a)\n\n"));
+            src.push_str(&format!("> 引用{k} *斜{k}*\n\n"));
+            src.push_str(&format!("- 项{k} ==亮{k}==\n\n"));
+            src.push_str(&format!("[^{k}]: 脚注{k} **黑{k}**\n\n"));
+            src.push_str(&format!("| 甲{k} | 乙{k} |\n|---|---|\n| 丙{k} | 丁{k} |\n\n"));
+        }
+        let blocks = parse(&src);
+        let mut kinds: std::collections::HashMap<&'static str, usize> =
+            std::collections::HashMap::new();
+        for b in &blocks {
+            let plain = b.plain();
+            // 每个块的正文里只能有它自己那一个数字标号。
+            let mut nums: Vec<String> = plain
+                .split(|c: char| !c.is_ascii_digit())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+            nums.sort();
+            nums.dedup();
+            assert!(
+                nums.len() <= 1,
+                "块正文里串进了多个标号：{plain:?} → {nums:?}"
+            );
+            let name = match b {
+                Block::Heading { .. } => "Heading",
+                Block::Paragraph { .. } => "Paragraph",
+                Block::Quote { .. } => "Quote",
+                Block::ListItem { .. } => "ListItem",
+                Block::Footnote { .. } => "Footnote",
+                Block::Table { .. } => "Table",
+                _ => continue,
+            };
+            *kinds.entry(name).or_insert(0usize) += 1;
+        }
+        // 六种带行内内容的块都得真的出现，否则这条测试什么都没检查。
+        for name in [
+            "Heading",
+            "Paragraph",
+            "Quote",
+            "ListItem",
+            "Footnote",
+            "Table",
+        ] {
+            assert!(
+                kinds.get(name).copied().unwrap_or(0) >= 60,
+                "{name} 应有 60 块，实际 {:?}",
+                kinds.get(name)
+            );
+        }
+    }
+
+    /// 并行与串行必须给出逐块相同的结果：这是「行内并行不改语义」的正面证明。
+    /// 512 条以下走串行分支，所以样例做得足够大，把两种分支都覆盖上。
+    #[test]
+    fn parallel_inline_matches_serial() {
+        let mut src = String::new();
+        for k in 0..200usize {
+            src.push_str(&format!("# 标题{k} **粗{k}** $x_{k}$\n\n"));
+            src.push_str(&format!("段落{k} 有 `代码{k}`、[[双链{k}]] 和 <u>下划线{k}</u>。\n\n"));
+            src.push_str(&format!("> 引用{k} ~~删{k}~~ ==亮{k}== [^注{k}]\n\n"));
+            src.push_str(&format!("- [ ] 任务{k} *斜{k}*[链接](u/{k})\n\n"));
+            src.push_str(&format!("| 甲{k} | 乙{k} |\n|:-:|---|\n| `c{k}` | **d{k}** |\n\n"));
+            src.push_str("普通段落，没有任何标记，走行内快路径。\n\n");
+        }
+        let one = parse_with(&src, 1);
+        let many = parse_with(&src, 8);
+        assert_eq!(one.len(), many.len());
+        for (i, (a, b)) in one.iter().zip(&many).enumerate() {
+            assert_eq!(a, b, "块 {i} 在并行与串行下不同：{a:?} vs {b:?}");
+        }
+        assert!(
+            one.len() > 1000,
+            "样例应足够大以覆盖并行分支，实际 {} 块",
+            one.len()
+        );
+    }
+
     /// 行内公式由 pulldown-cmark 的 math 扩展识别，并保留在 AST 中。
     #[test]
     fn inline_math_source() {
-        assert_eq!(inline_math_tex("$x^2 + y^2$").as_deref(), Some("x^2 + y^2"));
+        assert_eq!(
+            inline_math_tex("$x^2 + y^2$").as_deref(),
+            Some("x^2 + y^2")
+        );
         assert!(inline_math_tex("普通文本").is_none());
         let parsed = parse_inline("前 $x^2$ 后");
         assert!(

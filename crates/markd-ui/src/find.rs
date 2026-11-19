@@ -79,6 +79,74 @@ impl Default for FindPanel {
     }
 }
 
+/// 逐块扫描命中：块数多时按块下标分片到多核，各片按原顺序合并。
+///
+/// 1000 万字（24 万块）串行全扫一遍 77ms，文档一改就要重算，改一次字卡一帧；
+/// 8 线程分片后约 12ms。分片只是并行化同一套匹配规则，结果与串行逐条相同：
+/// 每片各自的上限就是总上限，因此合并后截断得到的仍是「全局前 MAX_HITS 条」。
+pub(crate) fn scan_hits(blocks: &[crate::ast::Block], re: &Regex) -> Vec<Hit> {
+    let threads = if blocks.len() < 2048 {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map(|n| n.get().min(8))
+            .unwrap_or(1)
+    };
+    scan_hits_with(blocks, re, threads)
+}
+
+/// 大文档该开几条线程：< 2048 块时起线程比扫完还贵。
+pub(crate) fn scan_hits_with(blocks: &[crate::ast::Block], re: &Regex, threads: usize) -> Vec<Hit> {
+    let one = |lo: usize, src: &[crate::ast::Block]| -> Vec<Hit> {
+        let mut v = Vec::new();
+        for (k, b) in src.iter().enumerate() {
+            let text = editor::block_buffer(b);
+            for m in re.find_iter(&text) {
+                if m.start() == m.end() {
+                    continue; // 空匹配没有可替换的内容
+                }
+                v.push(Hit {
+                    block: lo + k,
+                    start: m.start(),
+                    end: m.end(),
+                });
+                if v.len() >= MAX_HITS {
+                    return v;
+                }
+            }
+        }
+        v
+    };
+    if threads < 2 {
+        return one(0, blocks);
+    }
+    let chunk = blocks.len().div_ceil(threads);
+    let mut parts: Vec<Vec<Hit>> = Vec::new();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = blocks
+            .chunks(chunk)
+            .enumerate()
+            .map(|(t, src)| {
+                let lo = t * chunk;
+                s.spawn(move || one(lo, src))
+            })
+            .collect();
+        // 按 spawn 顺序 join：块下标天然递增，合并结果就是全局顺序。
+        for h in handles {
+            parts.push(h.join().unwrap_or_default());
+        }
+    });
+    let mut hits: Vec<Hit> = Vec::new();
+    for p in parts {
+        hits.extend(p);
+        if hits.len() >= MAX_HITS {
+            break;
+        }
+    }
+    hits.truncate(MAX_HITS);
+    hits
+}
+
 impl FindPanel {
     /// 打开面板；`replace` = true 时同时显示替换行（Ctrl+H）。
     pub fn open_for(&mut self, replace: bool) {
@@ -129,22 +197,7 @@ impl FindPanel {
                 return;
             }
         };
-        'outer: for (i, b) in doc.blocks.iter().enumerate() {
-            let text = editor::block_buffer(b);
-            for m in re.find_iter(&text) {
-                if m.start() == m.end() {
-                    continue; // 空匹配没有可替换的内容
-                }
-                self.hits.push(Hit {
-                    block: i,
-                    start: m.start(),
-                    end: m.end(),
-                });
-                if self.hits.len() >= MAX_HITS {
-                    break 'outer;
-                }
-            }
-        }
+        self.hits = scan_hits(&doc.blocks, &re);
         if self.current >= self.hits.len() {
             self.current = 0;
         }
@@ -514,5 +567,61 @@ mod tests {
         p.sync(&doc);
         assert!(p.error.is_some());
         assert!(p.hits.is_empty());
+    }
+    /// 分片并行必须和单线程逐条一致：块下标是全局下标、顺序不变，
+    /// 命中超出上限时留下的仍是「全局前 MAX_HITS 条」，不是某一片的前 MAX_HITS 条。
+    /// 分片数取 3 特意让每片命中数超过上限，最容易出现「片内截断顺序错」的情况。
+    #[test]
+    fn parallel_hit_scan_matches_serial_including_cap() {
+        let blocks: Vec<crate::ast::Block> = crate::ast::parse(
+            &(0..5000)
+                .map(|i| format!("第 {i} 段 目标 目标 结尾。\n\n"))
+                .collect::<String>(),
+        );
+        assert!(blocks.len() > 2048, "夹具要走并行分支");
+        let re = regex::Regex::new("目标").unwrap();
+        let serial = scan_hits_with(&blocks, &re, 1);
+        for threads in [2usize, 3, 7] {
+            assert_eq!(
+                scan_hits_with(&blocks, &re, threads),
+                serial,
+                "{threads} 条线程的结果与串行不一致"
+            );
+        }
+        assert_eq!(serial.len(), MAX_HITS, "命中该截到上限");
+        assert!(
+            serial.windows(2).all(|w| w[0].block <= w[1].block),
+            "块下标必须递增"
+        );
+        assert_eq!(serial[0].block, 0);
+        assert_eq!(serial[1].start > serial[0].start, true);
+    }
+
+    /// 稀疏命中（远少于上限）也必须完整：分片合并漏一条就找不到下一处。
+    #[test]
+    fn parallel_hit_scan_keeps_sparse_hits() {
+        let text = (0..3000)
+            .map(|i| {
+                if i % 500 == 0 {
+                    format!("第 {i} 段 稀有词。\n\n")
+                } else {
+                    format!("第 {i} 段 普通内容。\n\n")
+                }
+            })
+            .collect::<String>();
+        let blocks = crate::ast::parse(&text);
+        let re = regex::Regex::new("稀有词").unwrap();
+        let hits = scan_hits_with(&blocks, &re, 4);
+        assert_eq!(hits.len(), 6, "3000 段里每 500 段一条");
+        assert_eq!(
+            hits,
+            scan_hits_with(&blocks, &re, 1),
+            "稀疏命中并行与串行不一致"
+        );
+        for h in &hits {
+            let b = &blocks[h.block];
+            let buf = editor::block_buffer(b);
+            assert_eq!(&buf[h.start..h.end], "稀有词", "区间没落在块缓冲上");
+        }
     }
 }

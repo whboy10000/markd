@@ -544,33 +544,28 @@ impl MarkdApp {
             self.set_workspace(p);
         }
         let mut actions = Vec::new();
-        egui::ScrollArea::vertical().show(ui, |ui| match self.side_tab {
-            SideTab::Files => sidebar::file_tree(
-                ui,
-                &mut self.tree,
-                self.doc.path.as_deref(),
-                &self.theme,
-                &mut self.icons,
-                &mut actions,
-            ),
-            SideTab::Outline => {
-                if self.config.show_outline {
-                    let mut fold_toggles: Vec<usize> = Vec::new();
-                    sidebar::outline_panel(
-                        ui,
-                        &self.outline,
-                        &self.theme,
-                        &mut actions,
-                        &self.outline_folded,
-                        &mut fold_toggles,
-                    );
-                    for i in fold_toggles {
-                        if !self.outline_folded.insert(i) {
-                            self.outline_folded.remove(&i);
-                        }
+        // 大纲面板自带滚动（虚拟化只排版视口内的行），不能再套一层 ScrollArea：
+        // 外层会把可用高度放开成无限，内层就拿不到视口、算不出该排版哪几行。
+        match self.side_tab {
+            SideTab::Outline if self.config.show_outline => {
+                let mut fold_toggles: Vec<usize> = Vec::new();
+                sidebar::outline_panel(
+                    ui,
+                    &self.outline,
+                    &self.theme,
+                    &mut actions,
+                    &self.outline_folded,
+                    &mut fold_toggles,
+                );
+                for i in fold_toggles {
+                    if !self.outline_folded.insert(i) {
+                        self.outline_folded.remove(&i);
                     }
-                } else {
-                    // 隐藏大纲时回退到文件树，避免侧栏出现空白或提示文字。
+                }
+            }
+            // 文件树，以及大纲被关闭时的回退（避免侧栏出现空白或提示文字）。
+            _ => {
+                egui::ScrollArea::vertical().show(ui, |ui| {
                     sidebar::file_tree(
                         ui,
                         &mut self.tree,
@@ -578,10 +573,10 @@ impl MarkdApp {
                         &self.theme,
                         &mut self.icons,
                         &mut actions,
-                    );
-                }
+                    )
+                });
             }
-        });
+        }
         for a in actions {
             match a {
                 SideAction::Open(p) => self.open_file(p),

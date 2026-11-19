@@ -45,9 +45,14 @@ impl MarkdApp {
         // 首次启动直接给一个空白文档，不再停在首页欢迎页。
         let open_blank = first_run && start_file.is_none();
         let (doc, root) = if let Some(p) = initial {
+            let t = std::time::Instant::now();
             let text = workspace::read(&p).unwrap_or_else(|_| WELCOME.to_string());
+            crate::trace_open!("read_ms", t.elapsed());
             let r = p.parent().map(|x| x.to_path_buf());
-            (Document::new(&text, Some(p)), r)
+            let t = std::time::Instant::now();
+            let d = Document::new(&text, Some(p));
+            crate::trace_open!("parse_ms", t.elapsed());
+            (d, r)
         } else {
             let r = config
                 .workspace
@@ -65,11 +70,15 @@ impl MarkdApp {
         if let Some(r) = &root {
             expanded.insert(r.clone());
         }
+        let t = std::time::Instant::now();
         let tree = root
             .as_ref()
             .map(|r| workspace::scan_tree(r, &expanded))
             .unwrap_or_default();
+        crate::trace_open!("scan_ms", t.elapsed());
+        let t = std::time::Instant::now();
         let outline = doc.outline();
+        crate::trace_open!("outline_ms", t.elapsed());
         // 链接图要遍历整个工作区目录，桌面上目录一多就要好几秒。
         // 它只有「双向链接关系图」用得到，所以启动时不算，点开面板再后台算。
         let link_docs = HashMap::new();
@@ -84,9 +93,12 @@ impl MarkdApp {
             .map(|r| r.to_string_lossy().to_string())
             .unwrap_or_default();
 
+        let t = std::time::Instant::now();
         let stats_cache = doc.stats();
+        crate::trace_open!("stats_ms", t.elapsed());
+        let writing = WritingStats::new(stats_cache.words);
         let mut app = Self {
-            stats: WritingStats::new(&doc),
+            stats: writing,
             stats_cache,
             stats_at: std::time::Instant::now(),
             doc,
