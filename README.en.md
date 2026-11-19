@@ -22,10 +22,10 @@ A desktop Markdown editor built from scratch in pure Rust + egui. **No web kerne
 
 | Dimension | Markd | Electron / WebView-based editors |
 | --- | --- | --- |
-| Binary size | Single-file executable, a few MB | 100 MB+, bundles Chromium |
+| Binary size | Single-file executable, 8–19 MB installers | 100 MB+, bundles Chromium |
 | Memory | Native GUI, tens of MB | One Chromium process to start |
 | Rendering | egui immediate mode, straight to GPU | DOM + CSS layout, layered indirection |
-| Long documents | 500k-character files stay smooth | Scrolling/typing stutter is common |
+| Long documents | 10-million-character files stay editable (1.5 ms idle frame) | Scrolling/typing stutter is common |
 | Parsing | In-house AST, lossless round-trip | Round-trip through HTML, format drift |
 
 ## Core concept: Hybrid View
@@ -175,7 +175,7 @@ A Cargo workspace with strictly one-way dependency flow:
 ┌─────────────────────────────────────────────────────────────┐
 │ markd-ui                                                    │
 │  ├─ app/        App state, action dispatch, dialogs, tabs   │
-│  ├─ editor/     Hybrid View editor, selection, caret, undo  │
+│  ├─ editor/     Hybrid View editor, culling, selection, undo│
 │  ├─ render/     Block rendering (math / diagram / inline)   │
 │  ├─ terminal/   PTY terminal                                │
 │  ├─ sidebar.rs  File tree / outline / search                │
@@ -198,21 +198,44 @@ A Cargo workspace with strictly one-way dependency flow:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Performance: opens 500k-character documents smoothly
+## Performance: measured on a 10-million-character file
 
-Markd's rendering pipeline is designed specifically for very long documents — **single files with hundreds of thousands of characters open instantly, with smooth typing and scrolling throughout**. Key optimizations:
+Stress corpus: 10,000,045 characters / 17.6 MB / 241,046 blocks (headings, paragraphs, tables, code blocks, math and Mermaid mixed). Same file, same machine (macOS x86_64, release build, 1280 px viewport):
 
-- **Parse once, edit incrementally**. The whole document is parsed once on open; afterwards every keystroke re-parses **only the block being edited** (microseconds, ~3µs) — never the full text. Only cases like pasting blank lines that split one block into several fall back to a single full re-parse. This is the core of "editing doesn't slow down as the document grows".
-- **Per-frame cost is independent of document size**. Each frame only clones the active block's source for editing; non-active blocks are laid out read-only. There is no path that does O(n) string concatenation over the full text every frame.
-- **No virtual scrolling**. We tried "estimated height + placeholder" virtual scrolling, but the gap between estimated and measured heights made the scrollbar bounce back repeatedly (scrolling felt broken). Markd renders every block and makes single-block rendering fast enough: measured ~9.5ms per frame for a 100k-character / 989-block document (worst ~13ms), well within a 60fps budget.
-- **Explicit-width layout**. Every text block is pre-laid out into a galley at a fixed width before being handed to `Label`, avoiding `Label` falling back to infinite width inside horizontal layouts, which caused long paragraphs not to wrap and re-layouts every frame.
-- **Throttled undo stack**. Snapshots are recorded with a 450ms throttle (capped at 200 entries), so continuous typing never floods the undo stack nor copies the full text on every keystroke.
-- **Lazy workspace**. File-tree scans are capped at 4000 files / 60k entries as a safety net; quick open and the link graph only scan in the background when their panels open — never synchronously at startup.
-- **Zero runtime icon overhead**. 220+ sidebar SVG icons are embedded at compile time, rasterized once into a texture cache, then drawn as textures every frame.
-- **Zero rasterization for math**. RaTeX display lists convert straight to epaint Meshes; shapes are cached by `(formula, font size, display mode)` so each frame is just a triangle draw.
-- **Fast dev builds too**. `[profile.dev.package."*"] opt-level = 3` fully optimizes dependencies, so `cargo run` is usable day-to-day while your own code stays debuggable.
+| Scenario (10M characters) | Before | Now |
+| --- | --- | --- |
+| Cold first frame | 13,862.9 ms | **34.8 ms** |
+| Idle frame | 5,703.8 ms (worst 9,042.6) | **1.5 ms** (worst 4.0) |
+| Scroll frame | 3,864.4 ms (worst 8,446.7) | **5.5 ms** (worst 9.0) |
+| Keypress frame | 3,471.1 ms (worst 3,583.0) | **2.7 ms** (worst 8.3) |
+| Shapes per frame | 754,878 | **182** |
+| Resident memory | 3,152 MB | **271 MB** |
+| Open pipeline | read 44 + parse 1,246 + outline 9.2 + stats 290 ms | read 44 + parse **553** + outline 4.2 + stats **0.5** ms |
 
-Measured baseline (100k characters / 989 blocks): full-text parse ~11ms (once on open); incremental single-block write-back ~3µs; editor frame ~9.5ms. A 500k-character document is roughly 5× that size and stays equally fluid.
+The point of all of this is that **per-frame cost does not scale with document length**:
+
+- **Block layout table + viewport culling** (`editor/layout.rs`). Per-block heights and a prefix sum of top edges let a frame lay out only the blocks inside the viewport (plus 24 blocks of margin above and below). Heights converge on measured values: unmeasured blocks start from a fallback estimate and are replaced the moment they are laid out, so the scrollbar never bounces from the gap between estimated and real heights.
+- **Parse once, edit incrementally**. The document is parsed in full on open (553 ms ≈ 18M characters/s); every later keystroke re-parses **only the block being edited**. Only cases like pasting blank lines that split one block into several fall back to a single full re-parse. Inline markup parsing is sharded across blocks.
+- **The undo stack stores diffs, not copies**. Each record is a splice — block index plus the old and new text — and only a whole-document replacement degrades to a full snapshot. Typing 10 keys into the 10M-character file keeps the stack at **0.1 KB** instead of roughly 370 MB; 200 records on a 1M-character file cost **26 MB** of resident memory (net zero growth) and a full undo takes **2.0 ms** instead of 1,400 ms. Snapshots are still throttled at 450 ms and capped at 200 groups.
+- **Per-block incremental statistics**. `Stats` is a sum over cached per-block stats, so editing one block recomputes one block: 290 ms → **0.5 ms** on 10M characters, with an equivalence test against a full-text reference implementation.
+- **Parallel search**. Hit scanning is sharded across blocks with `min(cores, 8)` threads and returns byte-identical results to the serial path (including the hit cap): 93.9 ms → **20.9 ms** on 10M characters.
+- **Syntax highlighting only for visible blocks**. Warm code-block frame 63.0 ms → **1.4 ms** (100k-character corpus, same below).
+- **Source mode caches by document revision**. The full source string, line-start table, character count and longest-line width are recomputed only when the document actually changes, and line numbers are drawn only for visible rows: 113 ms → **15.7 ms** per frame on 10M characters.
+- **Virtualized sidebar lists**. Backlink target index: 307 ms / 254 MB → **0.25 ms / 0.2 MB**.
+- **Three size-independent tricks stay**: explicit-width layout (a `Label` inside a horizontal layout otherwise falls back to infinite width and re-lays out every frame), icons embedded at compile time and rasterized once, and math drawn straight from RaTeX display lists with zero rasterization.
+- **Lazy workspace**: file-tree scans are capped at 4,000 files / 60,000 entries; quick open and the link graph only scan in the background when their panels open — never synchronously at startup.
+- **Dev builds are usable too**: `[profile.dev.package."*"] opt-level = 3` fully optimizes dependencies, so `cargo run` is day-to-day fast while your own code stays debuggable.
+
+Reproduce the measurements (they require `MARKD_STRESS=1`, so plain `cargo test` skips them):
+
+```bash
+MARKD_STRESS=1 MARKD_STRESS_TARGET=10000000 \
+  cargo test --release -p markd-ui stress -- --nocapture --test-threads=1
+```
+
+Reference point at 1M characters / 24,420 blocks (same probes): open pipeline read 4.4 + parse 49.9 + outline 0.8 + stats 0.1 ms; idle frame 1.2 ms (worst 3.2), scroll 4.0 ms, keypress 2.5 ms; 137 MB resident; HTML export 189.9 ms; full-text scan 2.6 ms parallel vs 9.9 ms serial.
+
+Known costs, only perceptible at the ten-million-character scale: a cold source-mode frame takes 6.6 s (egui lays out all 17.6 MB once; later frames are 15.7 ms), typing in source mode costs about 950 ms per keypress (full re-parse), and HTML export takes 1.9 s. The default hybrid view is not affected by any of the three.
 
 ## Configuration
 
@@ -220,9 +243,11 @@ Configuration and version snapshots are stored under `~/.markd/` in the user dir
 
 ```
 ~/.markd/
-├── config.toml      # Theme, font, auto-save, etc.
+├── config.json      # Theme, font, font size, auto-save, image-host token, etc.
+├── folds.json       # Block fold state, keyed by absolute document path
 ├── fonts/           # Custom fonts (Regular weight preferred)
-└── snapshots/       # Version snapshots (time machine)
+├── assets/          # Where inserted images are written locally
+└── snapshots/       # Version snapshots (time machine), indexed by snapshots/index.json
 ```
 
 ## Fonts
