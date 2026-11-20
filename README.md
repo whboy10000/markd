@@ -48,7 +48,7 @@
 - **GFM 扩展**：表格（含对齐）、删除线、任务列表 `- [ ]` / `- [x]`、围栏代码块带语言标记。
 - **行内格式**：`**粗**`、`*斜*`、`` `代码` ``、`~~删~~`、`==高亮==`、上/下标、`[链接](url)`、`![图片](src)`、自动链接。
 - **脚注**：`[^1]` 引用 + `[^1]: 内容` 定义，自动编号。
-- **Front Matter**：顶部 YAML 块独立渲染，不混入正文。
+- **Front Matter**：顶部 YAML 块按代码块面板渲染（`yaml` 高亮 + 折叠 / 复制 / 删除），不混入正文。
 
 ### 数学公式（RaTeX 原生显示列表）
 - **三种语法**：行内 `$...$`、块级 `$$...$$`、代码块 ` ```math ... ``` `。
@@ -62,7 +62,8 @@
 `flowchart`、`sequence`、`class`、`er`、`gantt`、`journey`、`gitGraph`、`mindmap`、`timeline`、`pie`、`quadrantChart`、`radar`、`sankey`、`treemap`、`xychart`、`kanban`、`C4`、`requirementDiagram`、`cynefin`、`packet`、`railroad`、`swimlane`、`blockDiagram`、`boxes` 等。
 
 ### 代码块
-- 自研词法高亮，覆盖 Rust / Python / JavaScript / C 系 / Markup / CSS / 数据格式 / Shell / SQL 等 10 个语言家族。
+- 自研词法高亮：10 个语言配色族 + 按语言的注释语法（`#` / `//` / `--` / `%` / `;` / `rem` / `dnl`…），Dockerfile、Makefile、CMake、Terraform、Nginx、Lua、Haskell、Ruby、Go、LaTeX、MATLAB、Julia、R、Elixir、Clojure、Solidity、GraphQL 另有关键字表。
+- 语言下拉 460+ 行，规范名与别名各占一项（`cpp`/`c++`/`cxx`/`cc`、`dart`/`flutter`、`yaml`/`yml`/`k8s`/`github-actions`…），点谁就把谁写进围栏；两种写法的高亮等价。
 - 一键复制、语言标签可切换、行号、当前行高亮。
 
 ### 工作区

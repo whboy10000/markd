@@ -1301,10 +1301,11 @@ fn real_app_table_shows_all_columns() {
     }
 }
 
-/// 回归：光标在表格第一格时，按住鼠标拖到其它单元格，应把整张表格选入
-/// 跨块选区（之后 Cmd+C 或表格工具条的「复制」都能直接复制整表）。
+/// 表格里拖选：经过哪几格就选哪几格，Cmd+C 复制的正是这几格。
+/// 之前一拖就把整张表变成跨块选区，想复制一行都不行（用户反馈）。
+/// 想连上下文一起选走仍然可以：把指针拖出表格边界，整张表才进跨块选区。
 #[test]
-fn drag_inside_table_selects_whole_table() {
+fn drag_inside_table_selects_cells_and_copies_them() {
     let ctx = egui::Context::default();
     let mut app = test_app();
     let mut frame = eframe::Frame::_new_kittest();
@@ -1324,22 +1325,46 @@ fn drag_inside_table_selects_whole_table() {
             })
             .unwrap_or_else(|| panic!("未渲染：{name}"))
     };
-    let start = find("名称") + egui::vec2(3.0, 3.0);
+
+    // 只在表格里拖：从「甲」到「乙」= 第二行那两格。
+    let start = find("甲") + egui::vec2(3.0, 3.0);
     let end = find("乙") + egui::vec2(3.0, 3.0);
     drag_select(&ctx, &mut app, &mut frame, start, end);
+    assert_eq!(
+        app.editor.table_sel,
+        Some((0, (1, 0), (1, 1))),
+        "拖过的两个单元格应成为表格选区（行列含表头行）"
+    );
+    assert!(
+        app.editor.cross_sel.is_none(),
+        "表内拖选不该把整张表变成跨块选区：{:?}",
+        app.editor.cross_sel
+    );
+    let (_, copied) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![egui::Event::Copy]);
+    assert_eq!(
+        copied, "甲\t乙",
+        "Cmd+C 应只复制选中的单元格，实际 {copied:?}"
+    );
+    // 剪切不该删掉表格内容，只复制。
+    let (_, cut) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![egui::Event::Cut]);
+    assert_eq!(cut, "甲\t乙", "Cmd+X 应退化成复制，实际 {cut:?}");
+    assert!(
+        app.doc.source().contains("甲") && app.doc.source().contains("乙"),
+        "表格单元格选区不该改动文档：{:?}",
+        app.doc.source()
+    );
 
+    // 拖出表格边界：整张表进跨块选区（要连着上下文一起选时靠它）。
+    app.editor.table_sel = None;
+    let out = find("乙") + egui::vec2(3.0, 200.0);
+    drag_select(&ctx, &mut app, &mut frame, start, out);
     let len = app.doc.blocks[0].plain().chars().count();
     assert_eq!(
         app.editor.cross_sel,
         Some((0, 0, 0, len)),
-        "拖动经过其它单元格后应选中整张表格"
+        "拖出表格后应把整张表交给跨块选区"
     );
-    let text = crate::editor::cross_sel_text(&app.doc, app.editor.cross_sel)
-        .expect("整表选区应有可复制文本");
-    assert!(
-        text.contains("名称") && text.contains("甲") && text.contains("乙"),
-        "复制文本：{text}"
-    );
+    assert!(app.editor.table_sel.is_none(), "两套选区不能同时存在");
 }
 
 /// 回归：点表格工具条的「删除表格」必须先弹确认窗；取消不删，确认才删。
@@ -1957,12 +1982,6 @@ fn code_group_language_combo_changes_active_tab() {
         run_real_frame(&ctx, &mut app, &mut frame, vec![]);
     }
     // 点回段落，让代码组进入渲染态（语言下拉在渲染态标题栏里）。
-    let find = |shapes: &[egui::epaint::ClippedShape], name: &str| -> Option<egui::Pos2> {
-        shapes.iter().find_map(|cs| match &cs.shape {
-            egui::Shape::Text(t) if t.galley.text() == name => Some(t.pos),
-            _ => None,
-        })
-    };
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
     let para = text_center(&shapes, "段落").expect("段落");
     for ev in [
@@ -1988,6 +2007,14 @@ fn code_group_language_combo_changes_active_tab() {
         .rev()
         .find(|e| e.4 == me)
         .expect("渲染态代码组应有语言下拉");
+    // 语言下拉有 460+ 行，靠滚动定位某一行太脆：先往搜索框塞关键词，
+    // 列表只剩命中项。过滤串存在下拉自己的临时内存里，键与 language_combo 一致。
+    ctx.memory_mut(|m| {
+        m.data.insert_temp(
+            egui::Id::new(("code_group_lang", 1)).with("filter"),
+            "flutter".to_string(),
+        )
+    });
     run_real_frame(
         &ctx,
         &mut app,
@@ -2009,9 +2036,16 @@ fn code_group_language_combo_changes_active_tab() {
         "语言下拉弹层应打开"
     );
 
-    // 选「c」（A→Z 列表里靠前，必定可见）。
+    // 搜「flutter」后列表里只剩这一行（别名各自成项），点它就把围栏写成 ```flutter。
+    // 弹层里的搜索框也渲染同样的关键词文字，列表项在它之后绘制，所以取最后一个匹配。
+    let find_last = |shapes: &[egui::epaint::ClippedShape], name: &str| -> Option<egui::Pos2> {
+        shapes.iter().rev().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == name => Some(t.pos),
+            _ => None,
+        })
+    };
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
-    let c = find(&shapes, "c").expect("弹层里应有 c 语言");
+    let c = find_last(&shapes, "flutter").expect("弹层里应有 flutter 这一行");
     let p = c + egui::vec2(3.0, 3.0);
     for ev in [
         vec![egui::Event::PointerMoved(p)],
@@ -2025,14 +2059,20 @@ fn code_group_language_combo_changes_active_tab() {
     }
     match &app.doc.blocks[1] {
         crate::ast::Block::CodeGroup { items, .. } => {
-            assert_eq!(items[0].lang, "c", "java 标签应改成 c：{items:?}");
+            assert_eq!(items[0].lang, "flutter", "java 标签应改成 flutter：{items:?}");
             assert_eq!(items[1].lang, "python", "其它标签不受影响：{items:?}");
         }
         other => panic!("代码组应保留：{other:?}"),
     }
     assert!(
-        app.doc.blocks[1].source().contains("```c"),
+        app.doc.blocks[1].source().contains("```flutter"),
         "源码围栏应更新"
+    );
+    // flutter 是 dart 的别名写法：围栏里是 flutter，高亮仍按 dart 走
+    assert_eq!(
+        crate::theme::lang_family("flutter"),
+        crate::theme::lang_family("dart"),
+        "别名写法的高亮应与规范名等价"
     );
 }
 
@@ -3237,5 +3277,582 @@ fn every_block_type_can_start_a_drag() {
         "逐块起拖未通过 {} 处：\n{}",
         bad.len(),
         bad.join("\n")
+    );
+}
+
+/// 模态对话框要开在视口正中，而不是 egui 级联出来的左上角。
+/// 走真实帧：「插入表格」由命令弹出、「插入链接」由链接工具弹出。
+/// 对话框外框用它的三处文字（标题 +「插入」+「取消」）的并集近似；
+/// 菜单栏的「插入」在窗口顶部 80px 内，按 y 排除，标题取最后一个同名文字。
+#[test]
+fn modal_dialogs_open_at_viewport_center() {
+    let openers: Vec<(&str, fn(&mut MarkdApp))> = vec![
+        ("插入表格", |a| a.table_dialog = true),
+        ("插入链接", |a| a.link_dialog.open = true),
+    ];
+    for (title, open) in openers {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        let mut frame = eframe::Frame::_new_kittest();
+        app.doc = Document::new("段落", None);
+        app.home = false;
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+        open(&mut app);
+        let mut shapes = Vec::new();
+        for _ in 0..4 {
+            let (s, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+            shapes = s;
+        }
+        let mut box_rect = egui::Rect::NOTHING;
+        let mut found: Vec<String> = Vec::new();
+        for cs in shapes.iter().rev() {
+            let egui::Shape::Text(t) = &cs.shape else { continue };
+            let text = t.galley.text().to_string();
+            let in_body = t.pos.y >= 80.0;
+            let take = if text == title {
+                // 只取最靠后的一个（弹层在菜单之后绘制）
+                found.iter().all(|s| s != "标题")
+            } else {
+                in_body && matches!(text.as_str(), "插入" | "取消") && found.len() < 3
+            };
+            if take {
+                box_rect = box_rect.union(t.galley.rect.translate(t.pos.to_vec2()));
+                found.push(if text == title { "标题".to_string() } else { text });
+            }
+        }
+        assert_eq!(found.len(), 3, "{title} 应渲染出标题与两个按钮，实际 {found:?}");
+        let area = ctx.content_rect();
+        let off = box_rect.center().to_vec2() - area.center().to_vec2();
+        assert!(
+            off.x.abs() < 80.0 && off.y.abs() < 80.0,
+            "{title} 应居中弹出：对话框外框 {box_rect:?}（中心 {:.0}, {:.0}），内容区 {area:?}（中心 {:.0}, {:.0}），偏移 ({:.0}, {:.0})",
+            box_rect.center().x,
+            box_rect.center().y,
+            area.center().x,
+            area.center().y,
+            off.x,
+            off.y
+        );
+    }
+}
+
+/// 代码块 galley 里第 ch 个插入点的屏幕坐标（用于把鼠标落点对到具体字符）。
+fn code_char_pos(shapes: &[egui::epaint::ClippedShape], marker: &str, ch: usize) -> egui::Pos2 {
+    let t = shapes
+        .iter()
+        .find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text().contains(marker) => Some(t),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("未渲染代码正文：{marker}"));
+    let r = t.galley.pos_from_cursor(egui::text::CCursor::new(ch));
+    t.pos + r.center().to_vec2()
+}
+
+/// 打开一个「段落 + 4 行 Rust 代码块 + 段落」的真实 app，返回 (ctx, app, frame)。
+fn code_doc_app() -> (egui::Context, MarkdApp, eframe::Frame) {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new(
+        "para above\n\n```rust\nlet aaa = 1;\nlet bbb = 2;\nlet ccc = 3;\nlet ddd = 4;\n```\n\npara below",
+        None,
+    );
+    app.home = false;
+    app.editor.active = 0;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    (ctx, app, frame)
+}
+
+/// 在指定位置单击一次（移动 → 按下 → 松开 → 三帧落地）。
+fn click_at(ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame, pos: egui::Pos2) {
+    let mk = |pressed: bool| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    run_real_frame(
+        ctx,
+        app,
+        frame,
+        vec![egui::Event::PointerMoved(pos), mk(true)],
+    );
+    run_real_frame(ctx, app, frame, vec![mk(false)]);
+    for _ in 0..3 {
+        run_real_frame(ctx, app, frame, vec![]);
+    }
+}
+
+/// 那份文档的代码正文（块 2）：每行 12 字符 + 换行，共 4 行。
+const CODE_LEN: usize = 51;
+/// 第二/三行「let xxx = 」里 x 之前的那个插入点下标。
+const LINE2: usize = 17;
+const LINE3: usize = 30;
+
+/// 逐帧经过若干航点的拖拽：按下 → 每段按 6px 分步移动 → 松开。
+/// 真实拖拽的鼠标事件比这密得多，`drag_select` 只有 3 帧，验证不到
+/// 「锚点建立之后端点还能继续跟着指针」这一段。
+fn drag_path(
+    ctx: &egui::Context,
+    app: &mut MarkdApp,
+    frame: &mut eframe::Frame,
+    way: &[egui::Pos2],
+) {
+    let mk = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    let first = way[0];
+    run_real_frame(
+        ctx,
+        app,
+        frame,
+        vec![egui::Event::PointerMoved(first), mk(first, true)],
+    );
+    let mut last = first;
+    for seg in way.windows(2) {
+        let steps = ((seg[1] - seg[0]).length() / 6.0).ceil().max(1.0) as usize;
+        for k in 1..=steps {
+            let t = k as f32 / steps as f32;
+            last = egui::pos2(
+                seg[0].x + (seg[1].x - seg[0].x) * t,
+                seg[0].y + (seg[1].y - seg[0].y) * t,
+            );
+            run_real_frame(ctx, app, frame, vec![egui::Event::PointerMoved(last)]);
+        }
+    }
+    run_real_frame(ctx, app, frame, vec![mk(last, false)]);
+}
+
+/// 回归：按下点落在代码面板之外（正文右边距）再拖进代码文字，终点要跟着
+/// 指针落到字符上。此前终点只在按下点也落在代码区时才上报，锚点被兜底定成块首
+/// 后就再也不更新，表现成「拖了半天一个字符也没选中」。
+#[test]
+fn drag_starting_outside_code_panel_follows_pointer() {
+    let (ctx, mut app, mut frame) = code_doc_app();
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let panel = app
+        .editor
+        .last_block_rects
+        .iter()
+        .find(|(i, _)| *i == 2)
+        .map(|(_, r)| *r)
+        .expect("代码块矩形");
+    let start = egui::pos2(panel.2 + 6.0, code_char_pos(&shapes, "ccc", LINE3).y);
+    let end = code_char_pos(&shapes, "bbb", LINE2);
+    drag_path(&ctx, &mut app, &mut frame, &[start, end]);
+    let (a, ac, b, bc) = app
+        .editor
+        .cross_sel
+        .unwrap_or_else(|| panic!("代码块外起拖、拖进代码后应建立选区"));
+    assert_eq!((a, b), (2, 2), "选区应只在代码块内，实际 {a}→{b}");
+    let hi = ac.max(bc);
+    assert!(
+        (hi as isize - LINE2 as isize).abs() <= 2,
+        "终点该跟到指针那一步的字符 {LINE2}，实际 ({ac}, {bc}) / 整块 0..{CODE_LEN}"
+    );
+}
+
+/// 回归：往上拖经过代码块功能栏时，端点要停在最后落到的那个字符，
+/// 不能因为指针落在「整块矩形内但没有文字」的位置就跳成块尾——
+/// 那正是「往上拖，底下几行却全被选中」。
+#[test]
+fn drag_up_through_code_header_does_not_jump_to_block_end() {
+    let (ctx, mut app, mut frame) = code_doc_app();
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let panel = app
+        .editor
+        .last_block_rects
+        .iter()
+        .find(|(i, _)| *i == 2)
+        .map(|(_, r)| *r)
+        .expect("代码块矩形");
+    let start = code_char_pos(&shapes, "ccc", LINE3);
+    // 功能栏正中：在面板里、代码文字上方。
+    let header = egui::pos2(
+        start.x,
+        (panel.1 + code_char_pos(&shapes, "aaa", 0).y) * 0.5,
+    );
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![egui::Event::PointerMoved(start)],
+    );
+    let mk = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    run_real_frame(&ctx, &mut app, &mut frame, vec![mk(start, true)]);
+    for t in 1..=6 {
+        let f = t as f32 / 6.0;
+        let p = egui::pos2(
+            start.x + (header.x - start.x) * f,
+            start.y + (header.y - start.y) * f,
+        );
+        run_real_frame(
+            &ctx,
+            &mut app,
+            &mut frame,
+            vec![egui::Event::PointerMoved(p)],
+        );
+    }
+    run_real_frame(&ctx, &mut app, &mut frame, vec![mk(header, false)]);
+    let (a, ac, b, bc) = app
+        .editor
+        .cross_sel
+        .unwrap_or_else(|| panic!("代码块内往上拖应建立选区"));
+    assert_eq!((a, b), (2, 2), "选区应只在代码块内");
+    let (lo, hi) = (ac.min(bc), ac.max(bc));
+    assert!(
+        hi < CODE_LEN,
+        "终点跳到块尾了（往上拖却选中下面所有行）：实际 ({lo}, {hi}) / {CODE_LEN}"
+    );
+}
+
+/// 回归：锚点在代码块里，往下拖出该块（经过块间空白落到下一段文字）时，
+/// 选区必须一直延伸到指针处。「锚点在本块就跳过整块端点」只该在指针仍
+/// 留在该块矩形内时生效，不能把跨块延伸一起削掉。
+#[test]
+fn drag_from_code_block_down_across_blocks_selects_through() {
+    let (ctx, mut app, mut frame) = code_doc_app();
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let start = code_char_pos(&shapes, "ccc", LINE3);
+    let end = code_char_pos(&shapes, "para below", 5);
+    drag_path(&ctx, &mut app, &mut frame, &[start, end]);
+    let (a, ac, b, bc) = app.editor.cross_sel.expect("跨块拖选应建立选区");
+    assert_eq!(
+        (a, b),
+        (2, 4),
+        "选区应从代码块延伸到后面的段落，实际 {a}→{b}"
+    );
+    assert!(ac > 0, "锚点该落在按下处的字符上，实际 {ac}");
+    assert_eq!(bc, 5, "终点应落在后面段落里指针那一步的字符，实际 {bc}");
+    let copied = crate::editor::cross_sel_text(&app.doc, app.editor.cross_sel).unwrap_or_default();
+    for key in ["ccc", "ddd", "para"] {
+        assert!(
+            copied.contains(key),
+            "拖过的内容漏了「{key}」，实际 {copied:?}"
+        );
+    }
+    assert!(
+        !copied.contains("aaa"),
+        "没拖到的第一行不该进来，实际 {copied:?}"
+    );
+}
+
+/// 点渲染态代码块的某个字符：光标要落在那里，不能跳到整段代码末尾。
+/// 以前代码块不报 `Action::Caret`（只有文字块报），实测点第一行行首后
+/// `last_cursor` 是 51（缓冲末尾），紧跟着按退格删掉的是最后一行的字符。
+#[test]
+fn clicking_code_block_char_places_caret_there() {
+    let (ctx, mut app, mut frame) = code_doc_app();
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    // 代码 galley 的下标与缓冲下标一致：CCursor(35) 就是第三行第 5 个字符。
+    let p = code_char_pos(&shapes, "let ccc", LINE3 + 5);
+    click_at(&ctx, &mut app, &mut frame, p);
+    assert_eq!(app.editor.active, 2, "点代码块应进入该块编辑态");
+    assert_eq!(
+        app.editor.last_cursor,
+        LINE3 + 5,
+        "光标应落在第三行第 5 个字符（缓冲下标 {}），实际 {}",
+        LINE3 + 5,
+        app.editor.last_cursor
+    );
+}
+
+/// 用户报的现场：光标在代码块第一行第一个字符，按退格不该退出代码块。
+/// 真 app 帧驱动——先点第一行行首（光标落点由上一条测试钉住），再按退格。
+#[test]
+fn backspace_at_first_char_of_code_block_keeps_it_code() {
+    let (ctx, mut app, mut frame) = code_doc_app();
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let p = code_char_pos(&shapes, "let aaa", 0);
+    click_at(&ctx, &mut app, &mut frame, p);
+    assert_eq!(app.editor.last_cursor, 0, "夹具：光标应在第一行第一个字符");
+
+    let before = app.doc.source();
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![egui::Event::Key {
+            key: egui::Key::Backspace,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }],
+    );
+
+    assert_eq!(app.doc.source(), before, "退格不该改动文档一个字节");
+    assert_eq!(app.doc.blocks.len(), 5, "代码块不该被并回上一块");
+    assert!(
+        matches!(app.doc.blocks[2], crate::ast::Block::Code { .. }),
+        "第 2 块还得是代码块：{:?}",
+        app.doc.blocks[2].source()
+    );
+    assert_eq!(app.editor.active, 2, "活动块不该跳走");
+    assert_eq!(app.editor.last_cursor, 0, "光标应原地不动");
+}
+
+/// 工具条上「行内公式 / 公式块 / 代码块公式」三个平铺按钮收成一个「公式」下拉：
+/// 未展开时工具条上没有那三个标签，展开后底下正好三项，点哪一项就执行哪个插入。
+#[test]
+fn toolbar_formula_dropdown_holds_three_items() {
+    let labels = ["行内公式", "公式块", "代码块公式"];
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("正文一段", None);
+    app.home = false;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+
+    // 文字形状 → 它的屏幕中心；`top` 只认工具条那一条（y < 80）。
+    let find = |shapes: &[egui::epaint::ClippedShape], name: &str| -> Option<egui::Pos2> {
+        shapes.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == name => {
+                Some(t.pos + t.galley.rect.center().to_vec2())
+            }
+            _ => None,
+        })
+    };
+    let top = |shapes: &[egui::epaint::ClippedShape], name: &str| -> Option<egui::Pos2> {
+        find(shapes, name).filter(|p| p.y < 80.0)
+    };
+    let click =
+        |app: &mut MarkdApp, ctx: &egui::Context, frame: &mut eframe::Frame, p: egui::Pos2| {
+            run_real_frame(
+                ctx,
+                app,
+                frame,
+                vec![egui::Event::PointerMoved(p), pointer_button(p, true)],
+            );
+            run_real_frame(ctx, app, frame, vec![pointer_button(p, false)]);
+            for _ in 0..2 {
+                run_real_frame(ctx, app, frame, vec![]);
+            }
+        };
+
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    for label in labels {
+        assert!(
+            top(&shapes, label).is_none(),
+            "工具条不该再平铺「{label}」，它要收进「公式」下拉"
+        );
+    }
+    let btn = top(&shapes, "公式").expect("工具条上要有「公式」下拉");
+
+    // 展开：三项都必须在弹出的菜单里。
+    click(&mut app, &ctx, &mut frame, btn);
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let items: Vec<egui::Pos2> = labels
+        .iter()
+        .filter_map(|l| find(&shapes, l))
+        .filter(|p| p.y > btn.y)
+        .collect();
+    assert_eq!(
+        items.len(),
+        labels.len(),
+        "「公式」下拉展开后应有三项，实际找到 {} 项",
+        items.len()
+    );
+
+    // 点第三项「代码块公式」：真的插入 ```math 块，菜单随后收起。
+    let math_code = find(&shapes, "代码块公式").expect("代码块公式项");
+    click(&mut app, &ctx, &mut frame, math_code);
+    assert!(
+        app.doc.source().contains("```math"),
+        "点「代码块公式」应插入公式代码块，实际 {:?}",
+        app.doc.source()
+    );
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    assert!(
+        find(&shapes, "代码块公式").is_none(),
+        "选完一项后下拉要收起，不该还挂着菜单项"
+    );
+
+    // 再展开点第一项「行内公式」：插入 $...$。
+    let btn = top(&shapes, "公式").expect("工具条上要有「公式」下拉");
+    click(&mut app, &ctx, &mut frame, btn);
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let inline = find(&shapes, "行内公式").expect("行内公式项");
+    click(&mut app, &ctx, &mut frame, inline);
+    assert!(
+        app.doc.source().contains("$E = mc^2$"),
+        "点「行内公式」应插入行内公式，实际 {:?}",
+        app.doc.source()
+    );
+}
+
+/// 回归：点击引用进入编辑态，左侧竖线必须停在原地——横坐标、线宽、线高
+/// 三者与渲染态逐像素相同（以前编辑态按 `TextEdit` 的响应矩形画线，
+/// 那个矩形比文字本身高 1px，点一下竖线就长大一截，表现为「边框动了一下」）。
+#[test]
+fn quote_bar_geometry_is_identical_in_both_states() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("> 甲乙丙丁\n\n正文段落", None);
+    app.home = false;
+    app.editor.active = 2;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let bar = |app: &mut MarkdApp, frame: &mut eframe::Frame| -> (f32, f32, f32) {
+        let (shapes, _) = run_real_frame_ext(&ctx, app, frame, vec![]);
+        let rects: Vec<_> = shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Rect(r) if r.fill == app.theme.accent && r.rect.width() <= 4.0 => {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        let b = rects.first().expect("引用块要画左侧竖线");
+        assert_eq!(rects.len(), 1, "只该有一条竖线，实际 {rects:?}");
+        (b.min.x, b.width(), b.height())
+    };
+    let before = bar(&mut app, &mut frame);
+
+    let p = {
+        let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+        shapes
+            .iter()
+            .find_map(|cs| match &cs.shape {
+                egui::Shape::Text(t) if t.galley.text().contains("甲乙丙丁") => {
+                    Some(t.pos + t.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .expect("引用正文")
+    };
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![egui::Event::PointerMoved(p), pointer_button(p, true)],
+    );
+    run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(p, false)]);
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    assert_eq!(app.editor.active, 0, "夹具：引用块要已成为活动块（编辑态）");
+    let after = bar(&mut app, &mut frame);
+    assert_eq!(
+        after.0, before.0,
+        "点击后竖线横向位置变了：{before:?} -> {after:?}"
+    );
+    assert_eq!(
+        (after.1, after.2),
+        (before.1, before.2),
+        "点击后竖线尺寸变了（线宽/线高）：{before:?} -> {after:?}"
+    );
+    // 块高也必须一致，否则下方内容会整体位移。
+    assert_eq!(
+        app.editor.layout.raw_height(0),
+        29.0,
+        "编辑态引用块的排版高度要与渲染态一致"
+    );
+}
+
+/// 工具条「代码」下拉：行内代码 / 代码块 / 代码组 三项收在一起，
+/// 并且已从「插入」下拉里搬走（同一个入口不在两处重复出现）。
+#[test]
+fn toolbar_code_dropdown_holds_three_items() {
+    let labels = ["行内代码", "代码块", "代码组"];
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("正文一段", None);
+    app.home = false;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let find = |shapes: &[egui::epaint::ClippedShape], name: &str| -> Option<egui::Pos2> {
+        shapes.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == name => {
+                Some(t.pos + t.galley.rect.center().to_vec2())
+            }
+            _ => None,
+        })
+    };
+    let top = |shapes: &[egui::epaint::ClippedShape], name: &str| -> Option<egui::Pos2> {
+        find(shapes, name).filter(|p| p.y < 80.0)
+    };
+    let click =
+        |app: &mut MarkdApp, ctx: &egui::Context, frame: &mut eframe::Frame, p: egui::Pos2| {
+            run_real_frame(
+                ctx,
+                app,
+                frame,
+                vec![egui::Event::PointerMoved(p), pointer_button(p, true)],
+            );
+            run_real_frame(ctx, app, frame, vec![pointer_button(p, false)]);
+            for _ in 0..2 {
+                run_real_frame(ctx, app, frame, vec![]);
+            }
+        };
+
+    // 工具条上只该有「代码」这一个入口。
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    for label in labels {
+        assert!(
+            top(&shapes, label).is_none(),
+            "工具条不该再平铺「{label}」，它要收进「代码」下拉"
+        );
+    }
+    let btn = top(&shapes, "代码").expect("工具条上要有「代码」下拉");
+
+    // 展开：三项齐全。
+    click(&mut app, &ctx, &mut frame, btn);
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let missing: Vec<&str> = labels
+        .iter()
+        .copied()
+        .filter(|l| find(&shapes, l).is_none())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "「代码」下拉展开后三项都要在，缺失 {missing:?}"
+    );
+
+    // 点「代码组」：真的插入代码组围栏。
+    let group = find(&shapes, "代码组").expect("代码组项");
+    click(&mut app, &ctx, &mut frame, group);
+    assert!(
+        app.doc.source().contains("````code-group"),
+        "点「代码组」应插入代码组，实际 {:?}",
+        app.doc.source()
+    );
+
+    // 「插入」里不再重复列这三项。
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let insert = top(&shapes, "插入").expect("插入下拉");
+    click(&mut app, &ctx, &mut frame, insert);
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let dup: Vec<&str> = labels
+        .iter()
+        .copied()
+        .filter(|l| find(&shapes, l).is_some())
+        .collect();
+    assert!(
+        dup.is_empty(),
+        "「插入」里不该再出现 {dup:?}：它们已搬到「代码」下拉，两处重复会各自漂移"
+    );
+    assert!(
+        find(&shapes, "表格").is_some() && find(&shapes, "分隔线").is_some(),
+        "「插入」剩下的项不能被动到：{:?}",
+        app.doc.source()
     );
 }

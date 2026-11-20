@@ -58,7 +58,7 @@ fn code_highlights_all_supported_languages() {
     }
 }
 
-/// 各语言的注释语法（# / // / -- / /* */ / <!-- -->）都要按注释色渲染。
+/// 各语言的注释语法（# / // / -- / % / ; / rem / /* */ / <!-- -->）都要按注释色渲染。
 #[test]
 fn code_highlights_comments_across_languages() {
     let theme = Theme::get(ThemeKind::Dark);
@@ -69,10 +69,34 @@ fn code_highlights_comments_across_languages() {
         ("sql", "-- 注释", "-- 注释"),
         ("html", "<!-- 注释 -->", "<!-- 注释 -->"),
         ("c", "/* 注释 */", "/* 注释 */"),
+        ("dockerfile", "# 注释", "# 注释"),
+        ("yaml", "# 注释", "# 注释"),
+        ("lua", "-- 注释", "-- 注释"),
+        ("haskell", "-- 注释", "-- 注释"),
+        ("latex", "% 注释", "% 注释"),
+        ("matlab", "% 注释", "% 注释"),
+        ("ini", "; 注释", "; 注释"),
+        ("asm", "; 注释", "; 注释"),
+        ("clojure", "; 注释", "; 注释"),
+        ("fortran", "! 注释", "! 注释"),
+        ("bat", "rem 注释", "rem 注释"),
+        ("mermaid", "%% 注释", "%% 注释"),
+        ("julia", "# 注释", "# 注释"),
+        ("pascal", "{ 注释 }", "{ 注释 }"),
+        ("ocaml", "(* 注释 *)", "(* 注释 *)"),
+        ("markdown", "https://example.com", ""),
     ];
     for &(lang, code, comment) in cases {
         let [_, _, _, comment_color, _, _] = theme.syntax(lang);
         let job = code_job(code, lang, &theme);
+        if comment.is_empty() {
+            // 正文型语言没有注释语法，`//` 不该被当注释染掉
+            assert!(
+                job.sections.iter().all(|s| s.format.color != comment_color),
+                "{lang} 不应出现注释色：{job:?}"
+            );
+            continue;
+        }
         let pos = job.text.find(comment).expect("注释应在代码里");
         let is_comment_color = job.sections.iter().any(|s| {
             let a = s.byte_range.start.0;
@@ -80,6 +104,109 @@ fn code_highlights_comments_across_languages() {
             a <= pos && pos < b && s.format.color == comment_color
         });
         assert!(is_comment_color, "{lang} 的注释应按注释色渲染: {job:?}");
+    }
+}
+
+/// 语言专属关键字表：这些词不属于所属配色族的通用表，只靠专属表才会上色。
+#[test]
+fn code_highlights_language_specific_keywords() {
+    let theme = Theme::get(ThemeKind::Dark);
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "dockerfile",
+            "FROM rust:1.85 AS build\nRUN cargo build",
+            &["FROM", "RUN"],
+        ),
+        (
+            "makefile",
+            "ifeq ($(OS),Linux)\n\tinclude mk/common.mk\nendif",
+            &["ifeq", "include", "endif"],
+        ),
+        (
+            "cmake",
+            "add_executable(app main.c)\ntarget_link_libraries(app m)",
+            &["add_executable"],
+        ),
+        (
+            "terraform",
+            "resource \"aws_s3_bucket\" \"b\" {\n  count = 1\n}",
+            &["resource", "count"],
+        ),
+        (
+            "nginx",
+            "server {\n  location / { proxy_pass http://up; }\n}",
+            &["server", "location", "proxy_pass"],
+        ),
+        (
+            "lua",
+            "local function f(x)\n  if x then return 1 end\nend",
+            &["local", "function", "then"],
+        ),
+        (
+            "haskell",
+            "module Main where\nmain = putStrLn \"hi\"",
+            &["module", "where"],
+        ),
+        ("ruby", "def call\n  rescue => e\n  end", &["def", "rescue"]),
+        (
+            "go",
+            "func main() {\n  ch := make(chan int)\n  go run(ch)\n}",
+            &["func", "chan", "go"],
+        ),
+        (
+            "latex",
+            "\\begin{itemize}\\item \\textbf{x}\\end{itemize}",
+            &["begin", "item", "textbf"],
+        ),
+        (
+            "matlab",
+            "function y = f(x)\n  if x, y = 1; end\nend",
+            &["function", "end"],
+        ),
+        (
+            "r",
+            "f <- function(x) { if (is.na(x)) return(NA) }",
+            &["function", "return"],
+        ),
+        (
+            "julia",
+            "function f(x)::Int\n  for i in 1:3 end\nend",
+            &["function", "for"],
+        ),
+        (
+            "elixir",
+            "defmodule A do\n  def f(x), do: x\nend",
+            &["defmodule", "def", "do", "end"],
+        ),
+        (
+            "clojure",
+            "(defn f [x] (when x (println x)))",
+            &["defn", "when"],
+        ),
+        (
+            "solidity",
+            "contract A {\n  mapping(address => uint) m;\n}",
+            &["contract", "mapping"],
+        ),
+        (
+            "graphql",
+            "type Query {\n  user(id: ID!): User\n}",
+            &["type"],
+        ),
+    ];
+    for &(lang, code, toks) in cases {
+        let job = code_job(code, lang, &theme);
+        for tok in toks {
+            let Some(pos) = job.text.find(tok) else {
+                panic!("{lang} 的代码里找不到 `{tok}`：{:?}", job.text);
+            };
+            let colored = job.sections.iter().any(|s| {
+                let a = s.byte_range.start.0;
+                let b = s.byte_range.end.0;
+                a <= pos && pos < b && s.format.color == theme.syntax(lang)[0]
+            });
+            assert!(colored, "{lang} 的 `{tok}` 应按关键字色渲染: {job:?}");
+        }
     }
 }
 

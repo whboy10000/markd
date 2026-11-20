@@ -199,39 +199,47 @@ impl MarkdApp {
             {
                 chosen = Some(Command::Link);
             }
-            // 行内公式 / 公式块也从「插入」下拉里提出来，放在「插入」左侧。
-            if ui
-                .button("行内公式")
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .on_hover_text("插入行内公式 ($...$)")
-                .clicked()
-            {
-                chosen = Some(Command::InlineMath);
-            }
-            if ui
-                .button("公式块")
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .on_hover_text("插入独立公式块 (Cmd/Ctrl+Option+B)")
-                .clicked()
-            {
-                chosen = Some(Command::Math);
-            }
-            if ui
-                .button("代码块公式")
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .on_hover_text("插入公式代码块 (```math ... ```)")
-                .clicked()
-            {
-                chosen = Some(Command::MathCode);
-            }
-            // 插入类动作收进一个下拉：表格、代码、分隔线、图表…
+            // 三个公式入口收进一个「公式」下拉：同源动作（都是插入 TeX），
+            // 平铺三个按钮各占一格宽度，标签/菜单名还容易看漏。
+            ui.menu_button("公式", |ui| {
+                for (label, cmd) in [
+                    ("行内公式", Command::InlineMath),
+                    ("公式块", Command::Math),
+                    ("代码块公式", Command::MathCode),
+                ] {
+                    if ui.button(label).clicked() {
+                        chosen = Some(cmd);
+                        ui.close();
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "插入公式：行内 $…$ / 公式块 $$…$$（Cmd/Ctrl+Option+B）/ 代码块 ```…```",
+            );
+            // 代码类同样收一个下拉：行内代码 / 代码块 / 代码组。
+            // 这三项原来埋在「插入」里，而它们的使用频率远高于表格 / 脚注 / 目录。
+            ui.menu_button("代码", |ui| {
+                for (label, cmd) in [
+                    ("行内代码", Command::Code),
+                    ("代码块", Command::CodeBlock),
+                    ("代码组", Command::CodeGroup),
+                ] {
+                    if ui.button(label).clicked() {
+                        chosen = Some(cmd);
+                        ui.close();
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "插入代码：行内代码 `…` / 代码块（Cmd/Ctrl+Option+C）/ 代码组（多语言 Tab）",
+            );
+            // 插入类动作收进一个下拉：表格、分隔线、图表…
             // 全塞在工具条上会挤成一排小按钮，下拉更好找。
             ui.menu_button("插入", |ui| {
                 for (label, cmd) in [
                     ("表格", Command::Table),
-                    ("代码块", Command::CodeBlock),
-                    ("代码组", Command::CodeGroup),
-                    ("行内代码", Command::Code),
                     ("分隔线", Command::Rule),
                     ("图表", Command::Mermaid),
                     ("流程图", Command::Flowchart),

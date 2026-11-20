@@ -237,7 +237,9 @@ fn inline_short_formula_keeps_natural_line_height() {
     let plain = render_blocks(&[paragraph("普通文字普通文字普通文字")], 520.0)
         .into_iter()
         .find_map(|s| match s {
-            egui::Shape::Text(t) if t.galley.text().contains('普') => Some(t.galley.rows[0].row.size.y),
+            egui::Shape::Text(t) if t.galley.text().contains('普') => {
+                Some(t.galley.rows[0].row.size.y)
+            }
             _ => None,
         })
         .expect("应渲染普通段落");
@@ -281,7 +283,11 @@ fn block_matrix_between_paragraphs_does_not_overlap() {
         .filter_map(shape_bounds)
         .reduce(|a, r| a.union(r))
         .expect("块级公式应画出形状");
-    assert!(math.height() > 20.0, "块级行列式高度异常：{}", math.height());
+    assert!(
+        math.height() > 20.0,
+        "块级行列式高度异常：{}",
+        math.height()
+    );
     for (i, t) in texts.iter().enumerate() {
         let separated = math.bottom() <= t.top() + 0.5
             || math.top() >= t.bottom() - 0.5
@@ -362,6 +368,109 @@ fn svg_snapshot_of_inline_matrix() {
     svg.push_str("</svg>");
     std::fs::write(&path, svg).expect("写 SVG 失败");
     println!("##V 已写出 {}", PathBuf::from(&path).display());
+}
+
+/// 行内公式的占位段必须贴着公式自己的墨迹：既不能压到相邻正文，也不能把相邻
+/// 正文顶开一大截。
+///
+/// 回归缺陷：占位宽用 `Fonts::glyph_width` 量私用区字符，而它对缺字形直接返回
+/// `0`（真正排版走的是 `.notdef` 豆腐块，约 0.5em）。于是占位个数按「一像素一个
+/// 字符」算、每个再按豆腐块宽推进，`$x^2$` 的占位实测 144px 而墨迹只有 13.6px：
+/// 公式两侧凭空多出大段空白，光标一离开这段（切到渲染态）整段就被顶成好几行。
+#[test]
+fn inline_math_placeholder_tracks_the_formula_ink() {
+    let theme = Theme::get(ThemeKind::Light);
+    for tex in [
+        "x^2",
+        "\\frac{a}{b}",
+        "\\sqrt{a^2+b^2}",
+        "\\alpha+\\beta=\\gamma",
+        "\\int_{0}^{1} x\\,dx",
+    ] {
+        let src = format!("前面文字 ${tex}$ 后面文字");
+        let shapes = render_blocks(&[paragraph(&src)], 420.0);
+        let galley = shapes
+            .iter()
+            .find_map(|s| match s {
+                egui::Shape::Text(t) if t.galley.text().contains('\u{E000}') => {
+                    Some(t.galley.clone())
+                }
+                _ => None,
+            })
+            .expect("应找到含公式占位字符的 galley");
+        assert_eq!(galley.rows.len(), 1, "[{tex}] 一条短公式不该把这段顶成多行");
+
+        let origin = shapes
+            .iter()
+            .find_map(|s| match s {
+                egui::Shape::Text(t) if t.galley.text().contains('\u{E000}') => Some(t.pos),
+                _ => None,
+            })
+            .expect("galley 的绘制原点");
+        let row = &galley.rows[0];
+        let is_marker = |c: char| (c as u32) >= 0xE000 && (c as u32) <= 0xE0FF;
+        let last_marker = row
+            .glyphs
+            .iter()
+            .rposition(|g| is_marker(g.chr))
+            .expect("占位字符应在行内");
+        let prev_right = row.glyphs[..row.glyphs.iter().position(|g| is_marker(g.chr)).unwrap()]
+            .iter()
+            .filter(|g| !g.chr.is_whitespace())
+            .map(|g| origin.x + row.pos.x + g.pos.x + g.advance_width)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let next_left = row.glyphs[last_marker + 1..]
+            .iter()
+            .filter(|g| !g.chr.is_whitespace())
+            .map(|g| origin.x + row.pos.x + g.pos.x)
+            .fold(f32::INFINITY, f32::min);
+
+        // 公式画出来的墨迹（字形网格 + 分数线/根号这类细横线矩形），只取落在
+        // 这一行、且在这一行占位段附近的，避免把面板底色之类的形状算进来。
+        let row_top = origin.y + row.pos.y;
+        let row_bot = row_top + row.row.size.y;
+        let ink = shapes
+            .iter()
+            .filter_map(|s| match s {
+                egui::Shape::Rect(r) if r.rect.height() <= 3.0 => Some(r.rect),
+                _ => shape_bounds(s),
+            })
+            .filter(|r| {
+                r.center().y >= row_top
+                    && r.center().y <= row_bot
+                    && r.left() > prev_right - 40.0
+                    && r.right() < next_left + 40.0
+            })
+            .reduce(|a, r| a.union(r))
+            .expect("应画出公式形状");
+
+        assert!(
+            ink.left() >= prev_right - 0.5,
+            "[{tex}] 公式压到左边的字上：墨迹左缘 {:.1} < 前字右缘 {:.1}",
+            ink.left(),
+            prev_right
+        );
+        assert!(
+            ink.right() <= next_left + 0.5,
+            "[{tex}] 公式压到右边的字上：墨迹右缘 {:.1} > 后字左缘 {:.1}",
+            ink.right(),
+            next_left
+        );
+        // 相邻两字之间的距离只该是「源文里的两个空格 + 公式自己 + 每侧 1px 呼吸位」。
+        // 空格在这个字号下约 4px，留出 6px 容差；旧的 144px 占位在这里会直接爆。
+        let slack = (next_left - prev_right - ink.width()).max(0.0);
+        assert!(
+            slack <= 6.0 + 2.0 * 4.0,
+            "[{tex}] 公式与正文之间空了 {slack:.1}px，占位段比墨迹宽太多"
+        );
+        // 上下文的字号一致性：公式按正文字号排，不该比正文明显高出一截。
+        let line_h = row.row.size.y;
+        assert!(
+            line_h <= theme.body * 1.6,
+            "[{tex}] 行高被撑到 {line_h:.1}（正文 {}）",
+            theme.body
+        );
+    }
 }
 
 /// 占位字符与空白不画，其它照常。

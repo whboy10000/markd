@@ -372,15 +372,19 @@ pub fn make_paragraph(doc: &mut Document, state: &mut EditorState) {
     apply_prefix(doc, state, "");
 }
 
-/// 当前可复制的选区文本：跨块选区优先，其次是活动块里的文本选区。
+/// 当前可复制的选区文本：跨块选区优先，其次表格单元格选区，再次活动块里的文本选区。
 pub fn copy_selection(doc: &Document, state: &EditorState) -> Option<String> {
     if let Some(text) = cross_sel_text(doc, state.cross_sel) {
+        return Some(text);
+    }
+    if let Some(text) = table_sel_text(doc, state) {
         return Some(text);
     }
     selection_text(doc, state).map(|(_, _, _, text)| text)
 }
 
-/// 复制选区为 Markdown：跨块选区按整块源码拼接，单块选区取可编辑文本。
+/// 复制选区为 Markdown：跨块选区按整块源码拼接，表格单元格按 `| a | b |` 行，
+/// 单块选区取可编辑文本。
 pub fn copy_selection_markdown(doc: &Document, state: &EditorState) -> Option<String> {
     if let Some(sel) = state.cross_sel {
         let (s, _, e, _) = cross_sel_range(sel);
@@ -393,13 +397,20 @@ pub fn copy_selection_markdown(doc: &Document, state: &EditorState) -> Option<St
             return Some(parts.join("\n\n"));
         }
     }
+    if let Some(text) = table_sel_markdown(doc, state) {
+        return Some(text);
+    }
     selection_text(doc, state).map(|(_, _, _, text)| text)
 }
 
 /// 剪切当前选区：跨块选区走原有逻辑，单块选区删掉选中字符后写回。
+/// 表格单元格选区不剪切（删格子里的文字容易误伤结构），只返回复制文本。
 pub fn cut_selection(doc: &mut Document, state: &mut EditorState) -> Option<String> {
     if state.cross_sel.is_some() {
         return cut_cross_sel(doc, state);
+    }
+    if state.table_sel.is_some() {
+        return table_sel_text(doc, state);
     }
     let (idx, a, z, text) = selection_text(doc, state)?;
     let b = doc.blocks.get(idx)?;
@@ -425,6 +436,11 @@ pub fn paste_text(doc: &mut Document, state: &mut EditorState, text: &str) -> bo
     }
     if state.cross_sel.is_some() {
         return apply_cross_sel_edit(doc, state, Some(text));
+    }
+    // 选中了表格单元格时不粘贴：活动块是整张表，粘贴会把整张表替换成文字。
+    // 要改格子内容，先点一下那个格子。
+    if state.table_sel.is_some() {
+        return false;
     }
     let idx = state.active;
     let Some(b) = doc.blocks.get(idx) else {

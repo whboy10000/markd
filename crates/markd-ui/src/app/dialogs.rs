@@ -430,6 +430,7 @@ impl MarkdApp {
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.label(format!("原路径：{}", target.display()));
                     ui.text_edit_singleline(&mut input);
@@ -463,6 +464,7 @@ impl MarkdApp {
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.label(format!("确定要删除 {} 吗？", target.display()));
                     ui.label(
@@ -506,6 +508,7 @@ impl MarkdApp {
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.label(format!("位置：{}", dir.display()));
                     ui.text_edit_singleline(&mut input);
@@ -540,6 +543,7 @@ impl MarkdApp {
             egui::Window::new("打开工作区")
                 .open(&mut open)
                 .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.label("工作区文件夹路径：");
                     ui.horizontal(|ui| {
@@ -607,6 +611,7 @@ impl MarkdApp {
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.label("链接地址");
                     let url_resp = ui.add(
@@ -657,6 +662,7 @@ impl MarkdApp {
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("行数");

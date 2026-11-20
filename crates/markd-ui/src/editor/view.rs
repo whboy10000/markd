@@ -112,6 +112,11 @@ pub fn show_editor(
         state.press_caret = None;
         state.table_drag_from = None;
     }
+    // 跨块选区与表格单元格选区互斥：一旦有跨块选区（含从表格拖出去得到的整块选区），
+    // 单元格选区就让位，避免两套高亮同时亮着、复制口径不一致。
+    if state.cross_sel.is_some() {
+        state.table_sel = None;
+    }
     // 新按下（非 Shift、且按在编辑区内）时清掉上一次残留的跨块选区。否则若这次
     // 按下的命中判定失败（点在标记区/块间空档/布局切换中），锚点没被重新锁定，
     // 兜底逻辑会沿用旧 cross_sel 的起点，把新选区锚到上一次拖拽/点击的块——
@@ -125,7 +130,19 @@ pub fn show_editor(
         && press_in_editor
     {
         state.cross_sel = None;
+        // 表格单元格选区同理：在格子里重新按下就清掉上一轮，拖动会重新建立。
+        state.table_sel = None;
     }
+    // 渲染层才有表格每格的矩形，本帧的单元格选区挂到 ctx，由它给选中的格子叠底色
+    // （块循环之前写入，同帧生效）。
+    ctx.memory_mut(|m| match state.table_sel {
+        Some(sel) => {
+            m.data.insert_temp(render::table_sel_id(), sel);
+        }
+        None => {
+            m.data.remove_temp::<TableSel>(render::table_sel_id());
+        }
+    });
     let typed_pair: Option<String> = ctx.input(|i| {
         i.events.iter().find_map(|e| match e {
             egui::Event::Text(t) => pair_close(t).map(|s| s.to_string()),
@@ -325,18 +342,22 @@ pub fn show_editor(
                         // 垫在下面的蓝底会被面板底色盖住，所以改为在块内容之上叠加
                         // 一层半透明选区色——文字依然清晰，又能看出这块被选中了。
                         // 活动块也照常叠加，拖选扫过它时同样有反馈。
+                        // 代码块（展开态）除外：它有逐行的精确高亮（render::code_panel），
+                        // 整块叠色会变成「选一行亮一块」。折叠态没有文字可画，仍用整块底色。
                         let sel_overlay = (!text_selection_block(block)
+                            && !(line_selectable_block(block) && !state.folded.contains(&idx))
                             && atomic_block_selected(state.cross_sel, idx))
-                        .then(|| {
-                            let c = theme.selection;
-                            egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 110)
-                        });
+                        .then(|| render::selection_overlay(theme));
 
                         // 活动块（TextEdit）的跨块选区底色：先占绘制槽，排版完成后
                         // 回填，保证底色垫在文字下层（选区色是不透明的）。
                         let active_sel_slot =
                             editing.then(|| ui.painter().add(egui::Shape::Noop));
 
+                        // 本块这一帧是否已经按「精确位置」上报过拖选（代码块代码区、
+                        // 表格单元格）。报了就不再走下面的「整块」端点兜底，
+                        // 否则精确端点会被块尾覆盖，表现成「一拖就选中整块」。
+                        let action_start = actions.len();
                         let resp = if editing && matches!(block, Block::Table { .. }) {
                             // 表格：像 Typora 一样直接在表格单元格里编辑，不看管道源码。
                             if let Block::Table {
@@ -584,10 +605,9 @@ pub fn show_editor(
                                                 ui.end_row();
                                             }
                                         });
-                                    // 单元格里向外拖选：拖到别的单元格（或拖出表格）时，
-                                    // 整张表格进入跨块选区，之后可直接 Cmd+C 复制，或点
-                                    // 表格工具条的「复制」。单元格内部的小幅拖动仍由
-                                    // TextEdit 选择文字，不影响原来的单元格内选词。
+                                    // 单元格里拖选：只选中经过的那几格（与渲染态同一套规则），
+                                    // 拖出表格边界才把整张表交给跨块选区，好连着上下文一起选走。
+                                    // 留在同一格里的小幅拖动仍由 TextEdit 选单元格文字。
                                     let pointer = ui.ctx().input(|i| i.pointer.interact_pos());
                                     let pressed = ui.ctx().input(|i| {
                                         i.pointer.button_pressed(egui::PointerButton::Primary)
@@ -595,35 +615,49 @@ pub fn show_editor(
                                     let down = ui.ctx().input(|i| i.pointer.primary_down());
                                     let dragging =
                                         ui.ctx().input(|i| i.pointer.is_decidedly_dragging());
+                                    let press_pt =
+                                        ui.ctx().input(|i| i.pointer.press_origin()).or(pointer);
+                                    let surrender = |ui: &egui::Ui| {
+                                        if let Some(fid) = ui.ctx().memory(|m| m.focused()) {
+                                            ui.ctx().memory_mut(|m| m.surrender_focus(fid));
+                                        }
+                                    };
                                     if pressed {
                                         state.table_drag_from = pointer
                                             .and_then(|p| table_cell_at(&row_rects, p))
                                             .map(|(r, c)| (idx, r, c));
                                     } else if !down {
                                         state.table_drag_from = None;
-                                    } else if dragging
-                                        && state.cross_sel.is_none()
-                                        && let Some((bi, ri, ci)) = state.table_drag_from
-                                        && bi == idx
-                                        && let Some(p) = pointer
-                                    {
-                                        let moved_cell =
-                                            table_cell_at(&row_rects, p) != Some((ri, ci));
-                                        let bounds = row_rects
-                                            .iter()
-                                            .flatten()
-                                            .fold(None::<egui::Rect>, |acc, r| {
-                                                Some(acc.map_or(*r, |a| a.union(*r)))
-                                            });
-                                        let outside = bounds.is_some_and(|b| !b.contains(p));
-                                        if moved_cell || outside {
-                                            state.table_drag_from = None;
-                                            state.cross_sel =
-                                                Some((idx, 0, idx, block.plain().chars().count()));
-                                            if let Some(fid) = ui.ctx().memory(|m| m.focused()) {
-                                                ui.ctx().memory_mut(|m| m.surrender_focus(fid));
+                                    } else if let Some(range) = render::table_drag_range(
+                                        &row_rects,
+                                        press_pt,
+                                        pointer,
+                                        dragging,
+                                    ) {
+                                        match range {
+                                            Some((from, to)) => {
+                                                if to != from {
+                                                    state.table_sel = Some((idx, from, to));
+                                                    surrender(ui);
+                                                }
+                                            }
+                                            None => {
+                                                state.table_drag_from = None;
+                                                state.table_sel = None;
+                                                state.cross_sel = Some((
+                                                    idx,
+                                                    0,
+                                                    idx,
+                                                    block.plain().chars().count(),
+                                                ));
+                                                surrender(ui);
                                             }
                                         }
+                                    }
+                                    // 已选中的单元格叠底色（半透明，盖在格子文字上）。
+                                    if let Some(sel) = state.table_sel.filter(|s| s.0 == idx) {
+                                        let sel = table_sel_rect(sel);
+                                        render::paint_table_sel(ui, theme, &row_rects, sel);
                                     }
                                     // 与渲染态一致：标题行底色铺满整行 + 行/列之间画单线分隔。
                                     // 之前编辑态只有外框描边、单元格又是同色填充，
@@ -1384,11 +1418,18 @@ pub fn show_editor(
                                     if !shapes.is_empty() {
                                         ui.painter().set(code_bg, egui::Shape::Vec(shapes));
                                     }
-                                    let r = out.response.rect;
+                                    // 竖线按文字的 galley 矩形画，不用 TextEdit 的响应矩形：
+                                    // 响应矩形比文字高 1px、上缘还高 0.5px，点击进入编辑时
+                                    // 引用竖线会当场抖一下（渲染态 block.rs 用的就是文字矩形，
+                                    // 两态必须同口径才能「点进去边框不动」）。
+                                    let g = egui::Rect::from_min_size(
+                                        out.galley_pos,
+                                        out.galley.rect.size(),
+                                    );
                                     ui.painter().rect_filled(
                                         egui::Rect::from_min_max(
-                                            egui::pos2(r.left() - 11.0, r.top()),
-                                            egui::pos2(r.left() - 8.0, r.bottom()),
+                                            egui::pos2(g.left() - 11.0, g.top()),
+                                            egui::pos2(g.left() - 8.0, g.bottom()),
                                         ),
                                         1.0,
                                         theme.accent,
@@ -1547,6 +1588,20 @@ pub fn show_editor(
                             // 缓冲区原文（可能含 **、[](…) 等隐藏标记），需要换算。
                             let plain_len = block.plain().chars().count();
                             let selected_text_block = text_selection_block(block);
+                            // 代码块同样能按字符定位（缓冲 == 所见文本 == 代码本身），
+                            // 只是它不走 text_response，所以单独放行；它的下标换算必须
+                            // 恒等：plain_char_index/buffer_char_range 会跳过换行符，
+                            // 用在多行代码上会把锚点整体往上挪几行。
+                            let code_block = line_selectable_block(block);
+                            let char_addressable = selected_text_block || code_block;
+                            let galley_to_plain =
+                                |gi: usize| -> usize {
+                                    if code_block {
+                                        gi
+                                    } else {
+                                        render::plain_char_index(&out.galley, gi)
+                                    }
+                                };
                             // 跨块选区扫过活动块：补画选中底色（垫在文字下层，
                             // 槽位在 TextEdit 之前已预留），并按指针位置上报精确
                             // 终点字符。没有这一段，选区拖回活动块时就会断掉。
@@ -1561,36 +1616,53 @@ pub fn show_editor(
                                 egui::pos2(band_left - 8.0, resp.response.rect.top() - 8.0),
                                 egui::pos2(band_right, resp.response.rect.bottom() + 8.0),
                             );
-                            if selected_text_block
-                                && let Some(slot) = active_sel_slot
+                            if char_addressable
                                 && let Some((s0, e0)) = render::cross_sel_chars(
                                     state.cross_sel,
                                     idx,
                                     plain_len,
                                 )
                             {
-                                let range = render::buffer_char_range(&out.galley, (s0, e0));
+                                let range = if code_block {
+                                    (s0, e0)
+                                } else {
+                                    render::buffer_char_range(&out.galley, (s0, e0))
+                                };
                                 // 活动块同样按行带铺色：左到内容列左缘、右到可用宽度
                                 // 右缘，和渲染态块对齐，选区跨块时不会出现宽窄不一的断层。
+                                // 代码编辑框画在不透明 panel 里，垫底的选区色会被面板盖住：
+                                // 改成半透明叠在文字之上（与渲染态代码块同一口径）。
+                                let (color, slot) = if code_block {
+                                    (render::selection_overlay(theme), None)
+                                } else {
+                                    (theme.selection, active_sel_slot)
+                                };
                                 let shapes = render::selection_shapes(
                                     &out.galley,
                                     out.galley_pos,
                                     range,
-                                    theme.selection,
+                                    color,
                                     Some((band_left, band_right)),
                                 );
                                 if !shapes.is_empty() {
-                                    ui.painter().set(slot, egui::Shape::Vec(shapes));
+                                    match slot {
+                                        Some(slot) => {
+                                            ui.painter().set(slot, egui::Shape::Vec(shapes));
+                                        }
+                                        None => {
+                                            ui.painter().add(egui::Shape::Vec(shapes));
+                                        }
+                                    }
                                 }
                             }
-                            if selected_text_block
+                            if char_addressable
                                 && state.cross_sel.is_some()
                                 && ui.input(|i| i.pointer.primary_down())
                                 && let Some(p) = ui.input(|i| i.pointer.interact_pos())
                                 && band_hit.contains(p)
                             {
                                 let ci = out.galley.cursor_from_pos(p - out.galley_pos).index.0;
-                                let ci = render::plain_char_index(&out.galley, ci);
+                                let ci = galley_to_plain(ci);
                                 actions.push(Action::CrossDrag(idx, ci.min(plain_len), false));
                             }
                             if let Some(r) = cr {
@@ -1618,7 +1690,7 @@ pub fn show_editor(
                                 // 仍是初始值（行尾），会把锚点记错。
                                 // 缓冲区下标 → 所见文本下标（跳过 ** 等隐藏标记）。
                                 let ci = out.galley.cursor_from_pos(p - out.galley_pos).index.0;
-                                let ci = render::plain_char_index(&out.galley, ci);
+                                let ci = galley_to_plain(ci);
                                 state.press_caret = Some((idx, ci.min(plain_len)));
                             }
                             // 编辑态文本块内直接拖动也要建立跨块选区。此前活动块
@@ -1693,7 +1765,23 @@ pub fn show_editor(
                         // 非文本块也参与跨块拖选：指针拖到它上面时把选区端点延伸进来。
                         // 这类块没有可映射的字符位置，按「整块」计——向下拖取块尾、
                         // 向上拖取块首，保证选区能跨过代码块/图表/图片继续延伸。
-                        if !text_selection_block(block) && resp.rect.is_positive() {
+                        // 本块自己已经上报过精确端点时（代码块里拖代码、表格里拖单元格）跳过。
+                        let drag_reported = actions[action_start..].iter().any(|a| {
+                            matches!(a,
+                                Action::CrossDrag(i, _, _) | Action::TableDrag(i, Some(_)) if *i == idx
+                            )
+                        });
+                        if !text_selection_block(block)
+                            && !drag_reported
+                            && resp.rect.is_positive()
+                            // 展开的代码块且锚点就在本块的字符上：指针暂时飘到功能栏
+                            // 或面板里没有文字的位置时，宁可让端点停在最后一次落点，
+                            // 也不能改取「块首/块尾」——那正是「选一行变成选中整块」。
+                            // 真正拖出本块矩形时由后面的按行兜底继续跨块延伸。
+                            && !(line_selectable_block(block)
+                                && !state.folded.contains(&idx)
+                                && state.cross_sel.is_some_and(|(a, ..)| a == idx))
+                        {
                             let over = drag_pos.is_some_and(|p| resp.rect.contains(p));
                             let down = ctx.input(|i| i.pointer.primary_down());
                             let dragging = ctx.input(|i| i.pointer.is_decidedly_dragging());
@@ -1909,15 +1997,22 @@ pub fn show_editor(
             // 按下点落在「块内子控件不吃拖拽事件」的原子块（表格单元、代码块功能栏、图片预览）上时，
             // 渲染层这一帧不上报锚点；不先补锚，聚合里 ShiftClick 的「无选区」分支会拿上一次光标当锚点，
             // 表现为「从表格起拖，表格和它前面的内容整块漏掉」。
+            // 展开的代码块不在其列：它自己按字符报锚点（渲染态走代码区、编辑态走
+            // press_caret），这里再补一个「块首」锚点会把精确落点抹成 0。
             if drag_happening && state.cross_sel.is_none() {
                 let press_atomic_owner = ctx
                     .input(|i| i.pointer.press_origin())
                     .and_then(owner_of)
                     .filter(|o| {
-                        doc.blocks
-                            .get(*o)
-                            .is_some_and(|b| !matches!(b, Block::Blank { .. }) && !text_selection_block(b))
-                    });
+                        doc.blocks.get(*o).is_some_and(|b| {
+                            !matches!(b, Block::Blank { .. })
+                                && !text_selection_block(b)
+                                && (!line_selectable_block(b) || state.folded.contains(o))
+                        })
+                    })
+                    // 按下点落在表格单元格里（编辑态）：这一帧起就在按单元格选，
+                    // 不能再补「块首」锚点，否则下一帧的互斥判定会把单元格选区清掉。
+                    .filter(|o| state.table_drag_from.is_none_or(|(b, ..)| b != *o));
                 if let Some(o) = press_atomic_owner {
                     state.cross_sel = Some((o, 0, o, 0));
                     // 与 CrossDrag(start) 一致：开始跨块选区时放弃 TextEdit 焦点。
@@ -1942,6 +2037,22 @@ pub fn show_editor(
                         }
                     } else if let Some((a, ac, _, _)) = state.cross_sel {
                         state.cross_sel = Some((a, ac, *i, *c));
+                    }
+                    false
+                }
+                // 表格内拖选：Some = 只选中经过的单元格（跨块选区让位）；
+                // None = 指针已拖出表格，清除单元格选区，整块端点由同帧的
+                // CrossDrag / 越界兜底负责。
+                Action::TableDrag(i, range) => {
+                    match range {
+                        Some((a, b)) => {
+                            state.table_sel = Some((*i, *a, *b));
+                            state.cross_sel = None;
+                            if let Some(fid) = ctx.memory(|m| m.focused()) {
+                                ctx.memory_mut(|m| m.surrender_focus(fid));
+                            }
+                        }
+                        None => state.table_sel = None,
                     }
                     false
                 }
@@ -2050,6 +2161,18 @@ pub fn show_editor(
                         (None, Some(b)) => Some((b.0, 0)),
                         (None, None) => None,
                     };
+                }
+                // 端点又落回锚点所在的展开代码块、且指针还在它的矩形里（功能栏、
+                // 面板留白这些没有字符的位置）：这一步不做改动，保留上一次的精确端点。
+                // 拖出该块矩形时指针落在邻块或空档，仍然照常跨块延伸。
+                if endpoint.is_some_and(|(ei, _)| {
+                    ei == anchor.0
+                        && doc.blocks.get(ei).is_some_and(|b| {
+                            line_selectable_block(b) && !state.folded.contains(&ei)
+                        })
+                        && all_rects.iter().any(|(i, r)| *i == ei && r.contains(p))
+                }) {
+                    endpoint = None;
                 }
                 if let Some((ei, ec)) = endpoint {
                     if state.cross_sel.is_none() {
@@ -2314,7 +2437,15 @@ pub fn show_editor(
     // ---------------- 行首退格：并回上一块 ----------------
     // 放在写回之前：以前这段在 `if changed { return }` 之后，删空那块文本的那一帧
     // 会直接提前返回，导致「行首退格」永远执行不到。
-    if backspace && active > 0 && state.sel.is_none() && (buf_was_empty || state.last_cursor == 0) {
+    // 围栏块（代码块/图表/代码组）例外：并块会把 ` ``` ` 连同代码一起塞进上一段，
+    // 用户只想删第一行行首前那一个字符，结果整块代码掉成普通文字。
+    // 这类块的退格保持光标不动，退出走空块连按两次回车或块头「删除」。
+    if backspace
+        && active > 0
+        && state.sel.is_none()
+        && (buf_was_empty || state.last_cursor == 0)
+        && !edit_kind.is_fenced()
+    {
         merge_into_previous_block(doc, state, &active_buf);
         return EditorEvent::Changed;
     }
@@ -2365,12 +2496,22 @@ pub fn show_editor(
     }
 
     // ---------------- 普通输入写回 ----------------
-    if changed {
+    // 只在本帧真的改到了字时写回：egui 对「空代码块里按一次退格」这类没删掉
+    // 任何东西的按键也报 changed，照写会把 "```rust\n```" 重排成带空行的等价
+    // 源码，白白把文档标脏、撤销栈多塞一步空操作。
+    let text_differs = doc
+        .blocks
+        .get(active)
+        .map(|b| block_editable_text(b) != active_buf)
+        .unwrap_or(true);
+    if changed && text_differs {
         doc.maybe_record();
         let src = table_edit_src.clone().unwrap_or_else(|| {
-            // 删空了就落成空段落：不要把标题的 #、代码块的围栏这些残留标记
+            // 删空了就落成空段落：不要把标题的 #、列表的 - 这些残留标记
             // 当正文写回去，否则下一次退格只会在标记里删字符，永远合并不回上一行。
-            if active_buf.trim().is_empty() {
+            // 围栏块反过来：` ``` ` 是块语义本身，正文删空（或只剩空格/缩进）
+            // 也要把围栏写回去，否则「删掉最后一个字符」那一帧就把整块代码打回段落。
+            if active_buf.trim().is_empty() && !edit_kind.is_fenced() {
                 String::new()
             } else {
                 edit_kind.rebuild(&active_buf)

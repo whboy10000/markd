@@ -236,18 +236,38 @@ fn drag_selection_extends_into_code_block() {
         "选区终点应落在代码块末尾，实际 {sel:?}"
     );
 
-    // 代码块被选区覆盖时，应有一层半透明选区色叠在代码内容之上。
+    // 代码块被选区覆盖时：逐行叠半透明选区色，而不是把整块（含功能栏）糊一层。
+    // 选区底色包在 Shape::Vec 里，要递归展开才看得到。
+    fn walk(shape: &egui::Shape, color: egui::Color32, out: &mut Vec<egui::Rect>) {
+        match shape {
+            egui::Shape::Rect(r) if r.fill == color => out.push(r.rect),
+            egui::Shape::Vec(v) => {
+                for s in v {
+                    walk(s, color, out);
+                }
+            }
+            _ => {}
+        }
+    }
     let shapes = frame(vec![], &mut doc, &mut state, &mut actions);
     let code_center = code + egui::vec2(60.0, 8.0);
-    let sel_fill = {
-        let c = theme.selection;
-        egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 110)
-    };
-    let highlighted = shapes.iter().any(|cs| match &cs.shape {
-        egui::Shape::Rect(r) => r.fill == sel_fill && r.rect.contains(code_center),
-        _ => false,
-    });
-    assert!(highlighted, "代码块应画出选区叠加层");
+    let sel_fill = crate::render::selection_overlay(&theme);
+    let mut hi: Vec<egui::Rect> = Vec::new();
+    for cs in &shapes {
+        walk(&cs.shape, sel_fill, &mut hi);
+    }
+    assert!(
+        hi.iter().any(|r| r.contains(code_center)),
+        "代码块应画出选区底色，实际高亮 {hi:?}"
+    );
+    // 逐行铺色：任何一块选区色都不该横跨代码首行的顶边——整块叠色会从面板
+    // 顶（功能栏之上）糊下来，把「折叠/删除/复制」那一行也染蓝。
+    assert!(
+        hi.iter()
+            .all(|r| r.bottom() <= code.y + 1.0 || r.top() >= code.y - 1.0),
+        "选区底色不该盖住代码块功能栏：{hi:?}（代码首行顶边 {}）",
+        code.y
+    );
 
     // 向上拖：从 gamma 拖到代码块上，起点应落在代码块开头。
     state.cross_sel = None;

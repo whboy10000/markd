@@ -23,3 +23,12 @@ pub(crate) fn code_header_frame(theme: &Theme) -> egui::Frame {
         .corner_radius(4.0)
         .inner_margin(egui::Margin::symmetric(8, 4))
 }
+
+/// 叠在「不透明面板内容之上」的选区底色。
+///
+/// 代码块、表格单元格这些块画在自己的面板底色上，垫在下层的选区色会被面板盖掉，
+/// 所以改用同色半透明盖在文字上面：文字依然清晰，又能看出选中了哪几行 / 哪几格。
+pub(crate) fn selection_overlay(theme: &Theme) -> egui::Color32 {
+    let c = theme.selection;
+    egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 110)
+}

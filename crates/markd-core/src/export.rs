@@ -580,7 +580,15 @@ pub fn cross_sel_html(blocks: &[Block], sel: (usize, usize, usize, usize)) -> St
                     inline_html_range(&item.content, lo, hi)
                 ));
             }
-            // 代码块/图表/表格/公式等原子块：整块输出。
+            // 代码块：正文逐字符可映射（拖选可以只选其中几行），按区间裁剪。
+            Block::Code { .. } => {
+                let lo = if idx == a { ac } else { 0 };
+                let hi = if idx == b { bc } else { usize::MAX };
+                let code = block.plain();
+                let slice: String = code.chars().skip(lo).take(hi.saturating_sub(lo)).collect();
+                out.push_str(&selected_text_html(block, &slice));
+            }
+            // 图表/表格/公式等原子块：整块输出。
             _ => out.push_str(&block_html(block, blocks)),
         }
     }

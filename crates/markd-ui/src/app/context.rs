@@ -299,17 +299,26 @@ impl MarkdApp {
     }
 
     fn has_selection(&self) -> bool {
-        self.editor.cross_sel.is_some() || editor::selection_text(&self.doc, &self.editor).is_some()
+        self.editor.cross_sel.is_some()
+            || self.editor.table_sel.is_some()
+            || editor::selection_text(&self.doc, &self.editor).is_some()
     }
 
     fn context_action(&mut self, action: ContextAction, ctx: &egui::Context) {
         match action {
             ContextAction::Cut => {
+                // 只选了表格单元格时 cut_selection 不会改文档（删格子容易连带破坏表格），
+                // 提示语也要跟着改成「已复制」，否则用户以为行被删掉了。
+                let cells_only = self.editor.cross_sel.is_none() && self.editor.table_sel.is_some();
                 let html = self.selection_html();
                 if let Some(text) = editor::cut_selection(&mut self.doc, &mut self.editor) {
                     crate::clipboard::copy_rich(ctx, &text, html.as_deref().unwrap_or(""));
-                    self.notify(ctx, "已剪切".to_string());
-                    self.on_changed();
+                    if cells_only {
+                        self.notify(ctx, "已复制（表格单元格不支持剪切）".to_string());
+                    } else {
+                        self.notify(ctx, "已剪切".to_string());
+                        self.on_changed();
+                    }
                 } else {
                     self.notify(ctx, "没有可剪切的内容".to_string());
                 }

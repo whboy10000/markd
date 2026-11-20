@@ -178,6 +178,12 @@ pub fn selection_text(
     doc: &Document,
     state: &EditorState,
 ) -> Option<(usize, usize, usize, String)> {
+    // 表格里拖选了单元格时，活动块的编辑框已经让位（焦点交出、`sel` 可能是
+    // 上一次留下的旧选区）：此时不能把那段旧选区当作用户的选区来剪切/加粗，
+    // 否则会改到用户根本没碰的文字。
+    if state.table_sel.is_some() {
+        return None;
+    }
     let (idx, a, z) = match state.sel {
         Some((a, z)) => (state.active, a, z),
         None => state

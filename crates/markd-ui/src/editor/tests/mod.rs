@@ -15,6 +15,7 @@ mod selection;
 mod selection_text;
 mod stress;
 mod support;
+mod quote_bar;
 mod tables;
 mod typing;
 mod viewport;

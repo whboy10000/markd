@@ -48,7 +48,7 @@ A desktop Markdown editor built from scratch in pure Rust + egui. **No web kerne
 - **GFM extensions**: tables (with alignment), strikethrough, task lists `- [ ]` / `- [x]`, fenced code blocks with language tags.
 - **Inline formats**: `**bold**`, `*italic*`, `` `code` ``, `~~strike~~`, `==highlight==`, super/subscript, `[link](url)`, `![image](src)`, autolinks.
 - **Footnotes**: `[^1]` references + `[^1]: content` definitions, auto-numbered.
-- **Front matter**: a top YAML block rendered separately, never mixed into the body.
+- **Front matter**: the top YAML block renders with the same code-block chrome (highlighted as `yaml`, with fold / copy / delete controls), never mixed into the body.
 
 ### Math (RaTeX native display list)
 - **Three syntaxes**: inline `$...$`, display `$$...$$`, fenced ` ```math ... ``` `.
@@ -62,7 +62,9 @@ No mermaid.js — every diagram type has its own Rust renderer:
 `flowchart`, `sequence`, `class`, `er`, `gantt`, `journey`, `gitGraph`, `mindmap`, `timeline`, `pie`, `quadrantChart`, `radar`, `sankey`, `treemap`, `xychart`, `kanban`, `C4`, `requirementDiagram`, `cynefin`, `packet`, `railroad`, `swimlane`, `blockDiagram`, `boxes`, and more.
 
 ### Code blocks
-- In-house lexical highlighting across 10 language families: Rust / Python / JavaScript / C-like / Markup / CSS / data formats / Shell / SQL / generic.
+- In-house lexical highlighting: 10 colour families (Rust / Python / JavaScript / C-like / Markup / CSS / data formats / Shell / SQL / generic) plus per-language comment syntax (`#`, `//`, `--`, `%`, `;`, `::`/`rem`, `dnl`, `\*`, `%%`) and block forms (`/* */`, `<!-- -->`, `{- -}`, `(* *)`, `{ }`, `--[[ ]]`, `#= =#`, `(: :)`).
+- Dedicated keyword tables for Dockerfile, Makefile, CMake, Terraform/HCL, Nginx, Lua, Haskell, Ruby, Go, LaTeX, MATLAB, Julia, R, Elixir, Clojure, Solidity and GraphQL.
+- 460+ rows in the language dropdown: every spelling is its own entry — `cpp`/`c++`/`cxx`/`cc`, `dart`/`flutter`, `yaml`/`yml`/`k8s`/`github-actions` — and clicking a row writes exactly that spelling into the fence. Aliases highlight identically (lookup keys are lowercase, so hand-written ```CPP and ```C++ work too).
 - One-click copy, switchable language tag, line numbers, current-line highlight.
 
 ### Workspace

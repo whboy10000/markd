@@ -9,7 +9,9 @@
 
 use crate::ast::*;
 use crate::document::OutlineItem;
-use crate::theme::{LangFamily, Theme, lang_family};
+use crate::theme::{
+    LangFamily, Theme, block_comment_for, lang_family, lang_key, line_comments_for,
+};
 use crate::workspace;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Stroke, Vec2};
@@ -52,6 +54,9 @@ pub enum Action {
     /// 点击了表格单元格：(块下标, 行, 列, 光标是否在文字末尾)。
     /// 进入编辑态时聚焦该单元格，光标落在点击位置附近而不是固定跳到第一格。
     TableCellClick(usize, usize, usize, bool),
+    /// 表格内按住拖动：`Some((起格, 止格))` = 只选中经过的单元格；
+    /// `None` = 指针已拖出表格，交回「整张表」的跨块选区。
+    TableDrag(usize, Option<((usize, usize), (usize, usize))>),
     /// 表格工具栏的结构操作：(块下标, 操作)。
     TableOp(usize, crate::editor::TableOp),
     /// 请求删除某个代码块：app 层弹确认窗，确定后整块删除。

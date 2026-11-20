@@ -36,6 +36,18 @@ pub(super) enum EditKind {
 }
 
 impl EditKind {
+    /// 围栏本身就是块语义的编辑形态：代码块（含引用内）、图表块、代码组。
+    /// 它们的 ` ``` ` 一旦丢掉，正文就掉成普通段落，所以：
+    /// 1) 行首退格不把这类块并回上一块（见 `view` 的「行首退格」分支）；
+    /// 2) 正文删空仍写回空围栏，不写空源码（见 `view` 的「普通输入写回」分支）。
+    /// 退出办法：空块连按两次回车、块头「删除」按钮，或拖选后删除。
+    pub(super) fn is_fenced(&self) -> bool {
+        matches!(
+            self,
+            EditKind::Code { .. } | EditKind::Diagram(_) | EditKind::CodeGroup { .. }
+        )
+    }
+
     pub(super) fn of(b: &Block) -> Self {
         match b {
             Block::Heading { level, .. } => EditKind::Heading(*level),
@@ -143,11 +155,9 @@ pub(super) fn merge_into_previous_block(doc: &mut Document, state: &mut EditorSt
     if active == 0 {
         return;
     }
-    // 代码组有多份语言的代码：行首退格并块会把整组围栏当正文塞进上一段，
-    // 其它标签的代码也跟着变成普通文字。直接忽略这次退格更安全。
-    if matches!(doc.blocks.get(active), Some(Block::CodeGroup { .. })) {
-        return;
-    }
+    // 围栏块（代码块/图表/代码组）由调用方用 `EditKind::is_fenced` 拦下，
+    // 不会走到这里；代码组尤其危险：并块会把整组围栏当正文塞进上一段，
+    // 其它标签的代码也跟着变成普通文字。
     let prev_block = doc.blocks.get(active - 1);
     // 光标落点要按「上一块的可编辑文本」长度算，不是源码长度：
     // 代码块的源码含 ```lang 与闭合围栏，比代码正文长。用源码长度会把

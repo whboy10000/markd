@@ -9,6 +9,7 @@ mod code_chip;
 mod diagram;
 mod inline;
 mod interaction;
+mod language;
 mod lists;
 mod matrix_inline;
 mod media;

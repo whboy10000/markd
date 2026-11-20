@@ -251,6 +251,8 @@ impl eframe::App for MarkdApp {
                 }
                 // 跨块拖选已在 show_editor 帧末聚合进 cross_sel，不会到达这里
                 Action::CrossDrag(..) => {}
+                // 表格单元格拖选同样在帧末聚合成 table_sel，不会到达这里
+                Action::TableDrag(..) => {}
                 // 代码组切换标签：只改视图状态，不动文档。
                 Action::CodeGroupTab(i, t) => {
                     self.editor.code_group_tab.insert(i, t);

@@ -186,12 +186,13 @@ pub fn inline_code_bg_shapes(
 /// - 撑高了行高的多行公式（行列式、分段函数）：在整行里垂直居中。它的行高是
 ///   专门为它腾出来的，贴基线会把下半截甩到下一行上去。
 ///
-/// 水平方向统一在占位宽度内居中。
+/// 水平方向按 `ink_dx` 摆：占位段就是按真实墨迹宽度留的，墨迹左缘落在段内。
 pub(crate) fn math_image_shapes(
     galley: &egui::Galley,
     origin: egui::Pos2,
     runs: &[super::job::InlineMathRun],
     tint: Color32,
+    ppp: f32,
 ) -> Vec<egui::Shape> {
     let mut shapes = Vec::new();
     for run in runs {
@@ -202,7 +203,7 @@ pub(crate) fn math_image_shapes(
             };
             let row_top = origin.y + row.pos.y;
             let band = row.row.size.y;
-            let x = origin.x + row.pos.x + glyph.pos.x + (run.reserved - run.size.x) * 0.5;
+            let x = origin.x + row.pos.x + glyph.pos.x + run.ink_dx;
             let top = if run.tall {
                 row_top + (band - run.size.y) * 0.5
             } else {
@@ -210,7 +211,8 @@ pub(crate) fn math_image_shapes(
                 row_top + glyph.pos.y - run.baseline
             };
             let top_left = Pos2::new(x, top);
-            for s in crate::render::math::transform_shapes(&math.shapes, top_left, run.scale, tint)
+            for s in
+                crate::render::math::transform_shapes(&math.shapes, top_left, run.scale, tint, ppp)
             {
                 shapes.push(s);
             }
@@ -236,6 +238,7 @@ pub(crate) fn text_response(
         images: &mut *env.images,
         max_width: ui.available_width().min(env.max_width),
         runs: Vec::new(),
+        unit: None,
     };
     let job = build_layout_with_math(inlines, theme, size, color, bold, &mut math);
     let math_runs = std::mem::take(&mut math.runs);
@@ -249,7 +252,13 @@ pub(crate) fn text_response(
     let text_origin = resp.rect.min;
     // 公式图片画在文字上层；占位字符本身是透明的。
     let math_slot = ui.painter().add(egui::Shape::Noop);
-    let math_shapes = math_image_shapes(&galley, resp.rect.min, &math_runs, color);
+    let math_shapes = math_image_shapes(
+        &galley,
+        resp.rect.min,
+        &math_runs,
+        color,
+        ui.ctx().pixels_per_point(),
+    );
     if !math_shapes.is_empty() {
         ui.painter().set(math_slot, egui::Shape::Vec(math_shapes));
     }
@@ -261,20 +270,24 @@ pub(crate) fn text_response(
     // 不能跟着行带左移，否则字符下标整体错位。
     let band_left = ui.min_rect().left().min(resp.rect.min.x);
     let band_right = ui.max_rect().right().max(resp.rect.max.x);
-    // 行右侧空白也要可点（Typora 行为）：命中区从行带左缘延伸到本行右缘。
-    // 之前响应矩形只有文字 galley 的宽度，点行尾空白毫无反应；扩展后点击
-    // 仍走 cursor_from_pos，超出行末的 x 会被钳到该行最后一个字符之后，
-    // 小于行带左缘的 x 会被钳到该行第一个字符。
+    // 行带交互热区：只管「文字右侧到行带右缘」这一段（行尾空白，Typora 行为）。
+    // 两个方向都不能扩大：
+    // - 不能压住文字本身。egui 命中测试里后注册的控件抢走前一个的点击，一条盖在
+    //   文字上的热区（哪怕只 sense 拖动）会让文字 Label 的 clicked 恒为 false，
+    //   实测表现是「点正文毫无反应，只有点行尾空白才进编辑」。文字自己的点击与
+    //   拖动由 Label 的 resp 负责。
+    // - 不能压住左边的列表圆点 / 任务复选框 / 有序标记，否则一次点击点不到复选框。
+    //   那一片的拖选命中不靠控件，走下面的 band_hit 判定。
+    // 不能用 rect.top 参与 Id：悬停/按下时布局可能上下浮动 1–2px，
+    // Id 一变 egui 就认为按下和松开不是同一个控件，clicked 永远为 false，
+    // 表现就是「第一次点击只让块动一下、第二次才进入编辑」。
     let row_rect = Rect::from_min_max(
-        Pos2::new(band_left, resp.rect.min.y),
+        Pos2::new(resp.rect.max.x, resp.rect.min.y),
         Pos2::new(band_right, resp.rect.bottom()),
     );
     let ext = ui
         .interact(
             row_rect,
-            // 不能用 rect.top 参与 Id：悬停/按下时布局可能上下浮动 1–2px，
-            // Id 一变 egui 就认为按下和松开不是同一个控件，clicked 永远为 false，
-            // 表现就是「第一次点击只让块动一下、第二次才进入编辑」。
             egui::Id::new(("row_ext", idx)),
             Sense::click_and_drag(),
         )
@@ -317,7 +330,13 @@ pub(crate) fn text_response(
     let press_area = clip.expand2(egui::vec2(48.0, 8.0));
     let press_origin = ui.input(|i| i.pointer.press_origin());
     let press_in_viewport = press_origin.is_some_and(|p| press_area.contains(p));
-    let over_this = pointer.is_some_and(|p| resp.rect.contains(p));
+    // 「指针压在本行上」横向按行带算，含左边那片圆点/复选框空白：那里没有控件
+    // 热区（见上），但指针停在那儿用户就是在拖这一行，端点得跟过来
+    // （cursor_from_pos 会把 x 钳到行首，即第 0 个字符）。只用 resp.rect 判定的话
+    // 会漏给「按 y 取整块块尾」的兜底，表现为拖到某一行行首却选不上。
+    let over_this = pointer.is_some_and(|p| {
+        p.y >= resp.rect.top() && p.y <= resp.rect.bottom() && p.x >= band_left && p.x <= band_right
+    });
     // 锚定必须用「锁定的按下点」press_origin，而不是当前 pointer：按下帧当前指针
     // 常因事件批处理已微移、或落在块间距/视口边缘，导致 over_this 判定失败——
     // 那一帧一旦没锚定，后面就只能用上一次点击的 last_cursor 兜底，选区就跑到

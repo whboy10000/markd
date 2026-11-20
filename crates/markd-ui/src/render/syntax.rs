@@ -1,13 +1,458 @@
-//! 自研词法着色：把代码渲染成带颜色的 `LayoutJob`。
+//! 自研词法着色：把代码渲染成带颜色的 `LayoutJob`，不依赖 syntect。
+//! 展示态给每行末尾补 `\n`，让区块底部多一行留白、看得更像代码框。
 
 use super::*;
 
-/// 轻量词法着色，覆盖常见语言，不依赖 syntect。
-/// 这里给每行末尾都补 `\n`，让区块底部多一行留白、看得更像代码框。
+/// 语言专属关键字表。配色族的通用表在这些语言上会漏色（Lua 的 `end`）
+/// 或误色（Dockerfile 的大写指令、LaTeX 正文里的 if/in/is），所以先按语言查，查不到再回落到族表。
+const DOCKERFILE_KEYWORDS: &[&str] = &[
+    "FROM",
+    "RUN",
+    "CMD",
+    "LABEL",
+    "MAINTAINER",
+    "EXPOSE",
+    "ENV",
+    "ADD",
+    "COPY",
+    "ENTRYPOINT",
+    "VOLUME",
+    "USER",
+    "WORKDIR",
+    "ARG",
+    "ONBUILD",
+    "STOPSIGNAL",
+    "HEALTHCHECK",
+    "SHELL",
+    "AS",
+    "as",
+];
+const MAKEFILE_KEYWORDS: &[&str] = &[
+    "ifeq", "ifneq", "ifdef", "ifndef", "else", "endif", "include", "define", "endef", "export",
+    "unexport", "override", "vpath", "default",
+];
+const CMAKE_KEYWORDS: &[&str] = &[
+    "cmake_minimum_required",
+    "project",
+    "add_executable",
+    "add_library",
+    "add_subdirectory",
+    "target_link_libraries",
+    "target_include_directories",
+    "target_compile_definitions",
+    "find_package",
+    "include_directories",
+    "link_directories",
+    "set",
+    "list",
+    "string",
+    "option",
+    "message",
+    "if",
+    "elseif",
+    "else",
+    "endif",
+    "foreach",
+    "endforeach",
+    "while",
+    "endwhile",
+    "function",
+    "endfunction",
+    "macro",
+    "endmacro",
+    "install",
+];
+const TERRAFORM_KEYWORDS: &[&str] = &[
+    "resource",
+    "variable",
+    "output",
+    "locals",
+    "module",
+    "provider",
+    "data",
+    "terraform",
+    "backend",
+    "provisioner",
+    "dynamic",
+    "lifecycle",
+    "count",
+    "for_each",
+    "depends_on",
+    "true",
+    "false",
+    "null",
+];
+const NGINX_KEYWORDS: &[&str] = &[
+    "server",
+    "location",
+    "upstream",
+    "http",
+    "events",
+    "stream",
+    "worker_processes",
+    "if",
+    "set",
+    "return",
+    "rewrite",
+    "proxy_pass",
+    "fastcgi_pass",
+    "root",
+    "listen",
+    "include",
+    "types",
+    "map",
+    "geo",
+    "auth_basic",
+];
+const LUA_KEYWORDS: &[&str] = &[
+    "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in",
+    "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "self",
+];
+const HASKELL_KEYWORDS: &[&str] = &[
+    "case",
+    "class",
+    "data",
+    "default",
+    "deriving",
+    "do",
+    "else",
+    "forall",
+    "import",
+    "in",
+    "instance",
+    "let",
+    "module",
+    "newtype",
+    "of",
+    "qualified",
+    "then",
+    "type",
+    "where",
+];
+const LISP_KEYWORDS: &[&str] = &[
+    "and",
+    "apply",
+    "cond",
+    "defmacro",
+    "defparameter",
+    "defun",
+    "defvar",
+    "do",
+    "dolist",
+    "dotimes",
+    "funcall",
+    "if",
+    "lambda",
+    "let",
+    "let*",
+    "loop",
+    "not",
+    "or",
+    "progn",
+    "provide",
+    "require",
+    "return",
+    "setq",
+    "t",
+    "unless",
+    "use-package",
+    "when",
+];
+const CLOJURE_KEYWORDS: &[&str] = &[
+    "def",
+    "defn",
+    "defmacro",
+    "defmethod",
+    "defmulti",
+    "defprotocol",
+    "defrecord",
+    "deftype",
+    "do",
+    "doseq",
+    "for",
+    "if",
+    "if-let",
+    "let",
+    "loop",
+    "ns",
+    "recur",
+    "require",
+    "try",
+    "when",
+    "when-let",
+    "fn",
+    "false",
+    "nil",
+    "true",
+];
+const RUBY_KEYWORDS: &[&str] = &[
+    "alias", "and", "begin", "break", "case", "class", "def", "defined", "do", "else", "elsif",
+    "end", "ensure", "for", "if", "in", "module", "next", "nil", "not", "or", "redo", "require",
+    "rescue", "retry", "return", "self", "super", "then", "true", "false", "undef", "unless",
+    "until", "when", "while", "yield",
+];
+const GO_KEYWORDS: &[&str] = &[
+    "break",
+    "case",
+    "chan",
+    "const",
+    "continue",
+    "default",
+    "defer",
+    "else",
+    "fallthrough",
+    "for",
+    "func",
+    "go",
+    "goto",
+    "if",
+    "import",
+    "interface",
+    "map",
+    "package",
+    "range",
+    "return",
+    "select",
+    "struct",
+    "switch",
+    "type",
+    "var",
+    "nil",
+    "true",
+    "false",
+    "iota",
+];
+const LATEX_KEYWORDS: &[&str] = &[
+    "begin",
+    "end",
+    "documentclass",
+    "usepackage",
+    "section",
+    "subsection",
+    "subsubsection",
+    "chapter",
+    "part",
+    "title",
+    "author",
+    "date",
+    "maketitle",
+    "tableofcontents",
+    "item",
+    "itemize",
+    "enumerate",
+    "description",
+    "caption",
+    "label",
+    "ref",
+    "eqref",
+    "cite",
+    "textbf",
+    "textit",
+    "emph",
+    "frac",
+    "sum",
+    "int",
+    "includegraphics",
+    "newcommand",
+    "renewcommand",
+    "centering",
+];
+const MATLAB_KEYWORDS: &[&str] = &[
+    "and",
+    "break",
+    "case",
+    "catch",
+    "continue",
+    "else",
+    "elseif",
+    "end",
+    "false",
+    "for",
+    "function",
+    "global",
+    "if",
+    "otherwise",
+    "parfor",
+    "persistent",
+    "return",
+    "switch",
+    "true",
+    "try",
+    "while",
+];
+const JULIA_KEYWORDS: &[&str] = &[
+    "abstract",
+    "begin",
+    "break",
+    "catch",
+    "const",
+    "continue",
+    "do",
+    "else",
+    "elseif",
+    "end",
+    "export",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "global",
+    "if",
+    "import",
+    "in",
+    "isa",
+    "let",
+    "local",
+    "macro",
+    "missing",
+    "module",
+    "mutable",
+    "nothing",
+    "primitive",
+    "quote",
+    "return",
+    "struct",
+    "true",
+    "try",
+    "using",
+    "where",
+    "while",
+];
+const R_KEYWORDS: &[&str] = &[
+    "TRUE", "FALSE", "NULL", "NA", "NaN", "Inf", "break", "else", "for", "function", "if", "in",
+    "library", "next", "repeat", "require", "return", "source", "while",
+];
+const ELIXIR_KEYWORDS: &[&str] = &[
+    "alias",
+    "and",
+    "case",
+    "cond",
+    "def",
+    "defdelegate",
+    "defimpl",
+    "defmacro",
+    "defmodule",
+    "defp",
+    "defprotocol",
+    "defstruct",
+    "do",
+    "else",
+    "end",
+    "false",
+    "for",
+    "fn",
+    "if",
+    "import",
+    "in",
+    "nil",
+    "not",
+    "or",
+    "raise",
+    "receive",
+    "require",
+    "rescue",
+    "self",
+    "true",
+    "try",
+    "unless",
+    "unquote",
+    "use",
+    "when",
+    "with",
+];
+const SOLIDITY_KEYWORDS: &[&str] = &[
+    "abstract",
+    "address",
+    "assert",
+    "bool",
+    "bytes",
+    "calldata",
+    "constructor",
+    "contract",
+    "delete",
+    "emit",
+    "enum",
+    "event",
+    "external",
+    "fallback",
+    "for",
+    "function",
+    "if",
+    "immutable",
+    "import",
+    "interface",
+    "internal",
+    "library",
+    "mapping",
+    "memory",
+    "modifier",
+    "new",
+    "payable",
+    "pragma",
+    "private",
+    "public",
+    "pure",
+    "require",
+    "revert",
+    "return",
+    "returns",
+    "storage",
+    "struct",
+    "throw",
+    "uint",
+    "view",
+    "while",
+];
+const GRAPHQL_KEYWORDS: &[&str] = &[
+    "directive",
+    "enum",
+    "extend",
+    "fragment",
+    "input",
+    "interface",
+    "mutation",
+    "on",
+    "query",
+    "repeatable",
+    "scalar",
+    "schema",
+    "subscription",
+    "type",
+    "union",
+];
+
+/// 代码块语言专属的关键字表；未列出的语言用所属族的通用表。
+pub(super) fn keywords_for(lang: &str) -> &'static [&'static str] {
+    match lang_key(lang).as_str() {
+        "dockerfile" | "docker" | "containerfile" => DOCKERFILE_KEYWORDS,
+        "makefile" | "make" | "gmake" | "bsdmake" | "mk" => MAKEFILE_KEYWORDS,
+        "cmake" | "cmakelists" => CMAKE_KEYWORDS,
+        "terraform" | "tf" | "tfvars" | "hcl" | "nomad" | "vault" => TERRAFORM_KEYWORDS,
+        "nginx" | "apache" | "httpd" | "htaccess" | "caddy" | "caddyfile" => NGINX_KEYWORDS,
+        "lua" | "luau" | "openresty" => LUA_KEYWORDS,
+        "haskell" | "hs" | "cabal" => HASKELL_KEYWORDS,
+        "lisp" | "common-lisp" | "scheme" | "scm" | "racket" | "rkt" | "elisp" | "emacs"
+        | "emacs-lisp" => LISP_KEYWORDS,
+        "clojure" | "clj" | "cljs" => CLOJURE_KEYWORDS,
+        "ruby" | "rb" | "jruby" | "rails" | "rake" | "gemfile" => RUBY_KEYWORDS,
+        "go" | "golang" => GO_KEYWORDS,
+        "latex" | "tex" | "ltx" | "cls" | "sty" | "dtx" | "beamer" | "bibtex" | "bib" => {
+            LATEX_KEYWORDS
+        }
+        "matlab" | "octave" | "scilab" => MATLAB_KEYWORDS,
+        "julia" | "jl" => JULIA_KEYWORDS,
+        "r" | "rlang" | "rscript" => R_KEYWORDS,
+        "elixir" | "ex" | "exs" | "phoenix" => ELIXIR_KEYWORDS,
+        "solidity" | "sol" | "evm" => SOLIDITY_KEYWORDS,
+        "graphql" | "gql" | "apollo" => GRAPHQL_KEYWORDS,
+        _ => family_keywords(lang_family(lang)),
+    }
+}
+
 /// 各语言的关键字表。大小写敏感：SQL 用大写，其余多为小写。
 /// 按语言族区分，避免把 A 语言的关键字误标到 B 语言。
-pub(super) fn keywords_for(lang: &str) -> &'static [&'static str] {
-    match lang_family(lang) {
+fn family_keywords(family: LangFamily) -> &'static [&'static str] {
+    match family {
         LangFamily::Rust => &[
             "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
             "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
@@ -231,29 +676,35 @@ pub(super) fn keywords_for(lang: &str) -> &'static [&'static str] {
     }
 }
 
-/// 该语言的行注释前缀（返回 true 表示从此处到行尾是注释）。
-pub(super) fn line_comment_at(family: LangFamily, c: &[char], i: usize) -> bool {
-    match family {
-        // # : Python / Shell / YAML / TOML
-        LangFamily::Python | LangFamily::Shell | LangFamily::Data => c[i] == '#',
-        // -- : SQL
-        LangFamily::Sql => c[i] == '-' && i + 1 < c.len() && c[i + 1] == '-',
-        // // : Rust / JS / C-like / CSS；HTML/XML 用 <!-- -->（块注释处理）
-        _ => c[i] == '/' && i + 1 < c.len() && c[i + 1] == '/',
+/// 从 `i` 起是否等于 `pat`（ASCII 大小写不敏感，让 batch 的 `rem` 也认 REM）。
+fn matches_at(c: &[char], i: usize, pat: &str) -> bool {
+    let mut k = i;
+    for b in pat.chars() {
+        match c.get(k) {
+            Some(a) if a.eq_ignore_ascii_case(&b) => k += 1,
+            _ => return false,
+        }
     }
+    true
 }
 
-/// 该语言是否支持 /* */ 块注释。
-pub(super) fn has_block_comment(family: LangFamily) -> bool {
-    matches!(
-        family,
-        LangFamily::Rust | LangFamily::JavaScript | LangFamily::CLike | LangFamily::Css
-    )
+/// 从 `i` 起是否是行注释（注释前缀按语言取自 `line_comments_for`）。
+/// 前缀以字母结尾的（`rem`、`dnl`）要求后面是行尾或空白，否则 `remote` 会被当注释。
+fn line_comment_at(prefixes: &[&str], c: &[char], i: usize) -> bool {
+    prefixes.iter().any(|p| {
+        if !matches_at(c, i, p) {
+            return false;
+        }
+        let next = c.get(i + p.chars().count());
+        !p.ends_with(|ch: char| ch.is_alphanumeric())
+            || matches!(next, None | Some(' ') | Some('\t'))
+    })
 }
 
-/// HTML/XML 注释 <!-- -->。
-pub(super) fn is_markup_comment(c: &[char], i: usize) -> bool {
-    c[i] == '<' && i + 3 < c.len() && c[i + 1] == '!' && c[i + 2] == '-' && c[i + 3] == '-'
+/// 从 `i` 起是否到了块注释的结束串，返回结束串之后的下标。
+fn find_seq(c: &[char], from: usize, seq: &str) -> Option<usize> {
+    let n = seq.chars().count();
+    (from..=c.len().saturating_sub(n)).find(|&k| matches_at(c, k, seq))
 }
 
 pub fn code_job(code: &str, lang: &str, theme: &Theme) -> LayoutJob {
@@ -285,66 +736,59 @@ pub(super) fn code_job_impl(
     let markup = matches!(family, LangFamily::Markup);
     let css = matches!(family, LangFamily::Css);
     let data = matches!(family, LangFamily::Data);
-    let block_comments = has_block_comment(family);
+    // 注释语法按语言查，而不是按配色族：同族之间差异比关键字还大（LaTeX 的 %、Lisp 的 ;、batch 的 rem）。
+    let line_comments = line_comments_for(lang);
+    let block = block_comment_for(lang);
 
     let mut job = LayoutJob::default();
     // 代码行常没有空格，允许在任意字符处换行以适配窄窗口。
     job.wrap.break_anywhere = true;
     let lines: Vec<&str> = code.split('\n').collect();
-    // 跨行块注释状态：None=不在块注释中；Some(true)=<!-- -->；Some(false)=/* */
-    let mut in_block: Option<bool> = None;
+    // 跨行块注释状态：记着当前块注释的结束串。
+    let mut in_block: Option<&'static str> = None;
 
     for (n, line) in lines.iter().enumerate() {
         let c: Vec<char> = line.chars().collect();
         let mut i = 0usize;
         while i < c.len() {
-            // 块注释中：找结束符
-            if let Some(is_markup) = in_block {
-                let end_seq: &[char] = if is_markup {
-                    &['-', '-', '>']
-                } else {
-                    &['*', '/']
-                };
-                let pos = (i..=c.len().saturating_sub(end_seq.len()))
-                    .find(|&k| &c[k..k + end_seq.len()] == end_seq);
-                if let Some(pos) = pos {
-                    let end = pos + end_seq.len();
-                    let rest: String = c[i..end].iter().collect();
-                    let mut f = theme.mono_fmt();
-                    f.color = comment_color;
-                    job.append(&rest, 0.0, f);
-                    i = end;
-                    in_block = None;
-                } else {
-                    let rest: String = c[i..].iter().collect();
-                    let mut f = theme.mono_fmt();
-                    f.color = comment_color;
-                    job.append(&rest, 0.0, f);
-                    break;
+            // 块注释中：找结束串
+            if let Some(close) = in_block {
+                let n_close = close.chars().count();
+                match find_seq(&c, i, close) {
+                    Some(pos) => {
+                        let end = pos + n_close;
+                        let rest: String = c[i..end].iter().collect();
+                        let mut f = theme.mono_fmt();
+                        f.color = comment_color;
+                        job.append(&rest, 0.0, f);
+                        i = end;
+                        in_block = None;
+                    }
+                    None => {
+                        let rest: String = c[i..].iter().collect();
+                        let mut f = theme.mono_fmt();
+                        f.color = comment_color;
+                        job.append(&rest, 0.0, f);
+                        break;
+                    }
                 }
                 continue;
             }
-            // 块注释开始
-            if markup && is_markup_comment(&c, i) {
-                in_block = Some(true);
-                let rest: String = c[i..i + 4].iter().collect();
+            // 块注释开始（先于行注释：Lua 的 --[[ 前面就是 --）
+            if let Some((open, close)) = block
+                && matches_at(&c, i, open)
+            {
+                in_block = Some(close);
+                let n_open = open.chars().count();
+                let rest: String = c[i..i + n_open].iter().collect();
                 let mut f = theme.mono_fmt();
                 f.color = comment_color;
                 job.append(&rest, 0.0, f);
-                i += 4;
-                continue;
-            }
-            if block_comments && c[i] == '/' && i + 1 < c.len() && c[i + 1] == '*' {
-                in_block = Some(false);
-                let rest: String = c[i..i + 2].iter().collect();
-                let mut f = theme.mono_fmt();
-                f.color = comment_color;
-                job.append(&rest, 0.0, f);
-                i += 2;
+                i += n_open;
                 continue;
             }
             // 行注释
-            if line_comment_at(family, &c, i) {
+            if line_comment_at(line_comments, &c, i) {
                 let rest: String = c[i..].iter().collect();
                 let mut f = theme.mono_fmt();
                 f.color = comment_color;

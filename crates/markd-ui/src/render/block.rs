@@ -2,6 +2,249 @@
 
 use super::*;
 
+/// 代码块外观的面板：功能栏（语言 + 折叠 / 删除 / 复制）+ 分隔线 + 语法高亮代码区。
+/// `lang_editable=false` 时语言位显示固定标签——YAML Front Matter 走这条：外观与普通
+/// 代码块一致，但语言恒为 yaml（`Action::SetLang` 也只对 Code 块生效，改它没有意义）。
+/// 返回整块 Response，供上层判定点击激活与跨块拖选的选区矩形。
+fn code_panel(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    env: &mut RenderEnv<'_>,
+    idx: usize,
+    lang: &str,
+    code: &str,
+    quote: usize,
+    lang_editable: bool,
+) -> egui::Response {
+    let folded = env.folded.contains(&idx);
+    // 折叠动画：1=完全展开、0=完全折叠，中间平滑过渡。
+    let openness = env.ctx.animate_value_with_time(
+        egui::Id::new(("code_fold", idx)),
+        if folded { 0.0 } else { 1.0 },
+        0.18,
+    );
+    let lines = code.lines().count();
+    let mut copied = false;
+    let mut new_lang: Option<String> = None;
+    // 功能栏矩形：下面的可点击区域从功能栏下缘开始，
+    // 避免整块可点后把复制/删除/折叠按钮的点击吞掉。
+    let mut header_rect = Rect::NOTHING;
+    // 代码 galley 与它的起点：拖选按字符锚定、逐行画选区底色都要用（折叠态没有）。
+    let mut galley_at: Option<(std::sync::Arc<egui::Galley>, Pos2)> = None;
+    // 引用内的代码块：左侧留出缩进 + 竖线位置，代码面板整体右移，
+    // 竖线按面板实际高度画，和引用文字连成一条。
+    let hr = ui.horizontal(|ui| {
+        if quote > 0 {
+            ui.add_space(quote.min(4) as f32 * 8.0 + 11.0);
+        }
+        // 外层横向布局会传染给面板内容：显式回到纵向，否则功能栏
+        // 和代码会被并排放置、代码列被挤成一条很窄的竖条。
+        let r = ui
+            .vertical(|ui| {
+                panel_frame(theme).show(ui, |ui| {
+                    // 功能栏：左语言 + 右操作按钮（code_header 背景色块）
+                    header_rect = code_header_frame(theme)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if lang_editable {
+                                    if let Some(l) = language_combo(ui, ("code_lang", idx), lang) {
+                                        new_lang = Some(l);
+                                    }
+                                } else {
+                                    // Front Matter 的语言恒为 yaml：只作标签显示，
+                                    // 免得出现一个改了没反应的下拉（SetLang 只认 Code 块）。
+                                    ui.label(
+                                        egui::RichText::new(lang)
+                                            .size(theme.body * 0.9)
+                                            .color(theme.text),
+                                    )
+                                    .on_hover_text("YAML Front Matter 固定按 yaml 高亮");
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        // 最右：折叠/展开；其次删除（弹确认窗）；再复制
+                                        let fold_label = if folded { "展开" } else { "折叠" };
+                                        if ui
+                                            .button(
+                                                egui::RichText::new(fold_label)
+                                                    .size(theme.body * 0.85),
+                                            )
+                                            .on_hover_cursor(egui::CursorIcon::Default)
+                                            .clicked()
+                                        {
+                                            env.actions.push(Action::FoldToggle(idx));
+                                        }
+                                        if !folded {
+                                            if ui
+                                                .button(
+                                                    egui::RichText::new("删除")
+                                                        .size(theme.body * 0.85),
+                                                )
+                                                .on_hover_cursor(egui::CursorIcon::Default)
+                                                .clicked()
+                                            {
+                                                env.actions.push(Action::AskDeleteBlock(idx));
+                                            }
+                                            if ui
+                                                .button(
+                                                    egui::RichText::new("复制")
+                                                        .size(theme.body * 0.85),
+                                                )
+                                                .on_hover_cursor(egui::CursorIcon::Default)
+                                                .clicked()
+                                            {
+                                                copied = true;
+                                            }
+                                        }
+                                    },
+                                );
+                            });
+                        })
+                        .response
+                        .rect;
+                    ui.add_space(6.0);
+                    code_divider(ui, theme);
+                    ui.add_space(6.0);
+                    // 代码区：完全折叠只留提示；过渡中代码淡出、提示淡入。
+                    if openness <= 0.0 {
+                        ui.label(
+                            egui::RichText::new(format!("已折叠 {lines} 行代码"))
+                                .size(theme.body * 0.9)
+                                .italics()
+                                .color(theme.dim),
+                        )
+                    } else {
+                        let (code_resp, galley) = ui
+                            .scope(|ui| {
+                                ui.set_opacity(openness);
+                                layout_label(
+                                    ui,
+                                    code_job(code, lang, theme),
+                                    env.max_width,
+                                    Sense::hover(),
+                                )
+                            })
+                            .inner;
+                        galley_at = Some((galley, code_resp.rect.min));
+                        if openness < 1.0 {
+                            ui.scope(|ui| {
+                                ui.set_opacity(1.0 - openness);
+                                ui.label(
+                                    egui::RichText::new(format!("已折叠 {lines} 行代码"))
+                                        .size(theme.body * 0.9)
+                                        .italics()
+                                        .color(theme.dim),
+                                );
+                            });
+                        }
+                        code_resp
+                    }
+                })
+            })
+            .inner;
+        if quote > 0 {
+            let rect = r.response.rect;
+            ui.painter().rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(rect.left() - 11.0, rect.top()),
+                    Pos2::new(rect.left() - 8.0, rect.bottom()),
+                ),
+                1.0,
+                theme.accent,
+            );
+        }
+        r
+    });
+    let r = hr.inner;
+    if copied {
+        env.ctx.copy_text(code.to_string());
+        env.actions.push(Action::Notify("复制成功".to_string()));
+    }
+    if let Some(l) = new_lang {
+        env.actions.push(Action::SetLang(idx, l));
+    }
+    // 代码区（功能栏以下，含空代码块的留白）整块可点击：
+    // 空代码块的 galley 又窄又矮，只把文字 label 当点击区时，
+    // 鼠标离开后再点代码区空白处命不中，看起来像「代码块不能编辑」。
+    // 面板矩形仍参与 union，保证跨块拖选时为整块叠选区色。
+    let zone = Rect::from_min_max(
+        Pos2::new(r.response.rect.left(), header_rect.bottom()),
+        r.response.rect.right_bottom(),
+    );
+    let content = ui.interact(zone, ui.id().with(("code_click", idx)), Sense::click());
+    // 拖选与选区高亮精确到代码正文的字符：按下点落在代码区（功能栏以下）时，
+    // 锚点/终点都取指针下的那个字符，而不是整块一起选中（用户反馈的
+    // 「想选一两行代码，一下子就选中该代码块所有的代码」）。
+    // 从别的块拖进来不在这里上报，仍由编辑器按「整块」取端点。
+    if let Some((galley, origin)) = &galley_at {
+        let len = code.chars().count();
+        let band = (zone.left(), zone.right());
+        // 选区底色叠在代码之上（半透明）：面板底色不透明，垫在下面会被盖掉。
+        if let Some((s0, e0)) = cross_sel_chars(env.cross_sel, idx, len) {
+            let shapes = selection_shapes(
+                galley,
+                *origin,
+                (s0, e0),
+                selection_overlay(theme),
+                Some(band),
+            );
+            if !shapes.is_empty() {
+                ui.painter().add(egui::Shape::Vec(shapes));
+            }
+        }
+        let anchored_here = env.cross_sel.is_some_and(|(a, ..)| a == idx);
+        // 命中区：默认只认代码区（功能栏以下）。选区锚点已经落在本块字符上时，
+        // 整个面板矩形都算命中——指针暂时飘到功能栏或面板留白时，
+        // `cursor_from_pos` 会钳到最近一行的字符，端点继续跟着指针走，
+        // 而不是退回「块首/块尾」端点（用户看到的「选一行变成选中整块」）。
+        let hit = |p: Pos2| {
+            let in_band = p.x >= band.0
+                && p.x <= band.1
+                && p.y >= zone.top() - 2.0
+                && p.y <= zone.bottom() + 2.0;
+            in_band || (anchored_here && r.response.rect.contains(p))
+        };
+        let char_at = |p: Pos2| galley.cursor_from_pos(p - *origin).index.0.min(len);
+        let pressed_now = env
+            .ctx
+            .input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
+        // 终点只要求「指针当前落在本块代码区」，不要求按下点也在：
+        // 按下点在外面时锚点由编辑器的兜底给出，指针一进代码区就该继续延伸选区，
+        // 否则选区会停在锚点字符上什么都不选（看起来「选不中」）。
+        if pressed_now {
+            if let Some(p) = env
+                .ctx
+                .input(|i| i.pointer.press_origin())
+                .filter(|p| hit(*p))
+            {
+                env.actions.push(Action::CrossDrag(idx, char_at(p), true));
+            }
+        } else if anchored_here
+            && env.ctx.input(|i| i.pointer.primary_down())
+            && let Some(q) = env
+                .ctx
+                .input(|i| i.pointer.interact_pos())
+                .filter(|q| hit(*q))
+        {
+            env.actions.push(Action::CrossDrag(idx, char_at(q), false));
+        }
+        // 渲染态点代码区：把「相对 galley 的点击位置」交给编辑器，下一帧进入编辑态时
+        // 光标落在点到的那个字符。代码块以前不报 Caret（只有文字块报），光标会跳到
+        // 整段代码末尾——点第一行行首再按退格，删掉的却是最后一行的字符。
+        if content.clicked()
+            && !folded
+            && let Some(p) = env
+                .ctx
+                .input(|i| i.pointer.interact_pos())
+                .filter(|p| hit(*p))
+        {
+            env.actions.push(Action::Caret(idx, p - *origin));
+        }
+    }
+    content.union(r.response)
+}
+
 pub fn render_block(
     ui: &mut egui::Ui,
     idx: usize,
@@ -156,162 +399,7 @@ pub fn render_block(
             }
             Block::Code {
                 lang, code, quote, ..
-            } => {
-                let folded = env.folded.contains(&idx);
-                // 折叠动画：1=完全展开、0=完全折叠，中间平滑过渡。
-                let openness = env.ctx.animate_value_with_time(
-                    egui::Id::new(("code_fold", idx)),
-                    if folded { 0.0 } else { 1.0 },
-                    0.18,
-                );
-                let lines = code.lines().count();
-                let mut copied = false;
-                let mut new_lang: Option<String> = None;
-                // 功能栏矩形：下面的可点击区域从功能栏下缘开始，
-                // 避免整块可点后把复制/删除/折叠按钮的点击吞掉。
-                let mut header_rect = Rect::NOTHING;
-                // 引用内的代码块：左侧留出缩进 + 竖线位置，代码面板整体右移，
-                // 竖线按面板实际高度画，和引用文字连成一条。
-                let hr = ui.horizontal(|ui| {
-                    if *quote > 0 {
-                        ui.add_space((*quote).min(4) as f32 * 8.0 + 11.0);
-                    }
-                    // 外层横向布局会传染给面板内容：显式回到纵向，否则功能栏
-                    // 和代码会被并排放置、代码列被挤成一条很窄的竖条。
-                    let r = ui
-                        .vertical(|ui| {
-                            panel_frame(theme).show(ui, |ui| {
-                                // 功能栏：左语言 + 右操作按钮（code_header 背景色块）
-                                header_rect = code_header_frame(theme)
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            if let Some(l) =
-                                                language_combo(ui, ("code_lang", idx), lang)
-                                            {
-                                                new_lang = Some(l);
-                                            }
-                                            ui.with_layout(
-                                                egui::Layout::right_to_left(egui::Align::Center),
-                                                |ui| {
-                                                    // 最右：折叠/展开；其次删除（弹确认窗）；再复制
-                                                    let fold_label =
-                                                        if folded { "展开" } else { "折叠" };
-                                                    if ui
-                                                        .button(
-                                                            egui::RichText::new(fold_label)
-                                                                .size(theme.body * 0.85),
-                                                        )
-                                                        .on_hover_cursor(egui::CursorIcon::Default)
-                                                        .clicked()
-                                                    {
-                                                        env.actions.push(Action::FoldToggle(idx));
-                                                    }
-                                                    if !folded {
-                                                        if ui
-                                                            .button(
-                                                                egui::RichText::new("删除")
-                                                                    .size(theme.body * 0.85),
-                                                            )
-                                                            .on_hover_cursor(
-                                                                egui::CursorIcon::Default,
-                                                            )
-                                                            .clicked()
-                                                        {
-                                                            env.actions
-                                                                .push(Action::AskDeleteBlock(idx));
-                                                        }
-                                                        if ui
-                                                            .button(
-                                                                egui::RichText::new("复制")
-                                                                    .size(theme.body * 0.85),
-                                                            )
-                                                            .on_hover_cursor(
-                                                                egui::CursorIcon::Default,
-                                                            )
-                                                            .clicked()
-                                                        {
-                                                            copied = true;
-                                                        }
-                                                    }
-                                                },
-                                            );
-                                        });
-                                    })
-                                    .response
-                                    .rect;
-                                ui.add_space(6.0);
-                                code_divider(ui, theme);
-                                ui.add_space(6.0);
-                                // 代码区：完全折叠只留提示；过渡中代码淡出、提示淡入。
-                                if openness <= 0.0 {
-                                    ui.label(
-                                        egui::RichText::new(format!("已折叠 {lines} 行代码"))
-                                            .size(theme.body * 0.9)
-                                            .italics()
-                                            .color(theme.dim),
-                                    )
-                                } else {
-                                    let code_resp = ui
-                                        .scope(|ui| {
-                                            ui.set_opacity(openness);
-                                            wrapped_label(
-                                                ui,
-                                                code_job(code, lang, theme),
-                                                env.max_width,
-                                                Sense::hover(),
-                                            )
-                                        })
-                                        .inner;
-                                    if openness < 1.0 {
-                                        ui.scope(|ui| {
-                                            ui.set_opacity(1.0 - openness);
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "已折叠 {lines} 行代码"
-                                                ))
-                                                .size(theme.body * 0.9)
-                                                .italics()
-                                                .color(theme.dim),
-                                            );
-                                        });
-                                    }
-                                    code_resp
-                                }
-                            })
-                        })
-                        .inner;
-                    if *quote > 0 {
-                        let rect = r.response.rect;
-                        ui.painter().rect_filled(
-                            Rect::from_min_max(
-                                Pos2::new(rect.left() - 11.0, rect.top()),
-                                Pos2::new(rect.left() - 8.0, rect.bottom()),
-                            ),
-                            1.0,
-                            theme.accent,
-                        );
-                    }
-                    r
-                });
-                let r = hr.inner;
-                if copied {
-                    env.ctx.copy_text(code.clone());
-                    env.actions.push(Action::Notify("复制成功".to_string()));
-                }
-                if let Some(l) = new_lang {
-                    env.actions.push(Action::SetLang(idx, l));
-                }
-                // 代码区（功能栏以下，含空代码块的留白）整块可点击：
-                // 空代码块的 galley 又窄又矮，只把文字 label 当点击区时，
-                // 鼠标离开后再点代码区空白处命不中，看起来像「代码块不能编辑」。
-                // 面板矩形仍参与 union，保证跨块拖选时为整块叠选区色。
-                let zone = Rect::from_min_max(
-                    Pos2::new(r.response.rect.left(), header_rect.bottom()),
-                    r.response.rect.right_bottom(),
-                );
-                let content = ui.interact(zone, ui.id().with(("code_click", idx)), Sense::click());
-                content.union(r.response)
-            }
+            } => code_panel(ui, theme, env, idx, lang, code, *quote, true),
             Block::CodeGroup { items, .. } => {
                 let folded = env.folded.contains(&idx);
                 let openness = env.ctx.animate_value_with_time(
@@ -754,6 +842,24 @@ pub fn render_block(
                 {
                     ui.ctx().memory_mut(|m| m.data.insert_temp(cell_key, hit));
                 }
+                // 表格内按住拖动：只把经过的那几格交给编辑器选（拖出表格边界才整块选中，
+                // 由 view.rs 的跨块拖选接管）。以前一拖就是整张表，想复制一行都办不到。
+                if let Some(range) = table_drag_range(
+                    &row_rects,
+                    ui.input(|i| i.pointer.press_origin()),
+                    ui.input(|i| i.pointer.interact_pos()),
+                    ui.input(|i| i.pointer.is_decidedly_dragging()),
+                ) {
+                    env.actions.push(Action::TableDrag(idx, range));
+                }
+                // 选中格子的底色：选区由编辑器持有，每帧挂进 ctx（见 view.rs）。
+                if let Some(sel) = ui
+                    .ctx()
+                    .memory(|m| m.data.get_temp::<crate::editor::TableSel>(table_sel_id()))
+                    && sel.0 == idx
+                {
+                    paint_table_sel(ui, theme, &row_rects, crate::editor::table_sel_rect(sel));
+                }
                 if let Some(op) = op {
                     env.actions.push(Action::TableOp(idx, op));
                 }
@@ -794,7 +900,11 @@ pub fn render_block(
                                 let (rect, _) = ui.allocate_exact_size(draw_size, Sense::hover());
                                 let painter = ui.painter().clone();
                                 for shape in crate::render::math::transform_shapes(
-                                    &m.shapes, rect.min, scale, theme.text,
+                                    &m.shapes,
+                                    rect.min,
+                                    scale,
+                                    theme.text,
+                                    ui.ctx().pixels_per_point(),
                                 ) {
                                     painter.add(shape);
                                 }
@@ -996,22 +1106,9 @@ pub fn render_block(
                 content.union(r.response)
             }
             Block::FrontMatter { yaml, .. } => {
-                let r = panel_frame(theme).show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new("YAML Front Matter")
-                            .small()
-                            .color(theme.dim),
-                    );
-                    for line in yaml.lines() {
-                        ui.label(
-                            egui::RichText::new(line)
-                                .monospace()
-                                .small()
-                                .color(theme.quote),
-                        );
-                    }
-                });
-                r.response.interact(Sense::click())
+                // 与普通代码块同款面板：功能栏 + 分隔线 + yaml 高亮，
+                // 折叠 / 复制 / 删除都按代码块的交互走。
+                code_panel(ui, theme, env, idx, "yaml", yaml, 0, false)
             }
             Block::Footnote { id, content, .. } => {
                 ui.horizontal(|ui| {
@@ -1096,6 +1193,121 @@ pub(super) fn hit_cell(row_rects: &[Vec<Rect>], p: Pos2) -> Option<(usize, usize
         }
     }
     None
+}
+
+/// 本帧的表格单元格选区：编辑器在块循环之前挂进来，渲染层拿它给选中的格子叠底色
+/// （只有它知道每格的矩形）。一个键装整份选区，按下标自己比对，避免逐块留键。
+pub(crate) const TABLE_SEL_KEY: &str = "markd_table_sel_frame";
+
+/// 上面那个键对应的 `Id`（编辑器与渲染层必须用同一个）。
+pub(crate) fn table_sel_id() -> egui::Id {
+    #[allow(deprecated)]
+    {
+        egui::Id::new(TABLE_SEL_KEY)
+    }
+}
+
+/// 指针落在哪一格：缝隙里（行列之间的间距）按最近的行、最近的列归位。
+fn table_cell_near(row_rects: &[Vec<Rect>], p: Pos2) -> (usize, usize) {
+    /// 到一维区间 [lo, hi] 的距离（落在区间内为 0）。
+    fn axis_dist(v: f32, lo: f32, hi: f32) -> f32 {
+        if v < lo {
+            lo - v
+        } else if v > hi {
+            v - hi
+        } else {
+            0.0
+        }
+    }
+    let mut rows: Vec<(usize, f32)> = Vec::new();
+    for (ri, row) in row_rects.iter().enumerate() {
+        let band = row.iter().fold(None::<(f32, f32)>, |acc, r| {
+            Some(match acc {
+                Some((lo, hi)) => (lo.min(r.top()), hi.max(r.bottom())),
+                None => (r.top(), r.bottom()),
+            })
+        });
+        if let Some((lo, hi)) = band {
+            rows.push((ri, axis_dist(p.y, lo, hi)));
+        }
+    }
+    let ri = rows
+        .iter()
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| *i)
+        .unwrap_or(0);
+    let cols = row_rects.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut cs: Vec<(usize, f32)> = Vec::new();
+    for ci in 0..cols {
+        let mut band: Option<(f32, f32)> = None;
+        for row in row_rects {
+            if let Some(r) = row.get(ci) {
+                band = Some(match band {
+                    Some((lo, hi)) => (lo.min(r.left()), hi.max(r.right())),
+                    None => (r.left(), r.right()),
+                });
+            }
+        }
+        if let Some((lo, hi)) = band {
+            cs.push((ci, axis_dist(p.x, lo, hi)));
+        }
+    }
+    let ci = cs
+        .iter()
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| *i)
+        .unwrap_or(0);
+    (ri, ci)
+}
+
+/// 表格单元格矩形选区的两端格子：`((起行, 起列), (止行, 止列))`，行列含表头行。
+pub type TableCellRect = ((usize, usize), (usize, usize));
+
+/// 表格内拖选的判定（渲染态与编辑态共用同一套规则）：
+/// - 按下点不在单元格上，或还没拖起来 → `None`：本帧不表态，按「整块」跨块选区走；
+/// - 按下点与指针都在表内 → `Some(Some((起格, 止格)))`：只选中经过的那几格；
+/// - 指针拖出表格边界 → `Some(None)`：整张表交给跨块选区，好把它和上下文一起选走。
+pub fn table_drag_range(
+    row_rects: &[Vec<Rect>],
+    press: Option<Pos2>,
+    pointer: Option<Pos2>,
+    dragging: bool,
+) -> Option<Option<TableCellRect>> {
+    let from = hit_cell(row_rects, press?)?;
+    if !dragging {
+        return None;
+    }
+    let p = pointer?;
+    let bounds = row_rects
+        .iter()
+        .flatten()
+        .fold(None::<Rect>, |acc, r| Some(acc.map_or(*r, |a| a.union(*r))))?;
+    if !bounds.expand(2.0).contains(p) {
+        return Some(None);
+    }
+    Some(Some((from, table_cell_near(row_rects, p))))
+}
+
+/// 选中格子的底色：叠在单元格内容之上（半透明，文字依然清晰），
+/// 与代码块/图表那套选区叠加层同一口径。
+pub(crate) fn paint_table_sel(
+    ui: &egui::Ui,
+    theme: &Theme,
+    row_rects: &[Vec<Rect>],
+    sel: TableCellRect,
+) {
+    let ((r0, c0), (r1, c1)) = sel;
+    let color = selection_overlay(theme);
+    for (ri, row) in row_rects.iter().enumerate() {
+        if ri < r0 || ri > r1 {
+            continue;
+        }
+        for (ci, r) in row.iter().enumerate() {
+            if ci >= c0 && ci <= c1 {
+                ui.painter().rect_filled(*r, 0.0, color);
+            }
+        }
+    }
 }
 
 // ---------------- 图表主题配色与通用「盒子+连线」布局 ----------------

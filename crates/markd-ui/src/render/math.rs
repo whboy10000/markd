@@ -8,11 +8,18 @@
 //! 原点在包围盒左上角，基线在 `y = height`。所有坐标以「em」为单位，
 //! 乘以 `font_size` 即得逻辑像素。字形轮廓来自字体的 `glyf` 表
 //! （y 向上），绘制时翻转 y。
+//!
+//! 像素对齐：公式的平移缩放发生在绘制期（`transform_shapes`），而 epaint 对
+//! `Shape::Mesh` 的顶点原样透传——既不 feathering 也不吸附栅格。所以那里必须把
+//! 落点吸附到物理像素栅格，并把矩形线条转成栅格对齐的实心网格；否则细如 0.56pt
+//! 的分数线会踩到 epaint 的「细线」分支，被摊成 ±1 物理像素的渐隐三角脊
+//! （实测：1x 屏上中心只有 66% 墨量、上下各多出一行 11% 的灰边）。
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use ab_glyph::{Font, FontRef, FontVec, OutlineCurve, Point};
+use egui::emath::GuiRounding;
 use egui::{Color32, Pos2, Shape, Vec2, epaint};
 use lyon::geom::point;
 use lyon::lyon_tessellation::{
@@ -38,6 +45,10 @@ pub struct RenderedMath {
     pub size: Vec2,
     /// 基线到公式顶部的逻辑距离，用于行内公式与文字基线对齐。
     pub baseline: f32,
+    /// 真实墨迹包围盒（与 `shapes` 同一坐标系）。
+    /// RaTeX 的 `width` 不含左侧影，墨迹可以从 x=0 以左开始；行内公式要靠它
+    /// 才知道自己到底占多宽、该往右挪多少，否则会把相邻正文挤出占位区。
+    pub ink: egui::Rect,
 }
 
 /// 公式显示模式：影响上下标、分数等的排版尺寸。
@@ -180,11 +191,29 @@ fn display_list_to_shapes(dl: &DisplayList, em: f32) -> Option<RenderedMath> {
         }
     }
 
+    // 墨迹包围盒：公式只产出字形网格与实心矩形（分数线、根号横线）。
+    let mut ink = egui::Rect::NOTHING;
+    for s in &shapes {
+        if let Some(b) = shape_bounds(s) {
+            ink = ink.union(b);
+        }
+    }
+
     Some(RenderedMath {
         shapes,
         size: Vec2::new(dl.width as f32 * em, (dl.height + dl.depth) as f32 * em),
         baseline: dl.height as f32 * em,
+        ink,
     })
+}
+
+/// 单个形状的包围盒（只处理公式会产出的两类）。
+fn shape_bounds(s: &Shape) -> Option<egui::Rect> {
+    match s {
+        Shape::Mesh(m) => Some(m.calc_bounds()),
+        Shape::Rect(r) => Some(r.rect),
+        _ => None,
+    }
 }
 
 /// 已加载字体的查找上下文：解析字体（FontVec）与原始大字体（FontRef）。
@@ -456,14 +485,59 @@ fn rx_to_color32(c: RxColor) -> Color32 {
 
 /// 把一组公式形状平移到目标位置（左上角），按 `scale` 缩放，并整体染色为 `tint`。
 /// RaTeX 输出统一为黑色，这里在绘制时按主题文字色重染色，浅色/深色主题共用同一份缓存。
-pub fn transform_shapes(shapes: &[Shape], origin: Pos2, scale: f32, tint: Color32) -> Vec<Shape> {
+///
+/// `ppp` 是 `pixels_per_point`（一个逻辑点合多少个物理像素）。公式的平移缩放发生在
+/// 绘制期，而 epaint 对 `Shape::Mesh` 的顶点是原样透传的（既不 feathering 也不吸附
+/// 栅格），原点差半个像素就会让每根笔画一起被 MSAA 摊出一圈半透明边，和已经吸附过
+/// 栅格的正文文字形成两套清晰度。所以落点先吸附到物理像素栅格，矩形笔画另行处理。
+pub fn transform_shapes(
+    shapes: &[Shape],
+    origin: Pos2,
+    scale: f32,
+    tint: Color32,
+    ppp: f32,
+) -> Vec<Shape> {
+    let origin = origin.round_to_pixels(ppp);
     shapes
         .iter()
-        .map(|s| transform_shape(s, origin, scale, tint))
+        .map(|s| transform_shape(s, origin, scale, tint, ppp))
         .collect()
 }
 
-fn transform_shape(shape: &Shape, origin: Pos2, scale: f32, tint: Color32) -> Shape {
+/// 把矩形吸附到物理像素栅格：四条边落在整像素边界上，每个方向至少一个物理像素，
+/// 中心尽量不动。
+fn snap_to_pixel_grid(rect: egui::Rect, ppp: f32) -> egui::Rect {
+    let ppp = if ppp.is_finite() { ppp.max(0.01) } else { 1.0 };
+    let w = (rect.width() * ppp).round().max(1.0);
+    let h = (rect.height() * ppp).round().max(1.0);
+    let left = (rect.center().x * ppp - w * 0.5).round();
+    let top = (rect.center().y * ppp - h * 0.5).round();
+    egui::Rect::from_min_size(
+        Pos2::new(left / ppp, top / ppp),
+        Vec2::new(w / ppp, h / ppp),
+    )
+}
+
+/// 实心矩形网格（与字形网格同一种顶点格式）。
+fn solid_rect_mesh(rect: egui::Rect, color: Color32) -> epaint::Mesh {
+    let mut mesh = epaint::Mesh::default();
+    for pos in [
+        rect.min,
+        Pos2::new(rect.max.x, rect.min.y),
+        rect.max,
+        Pos2::new(rect.min.x, rect.max.y),
+    ] {
+        mesh.vertices.push(epaint::Vertex {
+            pos,
+            uv: egui::pos2(0.0, 0.0),
+            color,
+        });
+    }
+    mesh.indices = vec![0, 1, 2, 0, 2, 3];
+    mesh
+}
+
+fn transform_shape(shape: &Shape, origin: Pos2, scale: f32, tint: Color32, ppp: f32) -> Shape {
     match shape {
         Shape::Mesh(mesh) => {
             let mut m = (**mesh).clone();
@@ -473,6 +547,23 @@ fn transform_shape(shape: &Shape, origin: Pos2, scale: f32, tint: Color32) -> Sh
             }
             Shape::Mesh(Arc::new(m))
         }
+        // 分数线、根号横线、`\colorbox`：直角实心矩形。
+        Shape::Rect(r) if r.stroke.width <= 0.0 && r.corner_radius == egui::CornerRadius::ZERO => {
+            // 不交给 epaint 画矩形：14px 字号的分数线只有 0.56 逻辑像素厚，
+            // `tessellator.rs` 对「厚度 ≤ 2×feathering」的矩形退化成画一条线，
+            // 线宽再 ≤ 0.9×feathering 时索性把它摊成 ±1 物理像素的三角脊并按比例
+            // 压低不透明度——这就是公式边缘向外突出的那圈半透明像素。
+            // 栅格对齐的实心网格没有 feathering，边落在整像素上，MSAA 的覆盖率
+            // 非 0 即 1，一个像素都不外溢。
+            let rect = egui::Rect::from_min_max(
+                origin + r.rect.min.to_vec2() * scale,
+                origin + r.rect.max.to_vec2() * scale,
+            );
+            Shape::Mesh(Arc::new(solid_rect_mesh(
+                snap_to_pixel_grid(rect, ppp),
+                tint,
+            )))
+        }
         Shape::Rect(r) => {
             let mut r = r.clone();
             r.rect = egui::Rect::from_min_size(
@@ -481,6 +572,7 @@ fn transform_shape(shape: &Shape, origin: Pos2, scale: f32, tint: Color32) -> Sh
             );
             r.fill = tint;
             r.stroke.color = tint;
+            r.round_to_pixels = Some(true);
             Shape::Rect(r)
         }
         Shape::Path(p) => {
@@ -588,7 +680,344 @@ mod tests {
             })
             .sum();
         assert!(mesh_count >= 10, "应产出多个字形网格，实际 {mesh_count}");
-        assert!(triangle_count >= 100, "字形网格应有足够三角形，实际 {triangle_count}");
+        assert!(
+            triangle_count >= 100,
+            "字形网格应有足够三角形，实际 {triangle_count}"
+        );
+    }
+
+    /// 吸附到物理像素栅格：边落在整像素上、厚度至少一个物理像素、中心不漂出半个像素。
+    /// 分数线在 14px 字号下只有 0.56 逻辑像素厚——1x 屏上连一个物理像素都不到。
+    #[test]
+    fn snap_to_pixel_grid_keeps_thin_bars_visible() {
+        let bar = egui::Rect::from_min_max(egui::pos2(1.68, 7.424), egui::pos2(6.86, 7.984));
+        for ppp in [1.0f32, 1.5, 2.0, 3.0] {
+            let s = snap_to_pixel_grid(bar, ppp);
+            for (name, v) in [
+                ("min.x", s.min.x),
+                ("min.y", s.min.y),
+                ("max.x", s.max.x),
+                ("max.y", s.max.y),
+            ] {
+                let dev = v * ppp;
+                assert!(
+                    (dev - dev.round()).abs() < 1e-3,
+                    "ppp={ppp}：{name}={v} 没落在物理像素栅格上（{dev}）"
+                );
+            }
+            assert!(
+                s.height() * ppp >= 1.0 - 1e-3 && s.width() * ppp >= 1.0 - 1e-3,
+                "ppp={ppp}：吸附后线条不足一个物理像素（{s:?}）"
+            );
+            let drift = (s.center() - bar.center()).length();
+            assert!(
+                drift <= 1.0 / ppp,
+                "ppp={ppp}：中心漂了 {drift:.3}，超出一个物理像素"
+            );
+        }
+    }
+
+    /// 回归「公式边缘长出半透明绒毛」：
+    /// ① 分数线 / 根号横线不再以 `Shape::Rect` 交给 epaint——细矩形会被退化成
+    ///    ±1 物理像素的三角脊并按厚度比例压低不透明度，那就是向外突出的那圈像素——
+    ///    改成栅格对齐的实心网格；
+    /// ② 字形网格与线条共用同一个已吸附的原点，整条公式不会整体错半个像素。
+    #[test]
+    fn bars_are_painted_as_grid_aligned_meshes() {
+        for ppp in [1.0f32, 2.0] {
+            let r = render_formula("\\frac{a}{b}+\\sqrt{x}", 14.0, MathDisplay::Inline)
+                .expect("render");
+            assert!(
+                r.shapes.iter().any(|s| matches!(s, Shape::Rect(_))),
+                "排版阶段仍应产出矩形线条（绘制期才转换）"
+            );
+            let shapes = transform_shapes(
+                &r.shapes,
+                egui::pos2(100.37, 50.61),
+                0.97,
+                Color32::BLACK,
+                ppp,
+            );
+            assert!(
+                shapes.iter().all(|s| !matches!(s, Shape::Rect(_))),
+                "ppp={ppp}：公式里不该再有走 epaint feathering 的矩形"
+            );
+            // 四顶点 + 两个三角形 = 本模块生成的实心矩形线条。
+            let mut n = 0;
+            for m in shapes.iter().filter_map(|s| match s {
+                Shape::Mesh(m) if m.vertices.len() == 4 => Some(m.clone()),
+                _ => None,
+            }) {
+                n += 1;
+                for v in &m.vertices {
+                    for (name, c) in [("x", v.pos.x), ("y", v.pos.y)] {
+                        let dev = c * ppp;
+                        assert!(
+                            (dev - dev.round()).abs() < 1e-2,
+                            "ppp={ppp}：线条顶点 {name}={c} 偏离物理像素栅格（{dev}）"
+                        );
+                    }
+                }
+                let b = m.calc_bounds();
+                assert!(
+                    b.height() * ppp >= 1.0 - 1e-2 && b.width() * ppp >= 1.0 - 1e-2,
+                    "ppp={ppp}：线条厚度不足一个物理像素（{b:?}）"
+                );
+                assert!(
+                    m.vertices.iter().all(|v| v.color == Color32::BLACK),
+                    "线条应整体染成主题文字色"
+                );
+            }
+            assert!(
+                n >= 2,
+                "ppp={ppp}：分数线与根号横线都应转成网格，实际 {n} 条"
+            );
+        }
+    }
+
+    /// 修复前的等价画法：矩形线条直接交给 epaint（不吸附、不转网格）。
+    fn legacy_rect_bars(r: &RenderedMath, origin: egui::Pos2, scale: f32) -> Vec<Shape> {
+        r.shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Rect(rect) => Some(Shape::rect_filled(
+                    egui::Rect::from_min_max(
+                        origin + rect.rect.min.to_vec2() * scale,
+                        origin + rect.rect.max.to_vec2() * scale,
+                    ),
+                    0.0,
+                    Color32::BLACK,
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 把形状交给 epaint 真实细分，数「线条外扩 1.5 物理像素的环带里、落在线条之外」
+    /// 的半透明顶点——那一圈渐隐顶点就是用户看到的「蒲公英绒毛」。
+    fn translucent_ring_vertices(shapes: &[Shape], band: egui::Rect, ppp: f32) -> usize {
+        let ring = band.expand(1.5 / ppp);
+        let inside = band.expand(0.001);
+        let mut tess = epaint::Tessellator::new(
+            ppp,
+            epaint::TessellationOptions::default(),
+            [512, 512],
+            Vec::new(),
+        );
+        let mut count = 0;
+        for s in shapes {
+            let mut out = epaint::Mesh::default();
+            tess.tessellate_shape(s.clone(), &mut out);
+            count += out
+                .vertices
+                .iter()
+                .filter(|v| v.color.a() < 255 && ring.contains(v.pos) && !inside.contains(v.pos))
+                .count();
+        }
+        count
+    }
+
+    /// 用 epaint 的真实细分结果量化「向外突出的半透明像素」：修复后线条周围一个
+    /// 都不该有；同一个量在修复前的画法（矩形）上必须数得出来，否则这个度量本身
+    /// 就是假的。
+    #[test]
+    fn bars_produce_no_translucent_feather_ring() {
+        let origin = egui::pos2(100.37, 50.61);
+        let scale = 0.97;
+        for ppp in [1.0f32, 2.0] {
+            let r = render_formula("\\frac{a}{b}+\\sqrt{x}", 14.0, MathDisplay::Inline)
+                .expect("render");
+            let shapes = transform_shapes(&r.shapes, origin, scale, Color32::BLACK, ppp);
+            let bars: Vec<egui::Rect> = shapes
+                .iter()
+                .filter_map(|s| match s {
+                    Shape::Mesh(m) if m.vertices.len() == 4 => Some(m.calc_bounds()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(bars.len(), 2, "ppp={ppp}：应有分数线 + 根号横线两条");
+            for band in &bars {
+                assert_eq!(
+                    translucent_ring_vertices(&shapes, *band, ppp),
+                    0,
+                    "ppp={ppp}：线条 {band:?} 外围出现了 feathering 渐隐顶点"
+                );
+            }
+            let legacy: Vec<egui::Rect> = legacy_rect_bars(&r, origin, scale)
+                .iter()
+                .map(|s| match s {
+                    Shape::Rect(rect) => rect.rect,
+                    _ => unreachable!(),
+                })
+                .collect();
+            let fuzz = legacy
+                .iter()
+                .map(|band| {
+                    translucent_ring_vertices(&legacy_rect_bars(&r, origin, scale), *band, ppp)
+                })
+                .sum::<usize>();
+            assert!(
+                fuzz > 0,
+                "ppp={ppp}：对照组（矩形线条）本该数出渐隐顶点，度量失效"
+            );
+        }
+    }
+
+    /// 逐物理像素量化墨量：把形状交给 epaint 细分后，按每像素 4×4 采样点做
+    /// src-over 叠加（黑色墨迹），返回 `y0..y0+rows` 每一行的平均墨量
+    /// （0.0 = 纯白，1.0 = 实色）。参数一律用物理像素坐标。
+    ///
+    /// 轴对齐且落在栅格上的边在这个采样网面上非 0 即 1，与 GPU MSAA 的结果一致，
+    /// 所以这一列数字就是屏幕上的灰度剖面。
+    fn row_ink_profile(
+        shape: &Shape,
+        x0: f32,
+        x1: f32,
+        y0: f32,
+        rows: usize,
+        ppp: f32,
+    ) -> Vec<f32> {
+        let mut mesh = epaint::Mesh::default();
+        epaint::Tessellator::new(
+            ppp,
+            epaint::TessellationOptions::default(),
+            [512, 512],
+            Vec::new(),
+        )
+        .tessellate_shape(shape.clone(), &mut mesh);
+        // 顶点位置换算到物理像素，避免后面每个采样点重复乘。
+        let tri: Vec<([egui::Pos2; 3], [f32; 3])> = (0..mesh.indices.len() / 3)
+            .map(|i| {
+                let v: Vec<&epaint::Vertex> = (0..3)
+                    .map(|k| &mesh.vertices[mesh.indices[i * 3 + k] as usize])
+                    .collect();
+                (
+                    [v[0].pos, v[1].pos, v[2].pos].map(|p| egui::pos2(p.x * ppp, p.y * ppp)),
+                    [0, 1, 2].map(|k| v[k].color.a() as f32 / 255.0),
+                )
+            })
+            .collect();
+        let cross = |a: egui::Pos2, b: egui::Pos2, c: egui::Pos2| {
+            (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+        };
+        (0..rows)
+            .map(|row| {
+                let mut total = 0.0f32;
+                let mut n = 0.0f32;
+                for sy in 0..4 {
+                    for sx in 0..4 {
+                        let px = x0 + (sx as f32 + 0.5) * (x1 - x0) / 4.0;
+                        let p = egui::pos2(px, y0 + row as f32 + (sy as f32 + 0.5) / 4.0);
+                        let mut clear = 1.0f32;
+                        for (t, a) in &tri {
+                            let area = cross(t[0], t[1], t[2]);
+                            if area == 0.0 {
+                                continue;
+                            }
+                            let w = [
+                                cross(t[1], t[2], p) / area,
+                                cross(t[2], t[0], p) / area,
+                                cross(t[0], t[1], p) / area,
+                            ];
+                            if w.iter().any(|v| *v < -1e-6) || w.iter().any(|v| *v > 1.0 + 1e-6) {
+                                continue;
+                            }
+                            let alpha = w[0] * a[0] + w[1] * a[1] + w[2] * a[2];
+                            clear *= 1.0 - alpha.clamp(0.0, 1.0);
+                        }
+                        total += 1.0 - clear;
+                        n += 1.0;
+                    }
+                }
+                total / n
+            })
+            .collect()
+    }
+
+    /// 屏幕上的灰度剖面：修复后分数线正好占满一个物理像素行、上下全白；
+    /// 修复前同一条线被摊成好几行半明半暗的像素，中心还达不到实色——
+    /// 那就是「向外突出的半透明像素 / 蒲公英绒毛」。
+    #[test]
+    fn fraction_bar_inks_exactly_one_row() {
+        let r = render_formula("\\frac{1}{2}", 22.0, MathDisplay::Display).expect("render");
+        let src = r
+            .shapes
+            .iter()
+            .find_map(|s| match s {
+                Shape::Rect(rect) if rect.rect.width() > 4.0 => Some(rect.rect),
+                _ => None,
+            })
+            .expect("应有分数线矩形");
+        let origin = egui::pos2(100.0, 50.0);
+        for ppp in [1.0f32, 2.0] {
+            let fixed = transform_shapes(&r.shapes, origin, 1.0, Color32::BLACK, ppp)
+                .into_iter()
+                .find(|s| match s {
+                    Shape::Mesh(m) => m.vertices.len() == 4 && m.calc_bounds().width() * ppp > 4.0,
+                    _ => false,
+                })
+                .expect("修复后分数线应是四顶点网格");
+            let bar = match &fixed {
+                Shape::Mesh(m) => m.calc_bounds(),
+                _ => unreachable!(),
+            };
+            // 修复前的等价画法：同一条线以矩形提交。
+            let legacy = Shape::rect_filled(
+                egui::Rect::from_min_max(origin + src.min.to_vec2(), origin + src.max.to_vec2()),
+                0.0,
+                Color32::BLACK,
+            );
+            let (x0, x1) = (bar.min.x * ppp + 2.0, bar.max.x * ppp - 2.0);
+            let top = (bar.min.y * ppp).floor() - 2.0;
+            let rows = ((bar.height() * ppp).floor() as usize) + 5;
+            let after = row_ink_profile(&fixed, x0, x1, top, rows, ppp);
+            let before = row_ink_profile(&legacy, x0, x1, top, rows, ppp);
+            let solid = after.iter().filter(|v| **v > 0.999).count();
+            let spill = after.iter().filter(|v| 0.001 < **v && **v < 0.999).count();
+            assert_eq!(
+                solid,
+                (bar.height() * ppp).round() as usize,
+                "ppp={ppp}：修复后剖面应为 {after:?}",
+            );
+            assert_eq!(spill, 0, "ppp={ppp}：修复后仍有非整像素的过渡行：{after:?}");
+            assert!(
+                before.iter().copied().fold(f32::MIN, f32::max) < 0.999,
+                "度量失效：修复前的矩形画法本不该出现实色行 {before:?}"
+            );
+            assert!(
+                before.iter().filter(|v| 0.05 < **v).count() > solid,
+                "度量失效：修复前本该把墨量摊到更多行上 {before:?}"
+            );
+        }
+    }
+
+    /// 同一个物理像素内的任意落点必须画出完全一样的形状——落点已吸附到栅格，
+    /// 不会出现「同一个公式在行内比在块级糊一点」的相位差。
+    #[test]
+    fn sub_pixel_placement_is_quantized() {
+        let ppp = 2.0;
+        let r = render_formula("\\frac{a}{b}", 14.0, MathDisplay::Inline).expect("render");
+        let positions = |origin: egui::Pos2| -> Vec<(f32, f32)> {
+            transform_shapes(&r.shapes, origin, 1.0, Color32::BLACK, ppp)
+                .iter()
+                .flat_map(|s| match s {
+                    Shape::Mesh(m) => m.vertices.iter().map(|v| (v.pos.x, v.pos.y)).collect(),
+                    _ => Vec::new(),
+                })
+                .collect()
+        };
+        let base = positions(egui::pos2(100.0, 50.0));
+        assert!(!base.is_empty());
+        assert_eq!(
+            base,
+            positions(egui::pos2(100.2, 50.2)),
+            "同一个物理像素内的位移不该改变任何顶点"
+        );
+        assert_ne!(
+            base,
+            positions(egui::pos2(100.5, 50.0)),
+            "整一个物理像素的位移必须真的挪动"
+        );
     }
 
     /// 空 / 非法公式不应崩溃，返回 None 即可。

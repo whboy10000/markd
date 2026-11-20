@@ -22,17 +22,20 @@ fn inline_math_image_aligns_to_text_baseline() {
     let scale = 1.0;
     let size = math.size * scale;
     let baseline = math.baseline * scale;
+    // 墨迹偏移与生产代码（MathBuild::push）一致：段内左右各 1px 呼吸位，占位段
+    // 只有一个字符、没有 extra_letter_spacing，所以不必再扣首字符位移。
+    let ink_dx = 1.0 - math.ink.min.x * scale;
     let run = InlineMathRun {
         marker,
         math: Some(math),
         size,
         baseline,
-        reserved: size.x,
+        ink_dx,
         scale,
         tall: false,
     };
     let origin = egui::pos2(100.0, 50.0);
-    let shapes = math_image_shapes(&galley, origin, &[run], theme.text);
+    let shapes = math_image_shapes(&galley, origin, &[run], theme.text, ctx.pixels_per_point());
     assert!(!shapes.is_empty(), "公式形状没有落到占位字符上");
 
     // 计算所有形状的包围盒。

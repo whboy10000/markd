@@ -461,3 +461,80 @@ fn diagram_delete_button_requests_confirm() {
     );
     assert!(!block_clicked, "点击「删除」按钮不应激活图表块");
 }
+
+/// YAML Front Matter 用与普通代码块同款的面板渲染：功能栏上是固定的 `yaml` 标签
+/// （不是改了没反应的语言下拉）+ 折叠 / 删除 / 复制，代码区按 yaml 语法着色。
+#[test]
+fn front_matter_renders_as_code_panel() {
+    let theme = Theme::get(ThemeKind::Light);
+    let ctx = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0));
+    let block = Block::FrontMatter {
+        yaml: "title: 标题\ntags: [a, b]".to_string(),
+        source: "---\ntitle: 标题\ntags: [a, b]\n---".to_string(),
+    };
+    let mut texts: Vec<String> = Vec::new();
+    let mut key_sections = 0usize;
+    {
+        let mut images = ImageCache::new();
+        let outline: Vec<OutlineItem> = Vec::new();
+        let mut actions: Vec<Action> = Vec::new();
+        let folded: HashSet<usize> = HashSet::new();
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            },
+            |root| {
+                egui::CentralPanel::default().show(root, |ui| {
+                    let mut env = RenderEnv {
+                        theme: &theme,
+                        ctx: &ctx,
+                        images: &mut images,
+                        base_dir: None,
+                        outline: &outline,
+                        actions: &mut actions,
+                        max_width: 700.0,
+                        cross_sel: None,
+                        folded: &folded,
+                        group_tab: 0,
+                    };
+                    let _ = render_block(ui, 0, &block, &mut env, false);
+                });
+            },
+        );
+        for cs in &out.shapes {
+            if let egui::Shape::Text(ts) = &cs.shape {
+                let t = ts.galley.text().to_string();
+                if t.starts_with("title:") {
+                    key_sections = ts.galley.job.sections.len();
+                }
+                texts.push(t);
+            }
+        }
+        out.textures_delta.clear();
+        assert!(actions.is_empty(), "未点击时不应产生 action：{actions:?}");
+    }
+    // 功能栏四件套：固定的 yaml 标签 + 折叠 / 删除 / 复制
+    for want in ["yaml", "折叠", "删除", "复制"] {
+        assert!(
+            texts.iter().any(|t| t == want),
+            "Front Matter 面板应渲染出 `{want}`，实际 {texts:?}"
+        );
+    }
+    // 代码区是一个整体 galley（与普通代码块同款排版），两行 yaml 都在里面
+    let joined = texts.join("\u{1}");
+    assert!(
+        joined.contains("title: 标题") && joined.contains("tags: [a, b]"),
+        "Front Matter 代码区应含两行 yaml，实际 {texts:?}"
+    );
+    assert!(
+        key_sections > 1,
+        "yaml 代码区应按语法分多段着色，实际 section={key_sections}"
+    );
+    // 旧外观（一句 dim 提示 + 逐行纯文本标题）已被代码面板取代
+    assert!(
+        !texts.iter().any(|t| t == "YAML Front Matter"),
+        "不应再出现旧的标题文案：{texts:?}"
+    );
+}

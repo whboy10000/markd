@@ -6,6 +6,15 @@ impl MarkdApp {
     /// 复制渲染态拖选出的跨块选区；没有选区时返回 false（交给 TextEdit 原生复制）。
     /// 同时写入带格式的 HTML 与纯文本，粘贴到富文本编辑器时保留块/行内格式。
     pub(super) fn copy_cross_sel(&mut self, ctx: &egui::Context) -> bool {
+        // 表格单元格选区：只复制选中的那几格（列用制表符分隔，粘到表格软件正好一格一个）。
+        if self.editor.cross_sel.is_none()
+            && let Some(text) = editor::table_sel_text(&self.doc, &self.editor)
+        {
+            let html = editor::table_sel_html(&self.doc, &self.editor).unwrap_or_default();
+            crate::clipboard::copy_rich(ctx, &text, &html);
+            self.notify(ctx, "已复制".to_string());
+            return true;
+        }
         let Some(sel) = self.editor.cross_sel else {
             return false;
         };
@@ -21,6 +30,15 @@ impl MarkdApp {
     /// 剪切跨块选区：先复制（带格式）到剪贴板，再删除选中的内容。
     /// 没有选区时返回 false（交给 TextEdit 原生剪切）。
     pub(super) fn cut_cross_sel(&mut self, ctx: &egui::Context) -> bool {
+        // 表格单元格选区：删格子里的文字容易连带破坏表格结构，只复制不删。
+        if self.editor.cross_sel.is_none()
+            && let Some(text) = editor::table_sel_text(&self.doc, &self.editor)
+        {
+            let html = editor::table_sel_html(&self.doc, &self.editor).unwrap_or_default();
+            crate::clipboard::copy_rich(ctx, &text, &html);
+            self.notify(ctx, "已复制（表格单元格不支持剪切）".to_string());
+            return true;
+        }
         let Some(sel) = self.editor.cross_sel else {
             return false;
         };
@@ -83,6 +101,9 @@ impl MarkdApp {
     pub(super) fn selection_html(&self) -> Option<String> {
         if let Some(sel) = self.editor.cross_sel {
             return Some(crate::export::cross_sel_html(&self.doc.blocks, sel));
+        }
+        if self.editor.table_sel.is_some() {
+            return editor::table_sel_html(&self.doc, &self.editor);
         }
         let (idx, _, _, text) = editor::selection_text(&self.doc, &self.editor)?;
         self.doc

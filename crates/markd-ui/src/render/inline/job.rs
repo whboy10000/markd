@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// 行内公式占位段左右各留的呼吸位（px），让公式不像素级贴死相邻正文。
+const MATH_PAD: f32 = 1.0;
+
 /// 行内公式在 galley 里占用的位置信息。排版时先放一段透明占位字符，
 /// 拿到 galley 后再把 RaTeX 原生形状画到占位字符的基线上。
 pub(crate) struct InlineMathRun {
@@ -12,8 +15,9 @@ pub(crate) struct InlineMathRun {
     pub(crate) size: egui::Vec2,
     /// 缩放后基线到公式顶部的距离。
     pub(crate) baseline: f32,
-    /// 占位字符实际占用的宽度（用于水平居中）。
-    pub(crate) reserved: f32,
+    /// 墨迹左缘相对占位段左端的偏移：以段内第一个占位字符为基准，
+    /// 已扣掉 `extra_letter_spacing` 的首字符位移与 RaTeX 的左侧影。
+    pub(crate) ink_dx: f32,
     /// 应用的缩放比例。
     pub(crate) scale: f32,
     /// 这一行的行高是否为这条公式特意撑高过：撑高过就在行内垂直居中，
@@ -27,9 +31,39 @@ pub(crate) struct MathBuild<'a> {
     pub images: &'a mut ImageCache,
     pub max_width: f32,
     pub runs: Vec<InlineMathRun>,
+    /// 占位字符在当前字号下的真实推进量：`(字号, 推进量)`。
+    pub(crate) unit: Option<(f32, f32)>,
 }
 
 impl MathBuild<'_> {
+    /// 量出一个占位字符排版时真正占掉的宽度。
+    ///
+    /// 占位用的是私用区字符，正文字体里没有它的字形。而 epaint 两条 API 对
+    /// 「缺字形」的处理不一致：`Fonts::glyph_width` 直接返回 `0`，真正排版走的
+    /// `glyph_info` 则退回该字体的 `.notdef` 豆腐块（约 0.5–0.6em）。按
+    /// `glyph_width` 算个数就会得到「一像素一个字符」，每个再按豆腐块宽推进，
+    /// 占位被撑成公式宽度的 6–9 倍：`$x^2$` 实测占位 144px 而墨迹只有 13.6px，
+    /// 公式两侧凭空多出大段空白，整段正文被顶到好几行去。所以用一次真实排版量。
+    ///
+    /// 豆腐块宽度只取决于字体与字号，与是哪个私用区字符无关，按字号缓存一次。
+    fn marker_unit(&mut self, sample: char, font_id: &egui::FontId, size: f32) -> f32 {
+        if let Some((s, u)) = self.unit
+            && (s - size).abs() < 0.01
+        {
+            return u;
+        }
+        let probe = format!("{sample}{sample}");
+        let unit = self.ctx.fonts_mut(|f| {
+            f.layout_no_wrap(probe, font_id.clone(), Color32::TRANSPARENT)
+                .size()
+                .x
+        }) / 2.0;
+        // 字体真给了个零宽字形时按 0.5px 兜底，免得占位彻底塌掉、正文压在公式上。
+        let unit = if unit.is_finite() { unit.max(0.5) } else { 0.5 };
+        self.unit = Some((size, unit));
+        unit
+    }
+
     fn push(&mut self, tex: &str, job: &mut LayoutJob, theme: &Theme, size: f32) {
         // 行内公式用正文字号渲染，与文字基线对齐。
         let Some(math) = self.images.math_shapes(tex, size, MathDisplay::Inline) else {
@@ -49,24 +83,34 @@ impl MathBuild<'_> {
 
         let marker = char::from_u32(0xE000 + self.runs.len() as u32).unwrap_or('\u{FFFC}');
         let font_id = theme.fmt(size).font_id;
-        let (marker_w, natural) = self.ctx.fonts_mut(|f| {
-            (
-                f.glyph_width(&font_id, marker),
-                f.row_height(&font_id).max(size * 1.2),
-            )
-        });
-        let reserved = display.x.max(marker_w);
+        let unit = self.marker_unit(marker, &font_id, size);
+        let natural = self
+            .ctx
+            .fonts_mut(|f| f.row_height(&font_id))
+            .max(size * 1.2);
+        // 占位段宽 = 公式真实墨迹宽 + 左右各 PAD 呼吸位。RaTeX 报的 `width` 不含
+        // 左侧影，墨迹会从 x=0 以左开始，照它预留会把正文挤到公式底下；用墨迹
+        // 左缘反推偏移，公式就正好待在占位段里，与 `行内代码` 一样贴着正文——
+        // 源文里公式两侧怎么写空格就留多少，不额外塞空隙。
+        let (ink_w, ink_left) = if math.ink.is_positive() {
+            (math.ink.width() * scale, math.ink.min.x * scale)
+        } else {
+            (display.x, 0.0)
+        };
+        let reserved = (ink_w + 2.0 * MATH_PAD).max(unit);
 
         let mut f = theme.fmt(size);
         f.color = Color32::TRANSPARENT;
-        // epaint 的 `extra_letter_spacing` 只加在「同一段里非第一个字」之前，
-        // 单字符占位段等于一毫米都没撑开——后面的正文会从公式底下压过来。
-        // 所以放 n 个占位字符，用间距把总推进量精确凑成 reserved：
-        //     n·w + (n−1)·s = reserved
-        // 占位字符本身透明，靠负间距轻微重叠也看不见。
-        let count = ((reserved / marker_w.max(1.0)).round() as usize).clamp(2, 256);
-        f.extra_letter_spacing =
-            (reserved - count as f32 * marker_w) / (count as f32 - 1.0).max(1.0);
+        // epaint 的 `extra_letter_spacing` 加在段内**每个**字符之前（含第一个，
+        // 实测 epaint 0.37），所以 n 个占位字符的总推进量是 `n·(u + s)`，第一个
+        // 字符还整体右移了 s。要让占位段正好等于 reserved 并把墨迹摆正：
+        //     s = reserved/n − u                      段宽 = reserved
+        //     墨迹左缘 = 段左端 + (reserved − 墨迹宽)/2
+        // 占位字符本身透明，靠负间距重叠在一起也看不见。
+        let count = ((reserved / unit).round() as usize).clamp(2, 256);
+        let spacing = reserved / count as f32 - unit;
+        f.extra_letter_spacing = spacing;
+        let ink_dx = (reserved - ink_w) * 0.5 - spacing - ink_left;
         // 只有当公式比正常行高还高时才撑行（上下各留 1px 净空）；
         // 普通短公式保持原行高，否则整段文字的行距会被它带松。
         let tall = display.y + 2.0 > natural;
@@ -79,7 +123,7 @@ impl MathBuild<'_> {
             math: Some(math),
             size: display,
             baseline,
-            reserved,
+            ink_dx,
             scale,
             tall,
         });

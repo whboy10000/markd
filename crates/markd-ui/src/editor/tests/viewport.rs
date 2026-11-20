@@ -150,10 +150,28 @@ impl View {
         for _ in 0..120 {
             texts = self.frame(vec![], 0.0);
             if rect_of(&texts, needle).is_some() {
+                break;
+            }
+        }
+        let mut prev = rect_of(&texts, needle);
+        if prev.is_none() {
+            panic!("跳转到块 {idx} 后始终看不到 {needle}");
+        }
+        // 刚「看见」目标行时动画通常还没停：实测第一帧它在 y=288，停稳在 y=56，
+        // 差九行。这时按第一帧的矩形去点，命中的是别的块。跑到矩形不再移动为止。
+        for _ in 0..120 {
+            texts = self.frame(vec![], 0.0);
+            let cur = rect_of(&texts, needle);
+            let settled = match (prev, cur) {
+                (Some(a), Some(b)) => (a.center() - b.center()).length() < 0.5,
+                _ => false,
+            };
+            prev = cur;
+            if settled {
                 return texts;
             }
         }
-        panic!("跳转到块 {idx} 后始终看不到 {needle}");
+        panic!("跳转到块 {idx} 后 {needle} 的矩形始终停不下来");
     }
 
     /// 在给定位置按下、松开，再给「请求焦点 + 落光标」两帧时间。

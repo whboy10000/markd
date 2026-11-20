@@ -252,7 +252,7 @@ impl ColorOverrides {
 }
 
 /// 语法高亮的语言分组：决定用哪套 token 配色，让不同语言有区分度。
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LangFamily {
     Rust,
     Python,
@@ -266,22 +266,163 @@ pub enum LangFamily {
     Generic,
 }
 
-/// 把语言标识（含别名、大小写）映射到配色族。
+/// 围栏信息行的规范键：取第一个词、转小写、去掉 `.` 前缀（`cpp title="x"`、`{.h}` 都能认）。
+pub fn lang_key(lang: &str) -> String {
+    lang.split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches('.')
+        .to_ascii_lowercase()
+}
+
+/// 把语言标识（含别名、大小写、`cpp title="x"` 这类带参数的围栏）映射到配色族。
+/// 这里的键要覆盖「代码块语言下拉」`LANGUAGE_OPTIONS` 的每个 id 与其别名：
+/// 漏一项就退化成通用配色，只剩字符串和数字上色（有测试逐条比对两张表）。
 pub fn lang_family(lang: &str) -> LangFamily {
-    match lang.trim().to_ascii_lowercase().as_str() {
-        "rust" | "rs" => LangFamily::Rust,
-        "python" | "py" => LangFamily::Python,
-        "javascript" | "js" | "typescript" | "ts" | "jsx" | "tsx" | "svelte" => {
-            LangFamily::JavaScript
+    use LangFamily::*;
+    match lang_key(lang).as_str() {
+        "rust" | "rs" | "sway" => Rust,
+        "python" | "py" | "py2" | "py3" | "python2" | "python3" | "ipython" | "cython" | "pyx"
+        | "mojo" | "micropython" | "jupyter" | "ipynb" | "notebook" | "vyper" | "starlark"
+        | "bzl" | "bazel" | "meson" | "matlab" | "octave" | "scilab" | "julia" | "jl" | "r"
+        | "rlang" | "rscript" | "maxima" | "gnuplot" | "elixir" | "ex" | "exs" | "phoenix" => {
+            Python
         }
-        "c" | "cpp" | "c++" | "cc" | "cxx" | "h" | "hpp" | "java" | "go" | "golang" | "csharp"
-        | "cs" => LangFamily::CLike,
-        "html" | "xml" | "xhtml" | "svg" | "vue" => LangFamily::Markup,
-        "css" | "scss" | "less" => LangFamily::Css,
-        "yaml" | "yml" | "json" | "toml" => LangFamily::Data,
-        "bash" | "sh" | "shell" | "zsh" | "zshell" => LangFamily::Shell,
-        "sql" => LangFamily::Sql,
-        _ => LangFamily::Generic,
+        "javascript" | "js" | "mjs" | "cjs" | "node" | "nodejs" | "ecmascript" | "es6"
+        | "typescript" | "ts" | "mts" | "cts" | "deno" | "bun" | "jsx" | "tsx" | "react"
+        | "coffeescript" | "coffee" | "livescript" | "lsc" | "actionscript" | "as3" | "svelte"
+        | "astro" | "mdx" | "reason" | "rescript" | "res" | "mongo" | "mongosh" | "mongodb"
+        | "jsonnet" | "libsonnet" | "re" | "sveltekit" => JavaScript,
+        "c" | "h" | "cpp" | "c++" | "cxx" | "cc" | "hpp" | "hh" | "hxx" | "objc" | "obj-c"
+        | "objective-c" | "objective-c++" | "objective-cpp" | "swift" | "java" | "jvm"
+        | "android" | "kotlin" | "kt" | "kts" | "scala" | "sbt" | "groovy" | "gradle"
+        | "jenkinsfile" | "jenkins" | "csharp" | "cs" | "c#" | "dotnet" | "unity" | "php"
+        | "php4" | "php5" | "wordpress" | "go" | "golang" | "dart" | "flutter" | "nim" | "nims"
+        | "zig" | "v" | "vlang" | "odin" | "hare" | "c3" | "crystal" | "cr" | "d" | "dlang"
+        | "vala" | "haxe" | "hx" | "pascal" | "delphi" | "objectpascal" | "pas" | "ada"
+        | "fortran" | "f" | "f77" | "f90" | "glsl" | "hlsl" | "wgsl" | "metal" | "msl"
+        | "shader" | "cuda" | "nvcc" | "cu" | "opencl" | "ocl" | "qml" | "qt" | "gdscript"
+        | "godot" | "processing" | "pde" | "arduino" | "ino" | "sketch" | "verilog"
+        | "systemverilog" | "sv" | "protobuf" | "proto" | "thrift" | "idl" | "solidity" | "sol"
+        | "cairo" | "move" | "motoko" | "bicep" | "minizinc" | "mzn" | "supercollider" | "apex"
+        | "1c" | "bsl" | "stan" | "stata" | "sas" | "applescript" | "scpt" | "lean" | "lean4"
+        | "dot" | "graphviz" | "gv" | "roc" | "azure" | "xcode" | "salesforce" | "directx"
+        | "webgpu" | "evm" | "sui" | "aptos" | "dfinity" => CLike,
+        "html" | "htm" | "xhtml" | "xml" | "rss" | "atom" | "xsd" | "xslt" | "xsl" | "svg"
+        | "plist" | "docbook" | "vue" | "nuxt" | "blade" | "laravel" | "twig" | "symfony"
+        | "liquid" | "shopify" | "jinja" | "jinja2" | "j2" | "django" | "ejs" | "erb" | "pug"
+        | "jade" | "haml" | "slim" | "handlebars" | "hbs" | "mustache" | "razor" | "cshtml"
+        | "velocity" | "mediawiki" | "wiki" | "textile" => Markup,
+        "css" | "scss" | "sass" | "less" | "stylus" | "styl" | "postcss" | "stylesheet"
+        | "indented" => Css,
+        "json" | "jsonc" | "json5" | "jsonl" | "ndjson" | "geojson" | "yaml" | "yml" | "k8s"
+        | "kubernetes" | "helm" | "ansible" | "playbook" | "github-actions" | "workflow"
+        | "docker-compose" | "prometheus" | "toml" | "cargo" | "edn" | "hocon"
+        | "typesafe-config" | "avro" | "avsc" | "ini" | "cfg" | "conf" | "properties"
+        | "editorconfig" | "gitconfig" | "gitignore" | "gitattributes" | "systemd" | "desktop"
+        | "env" | "dotenv" | "cue" | "dhall" | "config" | "props" => Data,
+        "bash" | "sh" | "shell" | "zsh" | "zshell" | "fish" | "ksh" | "csh" | "nushell" | "nu"
+        | "powershell" | "ps1" | "psm1" | "psd1" | "pwsh" | "bat" | "cmd" | "dosbatch"
+        | "batch" | "autohotkey" | "ahk" | "awk" | "gawk" | "mawk" | "sed" | "gsed" | "jq"
+        | "tcl" | "tk" | "expect" | "perl" | "pl" | "cperl" | "raku" | "ruby" | "rb" | "jruby"
+        | "rails" | "rake" | "gemfile" | "dockerfile" | "docker" | "containerfile" | "makefile"
+        | "make" | "gmake" | "bsdmake" | "mk" | "cmake" | "cmakelists" | "ninja" | "nix"
+        | "nixos" | "puppet" | "nginx" | "apache" | "httpd" | "htaccess" | "caddy"
+        | "caddyfile" | "crontab" | "cron" | "tmux" | "m4" | "autoconf" | "aclocal" | "http"
+        | "rest" | "openapi" | "swagger" | "curl" | "po" | "gettext" | "pot" | "shell-session"
+        | "console" | "terminal" | "bourne" | "dos" | "terraform" | "tf" | "tfvars" | "hcl"
+        | "nomad" | "vault" => Shell,
+        "sql" | "mysql" | "mariadb" | "postgresql" | "postgres" | "psql" | "plpgsql" | "plsql"
+        | "oracle" | "tsql" | "mssql" | "sqlserver" | "sqlite" | "sqlite3" | "duckdb"
+        | "clickhouse" | "bigquery" | "bq" | "hive" | "hiveql" | "hql" | "influxql" | "influx"
+        | "promql" | "kql" | "cypher" | "neo4j" | "sparql" | "cql" | "cassandra" | "redis" => Sql,
+        _ => Generic,
+    }
+}
+
+/// 配色族的默认行注释符（与把注释并入配色族的旧行为一致）。
+fn default_line_comments(family: LangFamily) -> &'static [&'static str] {
+    use LangFamily::*;
+    match family {
+        Python | Shell | Data => &["#"],
+        Sql => &["--"],
+        Rust | JavaScript | CLike | Css | Markup | Generic => &["//"],
+    }
+}
+
+/// 行注释前缀，按语言而不是按配色族：同一族里 `#` / `%` / `;` / `--` 的差异比关键字还多。
+/// 表里只列与所属族默认值不同的语言，其余走 [`default_line_comments`]。
+/// 前缀以字母结尾的（`rem`、`dnl`）按整词匹配，其余按字符匹配。
+pub fn line_comments_for(lang: &str) -> &'static [&'static str] {
+    match lang_key(lang).as_str() {
+        // 没有行注释的语言：别让默认的 `//` 把正文里的 URL 染成注释色
+        "" | "text" | "txt" | "plain" | "plaintext" | "log" | "logs" | "csv" | "tsv" | "diff"
+        | "patch" | "udiff" | "markdown" | "md" | "mdown" | "gfm" | "commonmark" | "rst"
+        | "restructuredtext" | "regex" | "regexp" | "json" | "json5" | "jsonl" | "ndjson"
+        | "geojson" | "avro" | "avsc" | "plantuml" | "puml" | "uml" | "mathematica" | "nb"
+        | "wolfram" | "none" | "cobol" | "cbl" | "smalltalk" | "abap" | "sap" | "xquery" | "xq"
+        | "xpath" | "xml" | "rss" | "atom" | "xsd" | "xslt" | "xsl" | "svg" | "plist"
+        | "docbook" | "textile" | "mediawiki" | "wiki" | "coq" | "ocaml" | "ml" | "sml" | "vim"
+        | "viml" | "gvim" | "nvim" | "brainfuck" => &[],
+        // % —— LaTeX 家族、MATLAB/Octave、Prolog/Erlang、MiniZinc、Gnuplot
+        "latex" | "tex" | "ltx" | "cls" | "sty" | "dtx" | "beamer" | "bibtex" | "bib"
+        | "matlab" | "octave" | "scilab" | "prolog" | "erlang" | "erl" | "minizinc" | "mzn" => {
+            &["%"]
+        }
+        // # 与 ; 都算的配置文件
+        "ini" | "cfg" | "conf" | "config" | "properties" | "props" | "editorconfig"
+        | "gitconfig" | "gitattributes" | "systemd" | "desktop" => &["#", ";"],
+        // ; —— Lisp 家族、汇编、WAT/LLVM IR、G 代码
+        "lisp" | "common-lisp" | "scheme" | "scm" | "racket" | "rkt" | "elisp" | "emacs"
+        | "emacs-lisp" | "clojure" | "clj" | "cljs" | "edn" | "asm" | "assembly" | "nasm"
+        | "masm" | "gas" | "x86" | "arm" | "s" | "wasm" | "webassembly" | "wat" | "wast"
+        | "llvm" | "llvmir" | "gcode" | "nc" | "autohotkey" | "ahk" | "spice" | "ngspice" => &[";"],
+        // -- —— Lua/Haskell/VHDL/Ada/Agda-Idris，以及默认 `//` 或 `#` 的语言里真正用 -- 的
+        "lua" | "luau" | "haskell" | "hs" | "agda" | "idris" | "idris2" | "vhdl" | "ada"
+        | "applescript" | "scpt" | "roc" | "unison" | "dhall" | "elm" | "isabelle" => &["--"],
+        "sparql" => &["--", "#"],
+        "lean" | "lean4" => &["--", "//"],
+        // # 与 // 并存：HCL/Nix/JSONC/Thrift/HOCON/Jsonnet
+        "terraform" | "tf" | "tfvars" | "hcl" | "nomad" | "vault" | "nix" | "nixos" | "puppet"
+        | "jsonc" | "hocon" | "typesafe-config" | "jsonnet" | "libsonnet" | "thrift" | "idl" => {
+            &["#", "//"]
+        }
+        // 归属族给的是 # 或 --，但实际用 //
+        "cue" | "prisma" | "cypher" | "neo4j" | "kql" => &["//"],
+        "fortran" | "f" | "f77" | "f90" => &["!"],
+        "bat" | "cmd" | "dosbatch" | "batch" | "dos" => &["::", "rem"],
+        "gherkin" | "cucumber" | "bdd" | "org" | "org-mode" | "redis" | "promql" | "nim"
+        | "nims" | "crystal" | "cr" | "gdscript" | "godot" | "graphql" | "gql" | "apollo" => &["#"],
+        "mermaid" => &["%%"],
+        "m4" | "autoconf" | "aclocal" => &["dnl", "#"],
+        "tla" | "tla+" | "tlaplus" => &["\\*"],
+        _ => default_line_comments(lang_family(lang)),
+    }
+}
+
+/// 块注释的（起始串, 结束串）；没有块注释返回 None。
+pub fn block_comment_for(lang: &str) -> Option<(&'static str, &'static str)> {
+    const C: Option<(&str, &str)> = Some(("/*", "*/"));
+    const ML: Option<(&str, &str)> = Some(("<!--", "-->"));
+    match lang_key(lang).as_str() {
+        "haskell" | "hs" => Some(("{-", "-}")),
+        "lua" | "luau" => Some(("--[[", "]]")),
+        "pascal" | "delphi" | "objectpascal" | "pas" => Some(("{", "}")),
+        "ocaml" | "ml" | "sml" | "coq" | "isabelle" | "fsharp" | "fs" | "f#" | "fsi"
+        | "mathematica" | "nb" | "wolfram" => Some(("(*", "*)")),
+        "julia" | "jl" => Some(("#=", "=#")),
+        "xquery" | "xq" => Some(("(:", ":)")),
+        "nix" | "nixos" | "jsonc" => C,
+        "sql" | "mysql" | "mariadb" | "postgresql" | "postgres" | "psql" | "plpgsql" | "plsql"
+        | "oracle" | "tsql" | "mssql" | "sqlserver" => C,
+        "markdown" | "md" | "mdown" | "gfm" | "commonmark" | "asciidoc" | "adoc" | "asc"
+        | "rst" | "restructuredtext" | "mediawiki" | "wiki" | "textile" | "pug" | "haml"
+        | "slim" => ML,
+        _ => match lang_family(lang) {
+            LangFamily::Markup => ML,
+            LangFamily::Rust | LangFamily::JavaScript | LangFamily::CLike | LangFamily::Css => C,
+            _ => None,
+        },
     }
 }
 

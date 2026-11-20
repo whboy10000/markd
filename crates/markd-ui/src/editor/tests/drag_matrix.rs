@@ -115,15 +115,17 @@ fn path(a: egui::Pos2, b: egui::Pos2, step: f32) -> Vec<egui::Pos2> {
         .collect()
 }
 
-/// 跑一帧，返回这一帧画出的全部「选区底色」矩形（按主题的 selection 颜色筛出，
-/// 描边宽度 0，正是 `selection_shapes` 产出的那种）。
-fn one_frame_rects(
+/// 跑一帧，返回这一帧画出的全部「选区底色」矩形（按颜色筛出，描边宽度 0，
+/// 正是 `selection_shapes` / 叠色那两种产出的形状）。
+/// 文本块用不透明的 `theme.selection`；代码块、表格叠在内容之上的是同色 alpha=110。
+fn one_frame_rects_color(
     ctx: &egui::Context,
     doc: &mut Document,
     state: &mut EditorState,
     theme: &Theme,
     images: &mut ImageCache,
     events: Vec<egui::Event>,
+    color: egui::Color32,
 ) -> Vec<egui::Rect> {
     let input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
@@ -157,9 +159,21 @@ fn one_frame_rects(
     }
     let mut rects = Vec::new();
     for cs in &out.shapes {
-        walk(&cs.shape, theme.selection, &mut rects);
+        walk(&cs.shape, color, &mut rects);
     }
     rects
+}
+
+/// 文本块那套不透明选区底色。
+fn one_frame_rects(
+    ctx: &egui::Context,
+    doc: &mut Document,
+    state: &mut EditorState,
+    theme: &Theme,
+    images: &mut ImageCache,
+    events: Vec<egui::Event>,
+) -> Vec<egui::Rect> {
+    one_frame_rects_color(ctx, doc, state, theme, images, events, theme.selection)
 }
 
 struct Rig {
@@ -263,6 +277,24 @@ impl Rig {
         )
     }
 
+    /// 指定颜色的选区底色矩形（代码块/表格叠在内容之上的是半透明那种）。
+    fn sel_rects_color(
+        &mut self,
+        doc: &mut Document,
+        state: &mut EditorState,
+        color: egui::Color32,
+    ) -> Vec<egui::Rect> {
+        one_frame_rects_color(
+            &self.ctx,
+            doc,
+            state,
+            &self.theme,
+            &mut self.images,
+            vec![],
+            color,
+        )
+    }
+
     /// 先点一下目标块并让焦点落地，复现「用户先点进段落、再拖动」的前置状态。
     fn click_into(&mut self, doc: &mut Document, state: &mut EditorState, idx: usize) -> bool {
         let (o, g) = self.galley(doc, state, idx).expect("块可定位");
@@ -293,7 +325,7 @@ fn norm(sel: (usize, usize, usize, usize)) -> (usize, usize, usize, usize) {
 }
 
 /// 按选区端点算出「本应选中」的文本，口径与 `cross_sel_text` 一致
-/// （代码块/表格/公式这类非文本块作为端点时整块计入）。
+/// （表格/公式这类非文本块作为端点时整块计入；代码块正文按字符可映射，精确截断）。
 fn expected_text(doc: &Document, sel: (usize, usize, usize, usize)) -> String {
     let (s, sc, e, ec) = norm(sel);
     let mut out: Vec<String> = Vec::new();
@@ -301,7 +333,9 @@ fn expected_text(doc: &Document, sel: (usize, usize, usize, usize)) -> String {
         let Some(b) = doc.blocks.get(i) else { continue };
         let plain = b.plain();
         let len = plain.chars().count();
-        let atomic = (i == s || i == e) && !crate::editor::selection::text_selection_block(b);
+        let atomic = (i == s || i == e)
+            && !crate::editor::selection::text_selection_block(b)
+            && !crate::editor::selection::line_selectable_block(b);
         let a0 = if i == s && !atomic { sc.min(len) } else { 0 };
         let a1 = if i == e && !atomic { ec.min(len) } else { len };
         if a0 < a1 {
@@ -516,7 +550,143 @@ fn drag_across_atomic_blocks_includes_them_whole() {
     verify(&doc, sel, (0, last), "跨过代码块/表格/公式的拖选").unwrap_or_else(|e| panic!("{e}"));
 }
 
-/// 拖过头再退回：越过表格拖到后面的段落、再把指针退回停在表格上时，端点必须
+/// 代码块里拖选：按下点落在代码正文里就按字符精确锚定，只选中拖过的那两行。
+/// 之前代码块是「原子块」，一拖就把整块所有代码一起选中（用户反馈的 bug）。
+#[test]
+fn drag_inside_code_block_selects_lines_not_whole_block() {
+    let src =
+        "前言一段\n\n```python\nprint('第一行')\nx = 2\nprint('第三行')\nlast = 4\n```\n\n后记一段";
+    let mut doc = Document::new(src, None);
+    // 前言(0) / 空行(1) / 代码块(2) / 空行(3) / 后记(4)；active=0 → 代码块是渲染态。
+    let mut rig = Rig::new();
+    let mut st = EditorState::default();
+    let code = doc.blocks[2].plain();
+    // 第 k 行行首在代码正文里的字符下标。
+    let at = |k: usize| -> usize {
+        code.split('\n')
+            .take(k)
+            .map(|l| l.chars().count() + 1)
+            .sum()
+    };
+    let a = rig
+        .aim(&mut doc, &mut st, 2, at(1))
+        .expect("第二行行首可定位");
+    let b = rig
+        .aim(&mut doc, &mut st, 2, at(3))
+        .expect("第四行行首可定位");
+    let sel = rig
+        .drag(&mut doc, &mut st, &[a.0, b.0])
+        .expect("代码块内拖选应建立选区");
+    assert_eq!(
+        norm(sel),
+        (2, at(1), 2, at(3)),
+        "选区应正好是从第二行行首拖到第四行行首"
+    );
+    let copied = crate::editor::selection::cross_sel_text(&doc, Some(norm(sel))).unwrap();
+    assert_eq!(
+        copied,
+        code.chars()
+            .skip(at(1))
+            .take(at(3) - at(1))
+            .collect::<String>(),
+        "只该复制拖过的那两行，实选 {copied:?}"
+    );
+    assert!(
+        copied.contains("x = 2") && copied.contains("print('第三行')"),
+        "拖过的两行都该在选区里，实选 {copied:?}"
+    );
+    assert!(
+        !copied.contains("last") && !copied.contains("第一行"),
+        "没拖到的行不该被选进来，实选 {copied:?}"
+    );
+
+    // 高亮也只铺那两行：最后一行的文字上不该有选区色。
+    let hi = rig.sel_rects_color(
+        &mut doc,
+        &mut st,
+        crate::render::selection_overlay(&rig.theme),
+    );
+    let last_line = rig
+        .galley(&mut doc, &mut st, 2)
+        .map(|(o, g)| {
+            let n = g.text().chars().count();
+            egui::pos2(
+                o.x + 6.0,
+                o.y + g
+                    .pos_from_cursor(egui::text::CCursor::new(n - 1))
+                    .center()
+                    .y,
+            )
+        })
+        .expect("末行可定位");
+    assert!(
+        !hi.iter().any(|r| r.contains(last_line)),
+        "没拖到的最后一行不该被高亮：底色 {hi:?}"
+    );
+
+    // 按退格删掉这段精确选区：只有选中的两行消失，其余代码原样保留。
+    crate::editor::selection::apply_cross_sel_edit(&mut doc, &mut st, None);
+    let after = doc.blocks[2].plain();
+    assert_eq!(
+        after.trim_end_matches('\n'),
+        "print('第一行')\nlast = 4",
+        "删除应严格只作用于选中的那两行，实际 {after:?}"
+    );
+}
+
+/// 从活动代码块里往外拖：锚点必须落在按下那个字符。
+/// 代码块的多行缓冲里换行符也计入所见文本，早先按「跳过换行」的下标换算，
+/// 锚点会整体往上挪几行，表现为「从第三行拖出去却把第一行也带走」。
+#[test]
+fn drag_out_of_active_code_block_anchors_at_pressed_char() {
+    let src = "```text\nline one aaa\nline two bbb\nline three ccc\n```\n\n后面独立的一段文字";
+    let mut doc = Document::new(src, None);
+    // 代码块(0) / 空行(1) / 段落(2)
+    let mut rig = Rig::new();
+    let mut st = EditorState {
+        active: 2,
+        ..Default::default()
+    };
+    assert!(rig.click_into(&mut doc, &mut st, 0), "点进代码块应拿到焦点");
+    for _ in 0..2 {
+        rig.frame(&mut doc, &mut st, vec![]);
+    }
+    assert!(matches!(
+        doc.blocks.get(st.active),
+        Some(Block::Code { .. })
+    ));
+    let code = doc.blocks[0].plain();
+    let at = |k: usize| -> usize {
+        code.split('\n')
+            .take(k)
+            .map(|l| l.chars().count() + 1)
+            .sum()
+    };
+    let a = rig
+        .aim(&mut doc, &mut st, 0, at(2))
+        .expect("第三行行首可定位");
+    let n = rig
+        .galley(&mut doc, &mut st, 2)
+        .map(|(_, g)| g.text().chars().count())
+        .expect("段落可定位");
+    let b = rig.aim(&mut doc, &mut st, 2, n).expect("段落末尾可定位");
+    let sel = rig
+        .drag(&mut doc, &mut st, &[a.0, b.0])
+        .expect("从代码块拖到段落应建立跨块选区");
+    let n = norm(sel);
+    assert_eq!(
+        (n.0, n.1),
+        (0, at(2)),
+        "锚点应落在按下的第三行行首（字符 {}），实际选区 {n:?}",
+        at(2)
+    );
+    let copied = crate::editor::selection::cross_sel_text(&doc, Some(n)).unwrap();
+    assert!(
+        copied.starts_with("line three ccc"),
+        "复制文本应从按下的那行开始，实选 {copied:?}"
+    );
+}
+
 /// 跟着指针回到表格。否则端点停在「刚才那个已上报过精确字符的段落」，复制结果
 /// 会带上用户没有选中的内容。
 #[test]
@@ -767,6 +937,44 @@ fn click_task_checkbox_toggles_without_activating_edit() {
         .iter()
         .any(|a| matches!(a, crate::render::Action::Caret(0, _)));
     assert!(toggled, "点复选框应产生 ToggleTask，实际动作 {acts:?}");
+    assert!(
+        !activated,
+        "点复选框不该把条目 0 切进编辑态（产生了 Caret 动作），实际动作 {acts:?}"
+    );
+}
+
+/// 渲染态（非活动块）的任务项，点复选框应一次就勾选、且不切进编辑态。
+/// 与上面那个测试互补：上面 active=0 点的是编辑态复选框，这里让块 0 处于渲染态。
+/// 行带的拖/点命中区若盖住复选框，会吞掉点击或抢走它产生 Caret，
+/// 表现就是「要点两下才能勾选」——这条测试锁住这个回归。
+#[test]
+fn rendered_task_checkbox_toggles_in_one_click() {
+    let src = "- [ ] 任务条目甲，点在复选框上\n- [ ] 任务条目乙";
+    let mut doc = Document::new(src, None);
+    let mut rig = Rig::new();
+    let mut st = EditorState::default();
+    st.active = 1; // 块 0 处于渲染态
+    let (o, g) = rig.galley(&mut doc, &mut st, 0).expect("条目 0 可定位");
+    let p = egui::pos2(o.x - 12.0, o.y + g.rect.height() * 0.5);
+    let btn = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: Default::default(),
+    };
+    let mut acts = rig.actions(
+        &mut doc,
+        &mut st,
+        vec![egui::Event::PointerMoved(p), btn(p, true)],
+    );
+    acts.extend(rig.actions(&mut doc, &mut st, vec![btn(p, false)]));
+    let toggled = acts
+        .iter()
+        .any(|a| matches!(a, crate::render::Action::ToggleTask(0)));
+    let activated = acts
+        .iter()
+        .any(|a| matches!(a, crate::render::Action::Caret(0, _)));
+    assert!(toggled, "渲染态点复选框应一次产生 ToggleTask，实际动作 {acts:?}");
     assert!(
         !activated,
         "点复选框不该把条目 0 切进编辑态（产生了 Caret 动作），实际动作 {acts:?}"

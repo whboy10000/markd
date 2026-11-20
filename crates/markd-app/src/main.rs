@@ -67,9 +67,19 @@ fn main() -> eframe::Result<()> {
     }
     let options = eframe::NativeOptions {
         viewport,
-        // 公式（line/box diagram）用 epaint Mesh 直接上 GPU，Mesh 本身没有抗锯齿；
-        // MSAA 默认关闭，导致公式/图形在小字号下边缘锯齿、笔画看起来断断续续，
-        // 与做了 feathering 的正文文字格格不入。开 4x MSAA 让所有 Mesh 边缘平滑。
+        // 渲染后端固定为 glow（OpenGL，走 GPU）。本 crate 关掉 eframe 默认特性只留 glow，
+        // 这里再写一遍：万一以后 wgpu 被打开，也不要把公式那套自绘 Mesh 换到别的后端上。
+        // GPU 上下文由 eframe 以「优先硬件加速」创建（glow_options 默认值）——不用 Required，
+        // 否则没有 GL 加速的 Linux（llvmpipe / 虚拟机）会直接起不来。
+        renderer: eframe::Renderer::Glow,
+        // 公式与图表把字形轮廓细分成 epaint Mesh 直接上 GPU：Mesh 顶点既不 feathering
+        // 也不做像素吸附（epaint 原样透传），是这套 UI 里唯一依赖 MSAA 抗锯齿的内容。
+        // 默认关闭时小字号公式边缘全是锯齿，所以开 4x。
+        // 注意 MSAA 作用于整个窗口帧缓冲，与 epaint 的 feathering 会叠加：公式的分数线
+        // 只有 0.56 逻辑像素厚，若以矩形提交就会同时吃到 feathering 的±1px 渐隐和 MSAA
+        // 的二次柔化，表现为向外突出的一圈半透明像素。render/math.rs 已在绘制期把这些
+        // 线条转成对齐物理像素栅格的实心网格——边落在整像素上，MSAA 的覆盖率非 0 即 1，
+        // 只剩一层抗锯齿。
         multisampling: 4,
         ..Default::default()
     };

@@ -33,8 +33,18 @@ pub(super) fn text_selection_block(b: &Block) -> bool {
     }
 }
 
+/// 渲染态就把正文按字符排版出来的块：代码块。
+///
+/// 它不走 `text_selection_block`（拖选跨过它时仍按整块取端点，保证「整块选走」
+/// 的老行为），但面板里的代码 galley 与 `plain()` 逐字符一致，所以**按下点落在
+/// 代码区里**时可以按字符精确锚定，选中一两行而不是一整块。
+pub(crate) fn line_selectable_block(b: &Block) -> bool {
+    matches!(b, Block::Code { .. })
+}
+
 /// 非文本块是否被跨块选区整块覆盖：在两端之间，或作为端点。
-/// 这类块（代码块/图表/表格…）是原子的：只要选区碰到它，就整块计入。
+/// 这类块（图表/表格/公式…）是原子的：只要选区碰到它，就整块计入。
+/// 展开的代码块不走这层整块底色（调用方 `view.rs` 会跳过），它自己逐行画高亮。
 pub(super) fn atomic_block_selected(sel: Option<(usize, usize, usize, usize)>, idx: usize) -> bool {
     let Some(sel) = sel else { return false };
     let (s, sc, e, ec) = cross_sel_range(sel);
@@ -58,9 +68,11 @@ pub fn cross_sel_text(doc: &Document, sel: Option<(usize, usize, usize, usize)>)
         let Some(b) = doc.blocks.get(i) else { continue };
         let plain = b.plain();
         let len = plain.chars().count();
-        // 代码块/图表/表格这类非文本块是原子的：作为两端时整块计入，
+        // 图表/表格/公式这类非文本块是原子的：作为两端时整块计入，
         // 不按字符位置截取（拖选时它们的端点字符只是「块首/块尾」的标记）。
-        let atomic = (i == s || i == e) && !text_selection_block(b);
+        // 代码块例外：正文逐字符可映射，端点字符就是真正选到的位置，
+        // 这样在代码块里拖两行就只复制那两行（跨过它时仍整块，见 view.rs）。
+        let atomic = (i == s || i == e) && !text_selection_block(b) && !line_selectable_block(b);
         let t0 = if i == s && !atomic { sc.min(len) } else { 0 };
         let t1 = if i == e && !atomic { ec.min(len) } else { len };
         if t0 < t1 {
@@ -117,4 +129,100 @@ pub(super) fn apply_cross_sel_edit(
     state.last_cursor = head_keep.chars().count() + insert.map(|t| t.chars().count()).unwrap_or(0);
     state.sel = None;
     true
+}
+
+// ---------------------------------------------------------------- 表格单元格选区
+
+/// 表格选中的单元格矩形：`(块下标, 起点(行, 列), 终点(行, 列))`。
+/// 行列下标含表头，与编辑态草稿一致：0 = 表头行。
+pub type TableSel = (usize, (usize, usize), (usize, usize));
+
+/// 单元格矩形归一化成「左上 — 右下」。
+pub fn table_sel_rect(sel: TableSel) -> ((usize, usize), (usize, usize)) {
+    let (_, (r0, c0), (r1, c1)) = sel;
+    ((r0.min(r1), c0.min(c1)), (r0.max(r1), c0.max(c1)))
+}
+
+/// 表格的单元格文字网格：第 0 行是表头。非表格块返回 None。
+fn table_grid(b: &Block) -> Option<Vec<Vec<String>>> {
+    let Block::Table { head, rows, .. } = b else {
+        return None;
+    };
+    let mut grid: Vec<Vec<String>> =
+        vec![head.iter().map(|c| crate::ast::inline_plain(c)).collect()];
+    grid.extend(
+        rows.iter()
+            .map(|r| r.iter().map(|c| crate::ast::inline_plain(c)).collect()),
+    );
+    Some(grid)
+}
+
+/// 选出矩形内的单元格文字（行列越界时钳到表内）。非表格块返回 None。
+fn table_sel_rows(doc: &Document, sel: TableSel) -> Option<Vec<Vec<String>>> {
+    let b = doc.blocks.get(sel.0)?;
+    let grid = table_grid(b)?;
+    if grid.is_empty() {
+        return None;
+    }
+    let ((r0, c0), (r1, c1)) = table_sel_rect(sel);
+    let rows = grid.len() - 1;
+    let cols = grid.iter().map(|r| r.len()).max().unwrap_or(0);
+    let (r0, r1) = (r0.min(rows), r1.min(rows));
+    let (c0, c1) = (
+        c0.min(cols.saturating_sub(1)),
+        c1.min(cols.saturating_sub(1)),
+    );
+    let out = grid[r0..=r1]
+        .iter()
+        .map(|row| {
+            (c0..=c1)
+                .map(|c| row.get(c).cloned().unwrap_or_default())
+                .collect()
+        })
+        .collect();
+    Some(out)
+}
+
+/// 单元格选区的可见文本（Cmd+C）：列之间用制表符、行之间用换行，
+/// 粘到表格软件里正好是一格一个单元格。
+pub fn table_sel_text(doc: &Document, state: &EditorState) -> Option<String> {
+    let rows = table_sel_rows(doc, state.table_sel?)?;
+    Some(
+        rows.iter()
+            .map(|r| r.join("\t"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+/// 单元格选区的 Markdown 源码（右键「复制为 Markdown」）：每行还原成 `| a | b |`。
+pub fn table_sel_markdown(doc: &Document, state: &EditorState) -> Option<String> {
+    let rows = table_sel_rows(doc, state.table_sel?)?;
+    Some(
+        rows.iter()
+            .map(|r| format!("| {} |", r.join(" | ")))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+/// 单元格选区的 HTML 表格（带格式复制，粘到富文本软件仍是表格）。
+pub fn table_sel_html(doc: &Document, state: &EditorState) -> Option<String> {
+    let rows = table_sel_rows(doc, state.table_sel?)?;
+    let ((r0, _), _) = table_sel_rect(state.table_sel?);
+    let body = rows
+        .iter()
+        .enumerate()
+        .map(|(k, r)| {
+            let tag = if r0 == 0 && k == 0 { "th" } else { "td" };
+            let cells = r
+                .iter()
+                .map(|c| format!("<{tag}>{}</{tag}>", crate::export::inline_markdown_html(c)))
+                .collect::<Vec<_>>()
+                .join("");
+            format!("<tr>{cells}</tr>")
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    Some(format!("<table>{body}</table>"))
 }

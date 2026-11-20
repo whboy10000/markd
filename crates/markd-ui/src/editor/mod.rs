@@ -63,9 +63,13 @@ pub struct EditorState {
     pub clicked: bool,
     /// 正在原地编辑的表格草稿：(块下标, 单元格文本, 对齐)。
     pub table_draft: Option<(usize, Vec<Vec<String>>, Vec<crate::ast::Align>)>,
-    /// 表格里按下鼠标的起点：(块下标, 行, 列)。从该单元格拖到别的单元格或
-    /// 表格外时，整张表格进入跨块选区，可直接复制/剪切。
+    /// 表格里按下鼠标的起点：(块下标, 行, 列)。从该单元格拖到别的单元格时，
+    /// 只选中经过的那几格（`table_sel`）；拖出表格边界才把整张表交给跨块选区。
     pub table_drag_from: Option<(usize, usize, usize)>,
+    /// 表格单元格选区：`(块下标, 起点单元格, 终点单元格)`，行列含表头行。
+    /// 在表格里按住拖动产生，Cmd+C 复制选中的单元格；与 `cross_sel` 互斥
+    /// （每帧开始处统一保证）。
+    pub table_sel: Option<selection::TableSel>,
     /// 点击进入编辑时，光标应落在的位置（相对块左上角）。
     pub pending_caret: Option<egui::Vec2>,
     /// 查找/替换跳转要求选中的文字：(块下标, 起始字符, 结束字符)，用后清零。
