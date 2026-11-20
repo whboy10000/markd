@@ -7,6 +7,8 @@
 
 **简体中文** | [English](README.en.md)
 
+完整的功能说明、使用场景、快捷键与逐项配置说明见 **[用户手册](docs/MANUAL.md)**。
+
 纯 Rust + egui 从零实现的桌面 Markdown 编辑器。**不套 Web 内核，不用 Tauri/Electron，不依赖任何现成的编辑器组件** —— 从 Markdown 解析到屏幕上的每一个像素，都由 Markd 自己绘制。
 
 ![Markd 浅色主题](assets/screenshots/main-light.png)

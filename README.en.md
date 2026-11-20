@@ -7,6 +7,8 @@
 
 [简体中文](README.md) | **English**
 
+The full manual — features, workflows, shortcuts and every preference — lives in [docs/MANUAL.md](docs/MANUAL.md) (Chinese).
+
 A desktop Markdown editor built from scratch in pure Rust + egui. **No web kernel, no Tauri/Electron, no off-the-shelf editor component** — from Markdown parsing to every pixel on screen, Markd draws it all itself.
 
 ![Markd light theme](assets/screenshots/main-light.png)
