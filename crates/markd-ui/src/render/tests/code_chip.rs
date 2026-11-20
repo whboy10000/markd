@@ -52,7 +52,11 @@ fn cell(g: &egui::Galley, ch: usize) -> (f32, f32) {
 fn ctx_with_fonts() -> std::sync::Arc<egui::Context> {
     let ctx = std::sync::Arc::new(egui::Context::default());
     markd_platform::fonts::install(&ctx);
-    let _ = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+    // 装完字体后第一次 run 会带回字体图集的 TexturesDelta；不 clear 就丢弃，
+    // 调试档（CI 的 cargo test --workspace）里 epaint 的 debug_assert 会直接炸。
+    let mut warm = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+    warm.textures_delta.clear();
+    drop(warm);
     ctx
 }
 
