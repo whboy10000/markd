@@ -32,3 +32,9 @@ Markd-*.deb
 
 # 完整图标素材库：只作本地参考，实际打包用 assets/file-icons 里的子集
 assets/icons/
+
+# 压测语料（由生成脚本按需重建，单文件最大 24 MB，不入库）
+test_docs/
+
+# Qoder 会话元数据
+.qwen/
