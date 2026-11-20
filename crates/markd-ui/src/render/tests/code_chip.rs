@@ -153,8 +153,11 @@ fn code_chip_does_not_overlap_neighbors_when_no_space() {
     let _ = before;
 }
 
-/// 标题里正文行高明显更大（43px），芯片必须贴着等宽字形自己的字身框，
-/// 不能再按整行行高铺出一个大方框。
+/// 芯片竖向必须按「等宽字身框 + 上下各 2px」这条规则算，而不是按整行行高铺。
+///
+/// 判据只引用同一批字形度量（不用行高做绝对比较）：CI 的 Ubuntu runner 没有
+/// 中文字体，标题行高是 35.0 而不是 macOS 的 43.0，任何「明显矮于行高」式的
+/// 绝对断言都会把字体差异误判成产品缺陷。
 #[test]
 fn code_chip_in_heading_hugs_glyph_box_not_row_height() {
     let theme = Theme::get(crate::theme::ThemeKind::Light);
@@ -162,8 +165,9 @@ fn code_chip_in_heading_hugs_glyph_box_not_row_height() {
     let size = theme.heading_size(1);
     let (galley, rects) = chip_layout(&ctx, &theme, &inlines_of("# 标题里带 `code` 的标题"), size);
     let chip = *rects.first().expect("标题里的代码片");
+    let pad_y = crate::render::PAD_Y;
     let row_h = galley.rows[0].row.size.y;
-    // 等宽字形自己的字身框高度。
+    // 等宽字形自己的字身框高度（上伸 + 下延）。
     let mono = galley.rows[0]
         .glyphs
         .iter()
@@ -171,20 +175,24 @@ fn code_chip_in_heading_hugs_glyph_box_not_row_height() {
         .expect("代码字形");
     let box_h = mono.font_height;
     assert!(
-        chip.height() <= box_h + 4.5,
-        "芯片高度没有贴着等宽字身框：芯片 {:.1}，字身框 {box_h:.1}",
-        chip.height()
+        (chip.height() - (box_h + 2.0 * pad_y)).abs() <= 0.1,
+        "芯片高度不符合「字身框 + 上下各 {}px」规则：芯片 {:.1}，字身框 {:.1}，期望 {:.1}",
+        pad_y,
+        chip.height(),
+        box_h,
+        box_h + 2.0 * pad_y
     );
+    // 参照：按整行行高铺的旧算法（行高减 2px）在两个平台上都不等于上面的规则值，
+    // 所以这条断言足以区分新旧实现，同时不依赖具体字体。
+    let old_row_based = row_h - 2.0;
     assert!(
-        chip.height() < row_h - 4.0,
-        "芯片仍然撑满整行：芯片 {:.1}，行高 {row_h:.1}",
-        chip.height()
+        (old_row_based - (box_h + 2.0 * pad_y)).abs() > 0.5,
+        "用例失去区分力：行高 {row_h:.1} 与字身框 {box_h:.1} 算出的高度几乎相同"
     );
-    // 也不能矮到切掉字形（上伸 + 下延都要在里面）。
-    let ink_h = mono.font_ascent + (mono.font_height - mono.font_ascent);
+    // 芯片也不能矮到切掉笔画（上伸 + 下延都要在里面）。
     assert!(
-        chip.height() >= ink_h,
-        "芯片比字形字身框还矮，会切掉笔画：芯片 {:.1}，字身框 {ink_h:.1}",
+        chip.height() >= box_h,
+        "芯片比字形字身框还矮，会切掉笔画：芯片 {:.1}，字身框 {box_h:.1}",
         chip.height()
     );
 }
