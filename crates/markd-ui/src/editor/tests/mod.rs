@@ -4,6 +4,7 @@ use self::support::*;
 use super::*;
 
 mod bench;
+mod drag_matrix;
 mod commands;
 mod editing;
 mod focus;

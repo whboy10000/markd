@@ -5,10 +5,12 @@ use crate::theme::ThemeKind;
 
 mod all_templates;
 mod block;
+mod code_chip;
 mod diagram;
 mod inline;
 mod interaction;
 mod lists;
+mod matrix_inline;
 mod media;
 mod syntax;
 mod timeline_block;

@@ -89,6 +89,13 @@ pub fn show_editor(
         .map(|b| b.is_multiline())
         .unwrap_or(false);
 
+    // 拖选进行中冻结「标记露出」：光标一进 `**`/反引号内部，成对标记从 0.1px
+    // 变成正常字号，本行文字当场变宽、后面的字整体位移，指针下的字符映射跟着
+    // 漂 1–2 个字符，表现为「段落里有行内代码时只选中半截」。静态编辑（点击、
+    // 打字）仍按光标露出标记，行为不变。
+    let drag_in_progress =
+        ctx.input(|i| i.pointer.primary_down() && i.pointer.is_decidedly_dragging());
+
     let key_state = ctx.input(|i| {
         (
             i.key_pressed(Key::Enter) && !i.modifiers.command && !i.modifiers.ctrl,
@@ -778,7 +785,11 @@ pub fn show_editor(
                                         theme.body,
                                         theme.text,
                                         wrap,
-                                        Some(caret),
+                                        if drag_in_progress {
+                                            None
+                                        } else {
+                                            Some(caret)
+                                        },
                                         sel,
                                     );
                                     ui.fonts_mut(|f| f.layout_job(job))
@@ -1330,7 +1341,11 @@ pub fn show_editor(
                                             theme.body,
                                             theme.quote,
                                             wrap,
-                                            Some(caret),
+                                            if drag_in_progress {
+                                                None
+                                            } else {
+                                                Some(caret)
+                                            },
                                             sel,
                                         );
                                         // 只把引用正文（普通文字，颜色为引用色）换成粗体；
@@ -1535,6 +1550,17 @@ pub fn show_editor(
                             // 跨块选区扫过活动块：补画选中底色（垫在文字下层，
                             // 槽位在 TextEdit 之前已预留），并按指针位置上报精确
                             // 终点字符。没有这一段，选区拖回活动块时就会断掉。
+                            // 活动块的行带：横向从内容列左缘铺到可用宽度右缘，
+                            // 纵向给 ±8px 容差（块间距里的按下也算落在本行）。
+                            // 与渲染态 text_response 的行带口径一致，否则同一个
+                            // 选区在活动块/渲染态块交界处会出现一边能拖一边不能拖、
+                            // 高宽窄也不一样的断层。
+                            let band_left = ui.min_rect().left().min(out.galley_pos.x);
+                            let band_right = ui.max_rect().right().max(out.galley_pos.x + out.galley.size().x);
+                            let band_hit = egui::Rect::from_min_max(
+                                egui::pos2(band_left - 8.0, resp.response.rect.top() - 8.0),
+                                egui::pos2(band_right, resp.response.rect.bottom() + 8.0),
+                            );
                             if selected_text_block
                                 && let Some(slot) = active_sel_slot
                                 && let Some((s0, e0)) = render::cross_sel_chars(
@@ -1544,11 +1570,14 @@ pub fn show_editor(
                                 )
                             {
                                 let range = render::buffer_char_range(&out.galley, (s0, e0));
+                                // 活动块同样按行带铺色：左到内容列左缘、右到可用宽度
+                                // 右缘，和渲染态块对齐，选区跨块时不会出现宽窄不一的断层。
                                 let shapes = render::selection_shapes(
                                     &out.galley,
                                     out.galley_pos,
                                     range,
                                     theme.selection,
+                                    Some((band_left, band_right)),
                                 );
                                 if !shapes.is_empty() {
                                     ui.painter().set(slot, egui::Shape::Vec(shapes));
@@ -1558,7 +1587,7 @@ pub fn show_editor(
                                 && state.cross_sel.is_some()
                                 && ui.input(|i| i.pointer.primary_down())
                                 && let Some(p) = ui.input(|i| i.pointer.interact_pos())
-                                && resp.response.rect.union(row_resp.rect).contains(p)
+                                && band_hit.contains(p)
                             {
                                 let ci = out.galley.cursor_from_pos(p - out.galley_pos).index.0;
                                 let ci = render::plain_char_index(&out.galley, ci);
@@ -1582,12 +1611,7 @@ pub fn show_editor(
                                 && let Some(p) = ui.input(|i| i.pointer.interact_pos())
                                 // 按在行首标记/上下留白里也要记录锚点，否则会退回
                                 // 上一次光标位置，拖出的选区就只覆盖「一部分」。
-                                && resp
-                                    .response
-                                    .rect
-                                    .union(row_resp.rect)
-                                    .expand2(egui::vec2(8.0, 8.0))
-                                    .contains(p)
+                                && band_hit.contains(p)
                             {
                                 // 用点击位置直接在 galley 上映射字符：按下那一帧
                                 // TextEdit 可能还没返回 cursor_range，cursor_idx
@@ -1611,7 +1635,7 @@ pub fn show_editor(
                                 && let Some((pa, pc)) = state.press_caret
                                 && pa == idx
                                 && let Some(p) = ui.input(|i| i.pointer.interact_pos())
-                                && resp.response.rect.union(row_resp.rect).contains(p)
+                                && band_hit.contains(p)
                             {
                                 let buf_ci = out.galley.cursor_from_pos(p - out.galley_pos).index.0;
                                 let ci = render::plain_char_index(&out.galley, buf_ci);
@@ -1818,6 +1842,91 @@ pub fn show_editor(
                 state.scroll_top = false;
             }
 
+            #[cfg(test)]
+            {
+                // 测试基准：本帧各块真实矩形（含表格面板、代码块功能栏这类
+                // 比文字大了一圈的块），供「拖拽网格」用例判定归属块。
+                state.last_block_rects = block_rects
+                    .iter()
+                    .map(|(i, r)| (*i, (r.left(), r.top(), r.right(), r.bottom())))
+                    .collect();
+            }
+            let pointer_down = ctx.input(|i| i.pointer.primary_down());
+            let dragging = ctx.input(|i| i.pointer.is_decidedly_dragging());
+            // 按下点必须在编辑区里：按在工具条 / 菜单上时不能延伸正文选区。
+            let press_in_editor = ctx
+                .input(|i| i.pointer.press_origin())
+                .is_some_and(|p| ui.clip_rect().expand2(egui::vec2(48.0, 8.0)).contains(p));
+            // 与块内拖选一致：指针甩出视口时钳到边缘，越界也能持续延伸选区。
+            let clip = ui.clip_rect();
+            let drag_pointer = ctx.input(|i| i.pointer.interact_pos()).map(|p| {
+                if clip.contains(p) {
+                    p
+                } else {
+                    egui::Pos2::new(p.x, p.y.clamp(clip.top() + 1.0, clip.bottom() - 1.0))
+                }
+            });
+            let over_active_edit = block_rects
+                .iter()
+                .any(|(i, r)| *i == active && drag_pointer.is_some_and(|p| r.contains(p)));
+            let plain_len = |i: usize| -> usize {
+                doc.blocks
+                    .get(i)
+                    .map(|b| b.plain().chars().count())
+                    .unwrap_or(0)
+            };
+            // 两张矩形表只在真正拖拽的这一帧才构造：静置、滚动、敲字帧不分配
+            // （1000 万字实测静置一帧约 1.8 ms，不能被每帧的向量化挤掉）。
+            let drag_happening = pointer_down && dragging && press_in_editor;
+            // 矩形表含空白行：指针停在空行上时，选区落到该空行（锚点仍由文字块/
+            // 按下块决定，不会缩成零长度），与逐行选择的用户预期一致。
+            // 注意不要把空白行从候选里剔掉——旧做法因此把端点停在上一个块，
+            // 表现为「拖到一半只选中一部分」。
+            let all_rects: Vec<(usize, egui::Rect)> = if drag_happening {
+                block_rects.iter().copied().collect()
+            } else {
+                Vec::new()
+            };
+            // 指针压在哪个块上：先按矩形精确命中，再放宽到「同一行带内、左右各 24px」。
+            // 表格单元、代码块功能栏、图片预览这些子控件自己不接拖拽事件，
+            // 只能在这里按块归属兜住，否则按下它们时选区会退回上一次光标所在块。
+            let owner_of = |p: egui::Pos2| -> Option<usize> {
+                all_rects
+                    .iter()
+                    .find(|(_, r)| r.contains(p))
+                    .map(|(i, _)| *i)
+                    .or_else(|| {
+                        all_rects
+                            .iter()
+                            .filter(|(_, r)| p.y >= r.top() - 3.0 && p.y <= r.bottom() + 3.0)
+                            .filter(|(_, r)| p.x >= r.left() - 24.0 && p.x <= r.right() + 24.0)
+                            .min_by_key(|(_, r)| {
+                                ((p.x - (r.left() + r.right()) * 0.5).abs() * 1000.0) as i32
+                            })
+                            .map(|(i, _)| *i)
+                    })
+            };
+            // 按下点落在「块内子控件不吃拖拽事件」的原子块（表格单元、代码块功能栏、图片预览）上时，
+            // 渲染层这一帧不上报锚点；不先补锚，聚合里 ShiftClick 的「无选区」分支会拿上一次光标当锚点，
+            // 表现为「从表格起拖，表格和它前面的内容整块漏掉」。
+            if drag_happening && state.cross_sel.is_none() {
+                let press_atomic_owner = ctx
+                    .input(|i| i.pointer.press_origin())
+                    .and_then(owner_of)
+                    .filter(|o| {
+                        doc.blocks
+                            .get(*o)
+                            .is_some_and(|b| !matches!(b, Block::Blank { .. }) && !text_selection_block(b))
+                    });
+                if let Some(o) = press_atomic_owner {
+                    state.cross_sel = Some((o, 0, o, 0));
+                    // 与 CrossDrag(start) 一致：开始跨块选区时放弃 TextEdit 焦点。
+                    if let Some(fid) = ctx.memory(|m| m.focused()) {
+                        ctx.memory_mut(|m| m.surrender_focus(fid));
+                    }
+                }
+            }
+
             // 跨块拖选聚合：渲染态块上报的 CrossDrag 在这里聚成全局选区，
             // 并从 actions 中移除（app 层无需关心）。拖选开始时放弃编辑态
             // 焦点，否则活动块的 TextEdit 会抢先消费键盘输入。
@@ -1885,24 +1994,6 @@ pub fn show_editor(
             // 选区就会停在最后一个命中块（用户反馈的「拖到底选不全」）。
             // 这里按指针的竖直位置补一个端点：向下拖取块尾、向上拖取块首，
             // 拖到正文下方即选中到文档末尾。
-            let pointer_down = ctx.input(|i| i.pointer.primary_down());
-            let dragging = ctx.input(|i| i.pointer.is_decidedly_dragging());
-            // 按下点必须在编辑区里：按在工具条 / 菜单上时不能延伸正文选区。
-            let press_in_editor = ctx
-                .input(|i| i.pointer.press_origin())
-                .is_some_and(|p| ui.clip_rect().expand2(egui::vec2(48.0, 8.0)).contains(p));
-            // 与块内拖选一致：指针甩出视口时钳到边缘，越界也能持续延伸选区。
-            let clip = ui.clip_rect();
-            let drag_pointer = ctx.input(|i| i.pointer.interact_pos()).map(|p| {
-                if clip.contains(p) {
-                    p
-                } else {
-                    egui::Pos2::new(p.x, p.y.clamp(clip.top() + 1.0, clip.bottom() - 1.0))
-                }
-            });
-            let over_active_edit = block_rects
-                .iter()
-                .any(|(i, r)| *i == active && drag_pointer.is_some_and(|p| r.contains(p)));
             if pointer_down
                 && dragging
                 && press_in_editor
@@ -1928,33 +2019,22 @@ pub fn show_editor(
                             .unwrap_or_else(|| state.last_cursor.min(buf_len));
                         (active, c)
                     });
-                let plain_len = |i: usize| {
-                    doc.blocks
-                        .get(i)
-                        .map(|b| b.plain().chars().count())
-                        .unwrap_or(0)
-                };
-                // 空白行不是有内容的块：指针停在块间空档时若把端点落到空白行，
-                // 选区会突然缩成零长度（用户反馈的「拖到一半只选中一部分」）。
-                let content_rects: Vec<(usize, egui::Rect)> = block_rects
-                    .iter()
-                    .copied()
-                    .filter(|(i, _)| !matches!(doc.blocks.get(*i), Some(Block::Blank { .. })))
-                    .collect();
                 let endpoint_at = |i: usize| (i, if i >= anchor.0 { plain_len(i) } else { 0 });
                 // 指针竖直方向压在某个块上（哪怕 x 在标记/留白区）→ 取该块端点。
-                let mut endpoint = content_rects
+                // 候选含空白行：指针停在空行上时选区就落到那一行（锚点仍是文字块，
+                // 不会缩成零长度），与逐行选择的用户预期一致。
+                let mut endpoint = all_rects
                     .iter()
                     .find(|(_, r)| p.y >= r.top() && p.y <= r.bottom())
                     .map(|(i, _)| endpoint_at(*i));
                 // 在块与块的空档里：取竖直距离最近的一块，上方取块尾、下方取块首；
                 // 正文上方没有任何块时取第一块块首。
                 if endpoint.is_none() {
-                    let above = content_rects
+                    let above = all_rects
                         .iter()
                         .filter(|(_, r)| r.bottom() <= p.y)
                         .max_by(|a, b| a.1.bottom().total_cmp(&b.1.bottom()));
-                    let below = content_rects
+                    let below = all_rects
                         .iter()
                         .filter(|(_, r)| r.top() >= p.y)
                         .min_by(|a, b| a.1.top().total_cmp(&b.1.top()));

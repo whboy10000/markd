@@ -105,7 +105,7 @@ mod math_tests {
 pub struct ImageCache {
     local: HashMap<PathBuf, Option<egui::TextureHandle>>,
     remote: HashMap<String, Option<egui::TextureHandle>>,
-    /// ```math 代码块按 LaTeX 源字符串缓存纹理；None 表示渲染失败，避免每帧重试。
+    /// `math` 代码块按 LaTeX 源字符串缓存纹理；None 表示渲染失败，避免每帧重试。
     math: HashMap<String, Option<MathImage>>,
     /// 原生显示列表公式缓存：key = (公式, 字号×100取整, 显示模式)。
     /// 避免每帧重新解析 RaTeX 与细分字形轮廓。

@@ -78,6 +78,10 @@ pub struct EditorState {
     /// 从编辑态段落往下/上拖到别的块时，跨块选区以这个按下点为锚点，
     /// 否则锚点会变成"拖出去时已经跑到行尾的光标"，起始那一段就选不上。
     pub press_caret: Option<(usize, usize)>,
+    /// 测试专用：最近一帧各块的真实矩形 (块下标, (left, top, right, bottom))。
+    /// 「拖拽网格」用它当归属块判定基准，避免用文字带近似出假阳性。
+    #[cfg(test)]
+    pub last_block_rects: Vec<(usize, (f32, f32, f32, f32))>,
     /// 格式按钮用完选区后把光标收敛成单点：(块下标, 字符下标)，用后清零。
     /// 不然文本框里存的旧选区会让刚处理过的文字一直保持选中状态。
     pub caret_req: Option<(usize, usize)>,

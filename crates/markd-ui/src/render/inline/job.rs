@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// 行内公式在 galley 里占用的位置信息。排版时先放一个透明占位字符，
+/// 行内公式在 galley 里占用的位置信息。排版时先放一段透明占位字符，
 /// 拿到 galley 后再把 RaTeX 原生形状画到占位字符的基线上。
 pub(crate) struct InlineMathRun {
     pub(crate) marker: char,
@@ -16,6 +16,9 @@ pub(crate) struct InlineMathRun {
     pub(crate) reserved: f32,
     /// 应用的缩放比例。
     pub(crate) scale: f32,
+    /// 这一行的行高是否为这条公式特意撑高过：撑高过就在行内垂直居中，
+    /// 否则按文字基线对齐（普通短公式必须贴基线，才不会看起来浮起来）。
+    pub(crate) tall: bool,
 }
 
 /// 行内公式排版上下文：负责取原生形状、算显示尺寸并记录占位字符。
@@ -32,9 +35,12 @@ impl MathBuild<'_> {
         let Some(math) = self.images.math_shapes(tex, size, MathDisplay::Inline) else {
             return;
         };
-        // 行内公式不能高过行距，否则会压到上下行；宽公式也不能撑出版心。
-        let max_h = (size * 1.45).max(18.0);
+        // 宽公式不能撑出版心。高度不再压扁到 1.45em——行列式 / 分段函数这类
+        // 多行结构压扁后既看不清，又会盖住上下行：改成让占位段的行高陪着
+        // 公式一起长，公式就待在自己那一行里。上限 3em：再高（十几行的矩阵）
+        // 就等比缩，否则整段行距会被一条公式撑得没法看。
         let max_w = (self.max_width * 0.92).max(24.0);
+        let max_h = size * 3.0;
         let scale = (max_h / math.size.y.max(1.0))
             .min(max_w / math.size.x.max(1.0))
             .min(1.0);
@@ -43,12 +49,31 @@ impl MathBuild<'_> {
 
         let marker = char::from_u32(0xE000 + self.runs.len() as u32).unwrap_or('\u{FFFC}');
         let font_id = theme.fmt(size).font_id;
-        let marker_w = self.ctx.fonts_mut(|f| f.glyph_width(&font_id, marker));
+        let (marker_w, natural) = self.ctx.fonts_mut(|f| {
+            (
+                f.glyph_width(&font_id, marker),
+                f.row_height(&font_id).max(size * 1.2),
+            )
+        });
         let reserved = display.x.max(marker_w);
+
         let mut f = theme.fmt(size);
         f.color = Color32::TRANSPARENT;
-        f.extra_letter_spacing = (reserved - marker_w).max(0.0);
-        job.append(&marker.to_string(), 0.0, f);
+        // epaint 的 `extra_letter_spacing` 只加在「同一段里非第一个字」之前，
+        // 单字符占位段等于一毫米都没撑开——后面的正文会从公式底下压过来。
+        // 所以放 n 个占位字符，用间距把总推进量精确凑成 reserved：
+        //     n·w + (n−1)·s = reserved
+        // 占位字符本身透明，靠负间距轻微重叠也看不见。
+        let count = ((reserved / marker_w.max(1.0)).round() as usize).clamp(2, 256);
+        f.extra_letter_spacing =
+            (reserved - count as f32 * marker_w) / (count as f32 - 1.0).max(1.0);
+        // 只有当公式比正常行高还高时才撑行（上下各留 1px 净空）；
+        // 普通短公式保持原行高，否则整段文字的行距会被它带松。
+        let tall = display.y + 2.0 > natural;
+        if tall {
+            f.line_height = Some(display.y + 2.0);
+        }
+        job.append(&marker.to_string().repeat(count), 0.0, f);
         self.runs.push(InlineMathRun {
             marker,
             math: Some(math),
@@ -56,6 +81,7 @@ impl MathBuild<'_> {
             baseline,
             reserved,
             scale,
+            tall,
         });
     }
 }

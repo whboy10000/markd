@@ -85,7 +85,18 @@ fn inline_code_ranges(galley: &egui::Galley, theme: &Theme) -> Vec<(usize, usize
     out
 }
 
-/// 行内代码片：按字符区间映射到每行的矩形，画 4px 圆角底色。
+/// 行内代码片：按字符区间映射到每行的矩形，画圆角底色。
+///
+/// 内边距按实测定：16px 正文里源文的空格推进 4.1px，等宽字符单元 8.5px 而字母
+/// 实际墨迹只有约 3–7px（左右各有 ~2.7px 字距）。之前横向各放 3.0px，芯片边框
+/// 距相邻汉字只剩 0.3px，等于把空格吞掉、方框直接贴上正文，而代码自己的字离
+/// 边框还有 5.7px 空底——看着就是「空盒子挨着正文，字飘在中间」。收到 1.5px 后
+/// 两侧各自留出 2.6px 可见空白，芯片也不再吞掉源文空格。
+const PAD_X: f32 = 1.5;
+/// 竖向贴着等宽字形自己的字身框再放 2px：撑满整行会让标题里的代码片变成大方框。
+const PAD_Y: f32 = 2.0;
+
+/// 行内代码片：按字符区间映射到每行的矩形，画圆角底色。
 /// 浅色方案 B 额外描一圈 1px 冷灰边，深色方案 C 不描边。
 pub fn inline_code_bg_shapes(
     galley: &egui::Galley,
@@ -112,16 +123,51 @@ pub fn inline_code_bg_shapes(
             }
             let x0 = galley.pos_from_cursor(egui::text::CCursor::new(lo)).left();
             let x1 = galley.pos_from_cursor(egui::text::CCursor::new(hi)).left();
+            // 内边距不能越过相邻字形的边界：中文正文里 `文字\`code\`文字` 不留空格
+            // 很常见，源文没有空格就没有可放色块的余地，硬放 1.5px 会压到相邻汉字
+            // 的墨迹上（实测重叠 1.2–1.5px，看着像错字）。跳过空格找最近的非空白
+            // 邻居，用它与代码区间之间的实际空隙钳住内边距。
+            let prev_edge = row.glyphs[..lo.saturating_sub(rs).min(row.glyphs.len())]
+                .iter()
+                .rev()
+                .find(|g| !g.chr.is_whitespace())
+                .map(|g| g.pos.x + g.advance_width);
+            let next_edge = row.glyphs[hi.saturating_sub(rs).min(row.glyphs.len())..]
+                .iter()
+                .find(|g| !g.chr.is_whitespace())
+                .map(|g| g.pos.x);
+            let pad_l = PAD_X.min(prev_edge.map(|e| (x0 - e).max(0.0)).unwrap_or(PAD_X));
+            let pad_r = PAD_X.min(next_edge.map(|e| (e - x1).max(0.0)).unwrap_or(PAD_X));
+            // 竖向贴着等宽字形自己的字身框（基线 ± 该字号的上伸/下延），不再撑满整行。
+            // 之前用整行行高（16px 正文那行是 22px），芯片比代码字形本身高出约 4px，
+            // 上下各空一截，看起来就是「一个大方框里飘着几个小字母」。
+            let mut top = f32::INFINITY;
+            let mut bottom = f32::NEG_INFINITY;
+            for (gi, gl) in row.glyphs.iter().enumerate() {
+                let k = rs + gi;
+                if k < lo || k >= hi {
+                    continue;
+                }
+                let desc = (gl.font_height - gl.font_ascent).max(0.0);
+                top = top.min(gl.pos.y - gl.font_ascent);
+                bottom = bottom.max(gl.pos.y + desc);
+            }
+            let (ty, by) = if bottom > top {
+                (top - PAD_Y, bottom + PAD_Y)
+            } else {
+                // 区间里一个字形都没有（被折断到别的行等极端情况）：退回行框。
+                (1.0, row.row.size.y - 1.0)
+            };
             let rect = Rect::from_min_max(
-                Pos2::new(x0 - 3.0, row.pos.y + 1.0),
-                Pos2::new(x1.max(x0) + 3.0, row.pos.y + row.row.size.y - 1.0),
+                Pos2::new(x0 - pad_l, row.pos.y + ty),
+                Pos2::new(x1.max(x0) + pad_r, row.pos.y + by),
             )
             .translate(origin.to_vec2());
-            shapes.push(egui::Shape::rect_filled(rect, 4.0, bg));
+            shapes.push(egui::Shape::rect_filled(rect, 3.0, bg));
             if let Some(c) = border {
                 shapes.push(egui::Shape::rect_stroke(
                     rect,
-                    4.0,
+                    3.0,
                     Stroke::new(1.0, c),
                     egui::StrokeKind::Inside,
                 ));
@@ -132,8 +178,15 @@ pub fn inline_code_bg_shapes(
 }
 
 /// 把 RaTeX 图片画到占位字符的位置上。
-/// `run.baseline` 是图片内部基线到图片顶部的距离，用它反推图片顶部，
-/// 让图片内部基线与周围文字的基线重合；RaTeX 的 depth 自然落在基线下方。
+///
+/// 两种竖向摆法：
+///
+/// - 普通短公式（`tall == false`）：用 `run.baseline` 反推图片顶部，让公式内部
+///   基线与周围文字的基线重合，读起来才像「在句子里」；
+/// - 撑高了行高的多行公式（行列式、分段函数）：在整行里垂直居中。它的行高是
+///   专门为它腾出来的，贴基线会把下半截甩到下一行上去。
+///
+/// 水平方向统一在占位宽度内居中。
 pub(crate) fn math_image_shapes(
     galley: &egui::Galley,
     origin: egui::Pos2,
@@ -144,28 +197,30 @@ pub(crate) fn math_image_shapes(
     for run in runs {
         let Some(math) = &run.math else { continue };
         'rows: for row in &galley.rows {
-            for glyph in &row.glyphs {
-                if glyph.chr != run.marker {
-                    continue;
-                }
-                // 占位字符的基线位置 = 行顶 + 字形 y 偏移。
-                let baseline = origin.y + row.pos.y + glyph.pos.y;
-                // 水平居中到保留宽度内。
-                let x = origin.x + row.pos.x + glyph.pos.x + (run.reserved - run.size.x) * 0.5;
-                // 公式顶部 = 基线 - 缩放后基线高度。
-                let top_left = Pos2::new(x, baseline - run.baseline);
-                for s in
-                    crate::render::math::transform_shapes(&math.shapes, top_left, run.scale, tint)
-                {
-                    shapes.push(s);
-                }
-                break 'rows;
+            let Some(glyph) = row.glyphs.iter().find(|g| g.chr == run.marker) else {
+                continue;
+            };
+            let row_top = origin.y + row.pos.y;
+            let band = row.row.size.y;
+            let x = origin.x + row.pos.x + glyph.pos.x + (run.reserved - run.size.x) * 0.5;
+            let top = if run.tall {
+                row_top + (band - run.size.y) * 0.5
+            } else {
+                // 占位字符的基线 = 行顶 + 字形 y 偏移；公式顶部 = 基线 − 基线高。
+                row_top + glyph.pos.y - run.baseline
+            };
+            let top_left = Pos2::new(x, top);
+            for s in crate::render::math::transform_shapes(&math.shapes, top_left, run.scale, tint)
+            {
+                shapes.push(s);
             }
+            break 'rows;
         }
     }
     shapes
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn text_response(
     ui: &mut egui::Ui,
     inlines: &[Inline],
@@ -189,18 +244,30 @@ pub(crate) fn text_response(
     // （在 Label 之前画），否则会盖住文字。
     let bg_slot = ui.painter().add(egui::Shape::Noop);
     let (resp, galley) = layout_label(ui, job, env.max_width, Sense::click_and_drag());
+    // galley 的原点：文字真正开始的位置。行带向左扩到圆点/缩进后，
+    // resp.rect.min 不再等于它，所有字符下标换算与底色绘制都必须用这个。
+    let text_origin = resp.rect.min;
     // 公式图片画在文字上层；占位字符本身是透明的。
     let math_slot = ui.painter().add(egui::Shape::Noop);
     let math_shapes = math_image_shapes(&galley, resp.rect.min, &math_runs, color);
     if !math_shapes.is_empty() {
         ui.painter().set(math_slot, egui::Shape::Vec(math_shapes));
     }
-    // 行右侧空白也要可点（Typora 行为）：命中区从文字左缘延伸到本行右缘。
+    // 行带（line band）：命中与高亮的横向范围。左端取本行所在内容列的左缘——
+    // 列表圆点、任务复选框、有序标记、引用缩进都排在文字左边，指针落在那片
+    // 空白时用户认为自己在「这一行」上，必须能锚定/延伸选区，高亮也要铺过去；
+    // 右端取可用宽度右缘，行尾空白同样属于这一行。
+    // galley 原点（resp.rect.min）单独保留给 cursor_from_pos 与高亮换算，
+    // 不能跟着行带左移，否则字符下标整体错位。
+    let band_left = ui.min_rect().left().min(resp.rect.min.x);
+    let band_right = ui.max_rect().right().max(resp.rect.max.x);
+    // 行右侧空白也要可点（Typora 行为）：命中区从行带左缘延伸到本行右缘。
     // 之前响应矩形只有文字 galley 的宽度，点行尾空白毫无反应；扩展后点击
-    // 仍走 cursor_from_pos，超出行末的 x 会被钳到该行最后一个字符之后。
+    // 仍走 cursor_from_pos，超出行末的 x 会被钳到该行最后一个字符之后，
+    // 小于行带左缘的 x 会被钳到该行第一个字符。
     let row_rect = Rect::from_min_max(
-        resp.rect.min,
-        Pos2::new(ui.max_rect().right(), resp.rect.bottom()),
+        Pos2::new(band_left, resp.rect.min.y),
+        Pos2::new(band_right, resp.rect.bottom()),
     );
     let ext = ui
         .interact(
@@ -255,17 +322,19 @@ pub(crate) fn text_response(
     // 常因事件批处理已微移、或落在块间距/视口边缘，导致 over_this 判定失败——
     // 那一帧一旦没锚定，后面就只能用上一次点击的 last_cursor 兜底，选区就跑到
     // 别的块去了（用户反馈的「时出现时不出现、选区乱跑」）。
-    // 竖直方向按 ±3px 容差命中（正好铺满块间 6px 空档、彼此不重叠），横向覆盖
-    // 整行到右边距；这样点标题/引用/行内代码段落的文字、行尾空白、块边缘都能锚定。
+    // 竖直方向按 ±3px 容差命中（正好铺满块间 6px 空档、彼此不重叠），横向按
+    // 行带来：从内容列左缘（列表圆点、任务复选框、缩进）一直铺到可用宽度右缘。
+    // 之前横向起点取文字 galley 的左缘，嵌套列表越深、圆点与缩进那片空白越宽，
+    // 按在那儿就一个块都不命中，选区既不锚定也不延伸（用户截图的「有些拖不动」）。
     let press_hit = press_origin.is_some_and(|p| {
         p.y >= resp.rect.top() - 3.0
             && p.y <= resp.rect.bottom() + 3.0
-            && p.x >= resp.rect.min.x
-            && p.x <= ui.max_rect().right()
+            && p.x >= band_left
+            && p.x <= band_right
     });
     if pressed_now && press_in_viewport && press_hit {
         if let Some(p) = press_origin {
-            let local = p - resp.rect.min;
+            let local = p - text_origin;
             let c = galley.cursor_from_pos(local).index.0;
             env.actions.push(Action::CrossDrag(idx, c, true));
         }
@@ -276,7 +345,7 @@ pub(crate) fn text_response(
         && over_this
     {
         if let Some(p) = pointer {
-            let local = p - resp.rect.min;
+            let local = p - text_origin;
             let c = galley.cursor_from_pos(local).index.0;
             env.actions.push(Action::CrossDrag(idx, c, false));
         }
@@ -285,7 +354,7 @@ pub(crate) fn text_response(
         // 吃掉了按下事件），拖到本块时才建立跨块选区：以活动块的光标为锚点。
         // 没有这条，从编辑态段落往下拖就完全选不中（用户反馈的"断断续续"）。
         if let Some(p) = pointer {
-            let local = p - resp.rect.min;
+            let local = p - text_origin;
             let c = galley.cursor_from_pos(local).index.0;
             env.actions.push(Action::ShiftClick(idx, c));
         }
@@ -295,10 +364,16 @@ pub(crate) fn text_response(
     let mut sel_shapes: Vec<egui::Shape> = Vec::new();
     let text_len = galley.text().chars().count();
     if let Some((s0, e0)) = cross_sel_chars(env.cross_sel, idx, text_len) {
-        sel_shapes = selection_shapes(&galley, resp.rect.min, (s0, e0), theme.selection);
+        sel_shapes = selection_shapes(
+            &galley,
+            text_origin,
+            (s0, e0),
+            theme.selection,
+            Some((band_left, band_right)),
+        );
     }
     // 代码片垫底、选区叠在代码片上面（同一槽位里后画的在上层）。
-    let mut bg_shapes = inline_code_bg_shapes(&galley, resp.rect.min, theme);
+    let mut bg_shapes = inline_code_bg_shapes(&galley, text_origin, theme);
     bg_shapes.extend(sel_shapes);
     if !bg_shapes.is_empty() {
         ui.painter().set(bg_slot, egui::Shape::Vec(bg_shapes));
@@ -306,7 +381,7 @@ pub(crate) fn text_response(
     // 双击选词 / 三击选整段 / Shift+点击扩选。必须在普通 clicked 之前处理：
     // egui 里双击的第二击也会触发 clicked，命中后直接 return，避免叠加 Caret。
     if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
-        let local = p - resp.rect.min;
+        let local = p - text_origin;
         let char_idx = galley.cursor_from_pos(local).index.0;
         let text: Vec<char> = galley.text().chars().collect();
         if resp.triple_clicked() {
@@ -328,7 +403,7 @@ pub(crate) fn text_response(
     }
     if resp.clicked() {
         if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
-            let local = p - resp.rect.min;
+            let local = p - text_origin;
             let cursor = galley.cursor_from_pos(local);
             let char_idx = cursor.index.0;
             // 链接：Cmd/Ctrl+点击才跳转；普通点击只激活编辑并露出该链接的
@@ -377,11 +452,17 @@ pub fn cross_sel_chars(
 
 /// 按字符区间 [start, end) 收集 galley 每一行的选区矩形。
 /// 渲染态 text_response 与编辑态活动块（自己画选区高亮）共用。
+///
+/// `band = Some((左, 右))` 时按「行带」铺色：某行的开头被选中就从行带左缘画起
+/// （覆盖列表圆点、任务复选框、缩进那片空白），行末被选中就画到行带右缘
+/// （覆盖行尾空白与行内代码/公式两侧的空隙）。不传就只按字形宽度画。
+/// 逐行都铺满行带，选区看起来才是一整块连续的区域，而不是断成一截一截。
 pub fn selection_shapes(
     galley: &egui::Galley,
     origin: Pos2,
     (start, end): (usize, usize),
     color: Color32,
+    band: Option<(f32, f32)>,
 ) -> Vec<egui::Shape> {
     let text_len = galley.text().chars().count();
     let s0 = start.min(text_len);
@@ -389,6 +470,8 @@ pub fn selection_shapes(
     if s0 >= e0 {
         return Vec::new();
     }
+    // 行带坐标换到 galley 局部系（下面所有矩形都按 origin 平移）。
+    let band_local = band.map(|(l, r)| (l - origin.x, r - origin.x));
     let mut shapes = Vec::new();
     let mut acc = 0usize;
     for row in &galley.rows {
@@ -398,27 +481,37 @@ pub fn selection_shapes(
         let lo = s0.clamp(rs, re);
         let hi = e0.clamp(rs, re);
         if hi <= lo {
-            // 整行被跨过的空行（只有换行符）：画一小段行首高亮
+            // 整行被跨过的空行（只有换行符）：有行带就铺满整带，否则画一小段行首。
             if s0 <= rs && e0 >= re {
+                let (x0, x1) = match band_local {
+                    Some((l, r)) => (l, r),
+                    None => (0.0, 6.0),
+                };
                 let rect = Rect::from_min_max(
-                    Pos2::new(0.0, row.pos.y),
-                    Pos2::new(6.0, row.pos.y + row.row.size.y),
+                    Pos2::new(x0, row.pos.y),
+                    Pos2::new(x1, row.pos.y + row.row.size.y.max(1.0)),
                 )
                 .translate(origin.to_vec2());
                 shapes.push(egui::Shape::rect_filled(rect, 0.0, color));
             }
             continue;
         }
-        let x0 = galley.pos_from_cursor(egui::text::CCursor::new(lo)).left();
         // egui 的 pos_from_cursor 是「插入点」矩形（零宽）：索引 i
         // 的 x 是第 i 个字符的左边界。所以选中延伸到行末时要用
         // 边界 re（最后一字之后的插入点），不能用 re-1 的右缘——
         // 那样每行最后一个字永远少一截、不被高亮覆盖。
-        let x1 = if e0 >= re {
-            galley.pos_from_cursor(egui::text::CCursor::new(re)).left()
+        let x0 = if lo == rs {
+            band_local.map(|(l, _)| l)
         } else {
-            galley.pos_from_cursor(egui::text::CCursor::new(hi)).left()
-        };
+            None
+        }
+        .unwrap_or_else(|| galley.pos_from_cursor(egui::text::CCursor::new(lo)).left());
+        let x1 = if e0 >= re {
+            band_local.map(|(_, r)| r)
+        } else {
+            None
+        }
+        .unwrap_or_else(|| galley.pos_from_cursor(egui::text::CCursor::new(hi)).left());
         let rect = Rect::from_min_max(
             Pos2::new(x0, row.pos.y),
             Pos2::new(x1.max(x0), row.pos.y + row.row.size.y),

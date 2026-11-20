@@ -61,7 +61,7 @@ pub enum Command {
     Rule,
     Table,
     Math,
-    /// ```math 围栏代码块：内容交给 RaTeX 渲染成图片。
+    /// `math` 围栏代码块：内容交给 RaTeX 渲染成图片。
     MathCode,
     InlineMath,
     Mermaid,

@@ -2320,3 +2320,922 @@ fn mermaid_templates_cover_all_types() {
         );
     }
 }
+
+/// 取编辑区里（y > min_y）第一处包含 `key` 的文字形状，返回 (落点, galley)。
+fn editor_galley<'a>(
+    shapes: &'a [egui::epaint::ClippedShape],
+    key: &str,
+    min_y: f32,
+) -> (egui::Pos2, &'a egui::Galley) {
+    shapes
+        .iter()
+        .find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text().contains(key) && t.pos.y > min_y => {
+                Some((t.pos, &*t.galley))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("编辑区里未渲染「{key}」"))
+}
+
+/// galley 里 `key` 首字符的下标。
+fn char_index_of(g: &egui::Galley, key: &str) -> usize {
+    let text = g.text();
+    let byte = text.find(key).unwrap_or_else(|| panic!("galley 里没有「{key}」"));
+    text[..byte].chars().count()
+}
+
+/// 第 ch 个插入点的屏幕坐标。
+fn point_at(shapes: &[egui::epaint::ClippedShape], key: &str, min_y: f32, ch: usize) -> egui::Pos2 {
+    let (origin, g) = editor_galley(shapes, key, min_y);
+    let r = g.pos_from_cursor(egui::text::CCursor::new(ch.min(g.text().chars().count())));
+    origin + r.center().to_vec2()
+}
+
+/// 按 `key` 首字符偏移 k 个字符处的插入点（用来把指针精确落在某个词上）。
+fn point_of_key(shapes: &[egui::epaint::ClippedShape], key: &str, min_y: f32, k: usize) -> egui::Pos2 {
+    let (origin, g) = editor_galley(shapes, key, min_y);
+    let idx = char_index_of(g, key) + k;
+    let r = g.pos_from_cursor(egui::text::CCursor::new(idx.min(g.text().chars().count())));
+    origin + r.center().to_vec2()
+}
+
+/// 逐帧细粒度拖动（每 8px 一步），比 `drag_select` 的三点式更接近真实鼠标。
+fn drag_select_fine(
+    ctx: &egui::Context,
+    app: &mut MarkdApp,
+    frame: &mut eframe::Frame,
+    start: egui::Pos2,
+    end: egui::Pos2,
+) {
+    run_real_frame(ctx, app, frame, vec![egui::Event::PointerMoved(start)]);
+    run_real_frame(ctx, app, frame, vec![pointer_button(start, true)]);
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    let steps = ((dx.hypot(dy) / 8.0).ceil() as usize).max(1);
+    for k in 1..=steps {
+        let t = k as f32 / steps as f32;
+        run_real_frame(
+            ctx,
+            app,
+            frame,
+            vec![egui::Event::PointerMoved(egui::pos2(
+                start.x + dx * t,
+                start.y + dy * t,
+            ))],
+        );
+    }
+    run_real_frame(ctx, app, frame, vec![pointer_button(end, false)]);
+}
+
+/// 用户反馈①：段落里有行内代码时拖不动。活动块含 `code_block`，
+/// 从段首拖到段末，选中文字必须等于整段可见文本。
+#[test]
+fn drag_inside_active_paragraph_with_inline_code_selects_exact() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("前缀 `code_block` 后缀文字内容\n\n下面一段文字", None);
+    app.home = false;
+    app.editor.active = 0;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let (_, g) = editor_galley(&shapes, "code_block", 70.0);
+    let n = g.text().chars().count();
+    let start = point_at(&shapes, "code_block", 70.0, 0);
+    let end = point_at(&shapes, "code_block", 70.0, n);
+    drag_select_fine(&ctx, &mut app, &mut frame, start, end);
+    let sel = app.editor.cross_sel.expect("活动块内含行内代码应能拖选出选区");
+    let got = crate::editor::cross_sel_text(&app.doc, Some(sel)).unwrap_or_default();
+    let want = app.doc.blocks[0].plain();
+    assert_eq!(
+        got.replace(' ', "").replace('_', ""),
+        want.replace(' ', "").replace('_', ""),
+        "拖到段末应选中整段可见文字，实际选区 {sel:?}（{got:?} vs {want:?}）"
+    );
+}
+
+/// 用户反馈②：上面是标题、下面是含行内代码的段落，从标题拖进段落要选全。
+#[test]
+fn drag_heading_into_paragraph_with_inline_code_selects_exact() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new(
+        "# 标题文字\n\n段落里有 `inline_code` 后面的话也要一起选中\n\n第三段",
+        None,
+    );
+    app.home = false;
+    app.editor.active = 0;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let start = point_at(&shapes, "标题文字", 70.0, 0);
+    let end = {
+        let (_, g) = editor_galley(&shapes, "inline_code", 100.0);
+        point_at(&shapes, "inline_code", 100.0, g.text().chars().count())
+    };
+    drag_select_fine(&ctx, &mut app, &mut frame, start, end);
+    let sel = app.editor.cross_sel.expect("标题→含行内代码段落应建立选区");
+    let got = crate::editor::cross_sel_text(&app.doc, Some(sel)).unwrap_or_default();
+    let want = app.doc.blocks[2].plain();
+    assert!(
+        got.replace(' ', "").contains(&want.replace(' ', "")),
+        "段落应整段选中，实际选区 {sel:?} 文本 {got:?}，应为 {want:?}"
+    );
+    assert!(got.contains("标题文字"), "标题文字应在选区内，实际 {got:?}");
+}
+
+/// 用户反馈③：按下点正好落在行内代码的字符上，再往下拖到下一段末尾。
+#[test]
+fn drag_started_on_inline_code_chip_selects_next_block() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("第一段带 `some_code` 的文字内容\n\n第二段普通文字内容", None);
+    app.home = false;
+    app.editor.active = 2;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let start = point_of_key(&shapes, "some_code", 70.0, 3);
+    let end = {
+        let (_, g) = editor_galley(&shapes, "第二段普通文字", 100.0);
+        point_at(&shapes, "第二段普通文字", 100.0, g.text().chars().count())
+    };
+    drag_select_fine(&ctx, &mut app, &mut frame, start, end);
+    let sel = app.editor.cross_sel.expect("从行内代码片上起拖应建立选区");
+    let got = crate::editor::cross_sel_text(&app.doc, Some(sel)).unwrap_or_default();
+    assert!(
+        got.contains("第二段普通文字内容"),
+        "终点段应整段选中，实际选区 {sel:?} 文本 {got:?}"
+    );
+    assert!(
+        got.contains("some_code") || got.contains("的文字内容"),
+        "起点段代码片之后的文字应进入选区，实际 {got:?}"
+    );
+}
+
+/// 反向拖选终点落在行内代码上：终点字符要按「所见文本」换算，不能偏。
+#[test]
+fn drag_ending_on_inline_code_maps_to_visible_index() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("第一段普通文字内容\n\n第二段带 `some_code` 的文字内容", None);
+    app.home = false;
+    app.editor.active = 0;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let start = point_at(&shapes, "第一段普通文字", 70.0, 0);
+    // 终点精确落在代码片中间（渲染态 galley 无隐藏标记，字符下标即可见下标）
+    let end = point_of_key(&shapes, "some_code", 100.0, 4);
+    drag_select_fine(&ctx, &mut app, &mut frame, start, end);
+    let sel = app.editor.cross_sel.expect("拖到行内代码处应建立选区");
+    assert_eq!(sel.0.max(sel.2), 2, "终点块应是含行内代码的段落，实际 {sel:?}");
+    let plain2 = app.doc.blocks[2].plain();
+    let ec = if sel.2 == 2 { sel.3 } else { sel.1 };
+    let upto: String = plain2.chars().take(ec.min(plain2.chars().count())).collect();
+    assert!(
+        upto.contains("第二段带") && upto.contains("some"),
+        "终点应落在代码片内部（可见文本口径），实际 ec={ec} 前缀 {upto:?}"
+    );
+    assert!(!upto.contains('_'), "终点不应越过代码片，实际 {upto:?}");
+}
+
+/// 拖选路径形态。
+#[derive(Copy, Clone, Debug)]
+enum PathStyle {
+    Fine,   // 每 8px 一步
+    Coarse, // 按下 → 中点 → 终点（旧三点式）
+    Fast,   // 两大跳（真实快速甩鼠标）
+    LShaped, // 先竖直再水平（用户斜着拖出块外）
+    LeftMargin, // 走左侧留白（x 比文字左缘更偏左）
+    RightBlank, // 终点落在文字右侧空白
+}
+
+/// 按形态执行一次拖动。
+fn drag_with_style(
+    ctx: &egui::Context,
+    app: &mut MarkdApp,
+    frame: &mut eframe::Frame,
+    start: egui::Pos2,
+    end: egui::Pos2,
+    style: PathStyle,
+) {
+    let move_to = |ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame, p: egui::Pos2| {
+        run_real_frame(ctx, app, frame, vec![egui::Event::PointerMoved(p)]);
+    };
+    run_real_frame(ctx, app, frame, vec![egui::Event::PointerMoved(start)]);
+    run_real_frame(ctx, app, frame, vec![pointer_button(start, true)]);
+    let put = |ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame, p: egui::Pos2| {
+        move_to(ctx, app, frame, p);
+    };
+    match style {
+        PathStyle::Fine => {
+            let dx = end.x - start.x;
+            let dy = end.y - start.y;
+            let steps = ((dx.hypot(dy) / 8.0).ceil() as usize).max(1);
+            for k in 1..=steps {
+                let t = k as f32 / steps as f32;
+                put(ctx, app, frame, egui::pos2(start.x + dx * t, start.y + dy * t));
+            }
+        }
+        PathStyle::Coarse => {
+            put(ctx, app, frame, egui::pos2(start.x, (start.y + end.y) / 2.0));
+            put(ctx, app, frame, end);
+        }
+        PathStyle::Fast => {
+            put(ctx, app, frame, egui::pos2(start.x + (end.x - start.x) * 0.6, start.y));
+            put(ctx, app, frame, end);
+        }
+        PathStyle::LShaped => {
+            put(ctx, app, frame, egui::pos2(start.x, end.y));
+            put(ctx, app, frame, end);
+        }
+        PathStyle::LeftMargin => {
+            let left = egui::pos2(start.x - 24.0, (start.y + end.y) * 0.5);
+            put(ctx, app, frame, left);
+            put(ctx, app, frame, egui::pos2(left.x, end.y));
+            put(ctx, app, frame, end);
+        }
+        PathStyle::RightBlank => {
+            put(ctx, app, frame, egui::pos2(end.x + 120.0, end.y));
+        }
+    }
+    let last = match style {
+        PathStyle::RightBlank => egui::pos2(end.x + 120.0, end.y),
+        _ => end,
+    };
+    run_real_frame(ctx, app, frame, vec![pointer_button(last, false)]);
+    for _ in 0..2 {
+        run_real_frame(ctx, app, frame, vec![]);
+    }
+}
+
+/// 穷举扫描：各种块类型 × 各种路径形态 × 各种活动块位置，
+/// 把「拖不出选区」或「只选中一部分」的组合全部列出来。
+#[test]
+fn drag_path_sweep_finds_no_stuck_selections() {
+    let docs = [
+        ("纯段落+标题", "# 标题文字在这里\n\n下面是一段普通文字，用来做拖拽的终点区域。\n\n第三段文字内容。"),
+        ("行内代码段落", "第一段带 `some_code` 的文字内容在这里\n\n第二段带 `other_code` 的文字内容也在这里\n\n第三段收尾"),
+        ("加粗与链接", "**粗体文字** 与 [链接文字](https://e.com) 的段落内容\n\n后面一段普通文字内容用来当终点"),
+        ("标题+列表", "# 列表之上的标题\n\n- 列表项一内容\n- 列表项二内容\n\n列表之后的段落。"),
+        ("引用与代码块", "> 引用文字内容在这里。\n\n```rust\nfn main() {}\n```\n\n代码块之后的段落文字。"),
+        ("行内公式", "前 $x^2 + y^2$ 后的段落文字内容\n\n第二段普通文字内容在这里。"),
+        ("表格与任务", "| 甲列 | 乙列 |\n|:--|--:|\n| 一 | 二 |\n\n- [ ] 任务项内容\n- [x] 已完成项\n\n表格之后的段落。"),
+    ];
+    let styles = [
+        PathStyle::Fine,
+        PathStyle::Coarse,
+        PathStyle::Fast,
+        PathStyle::LShaped,
+        PathStyle::LeftMargin,
+        PathStyle::RightBlank,
+    ];
+    let mut bad: Vec<String> = Vec::new();
+    for (name, src) in docs {
+        for style in styles {
+            for active in [0usize, 2, 4] {
+                let ctx = egui::Context::default();
+                let mut app = test_app();
+                let mut frame = eframe::Frame::_new_kittest();
+                app.doc = Document::new(src, None);
+                app.home = false;
+                app.editor.active = active.min(app.doc.blocks.len() - 1);
+                for _ in 0..3 {
+                    run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+                }
+                let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+                // 起点取第一个有文字的块首字，终点取最后一个有文字的块末字之后。
+                let firsts = ["标题文字在这里", "第一段带", "粗体文字", "列表之上的标题", "引用文字内容", "前 ", "甲列"];
+                let lasts = ["第三段文字内容", "第三段收尾", "后面一段普通文字", "列表之后的段落", "代码块之后的段落", "第二段普通文字", "表格之后的段落"];
+                let key0 = firsts.iter().copied().find(|k| shapes.iter().any(|cs| matches!(&cs.shape, egui::Shape::Text(t) if t.galley.text().contains(k) && t.pos.y > 70.0)));
+                let key1 = lasts.iter().copied().find(|k| shapes.iter().any(|cs| matches!(&cs.shape, egui::Shape::Text(t) if t.galley.text().contains(k) && t.pos.y > 70.0)));
+                let (Some(k0), Some(k1)) = (key0, key1) else {
+                    bad.push(format!("{name}｜{style:?}｜active={active}：起点/终点文字没渲染出来"));
+                    continue;
+                };
+                let start = point_at(&shapes, k0, 70.0, 0);
+                let (_, g) = editor_galley(&shapes, k1, 70.0);
+                let end = point_at(&shapes, k1, 70.0, g.text().chars().count());
+                drag_with_style(&ctx, &mut app, &mut frame, start, end, style);
+                let Some(sel) = app.editor.cross_sel else {
+                    bad.push(format!("{name}｜{style:?}｜active={active}：拖不出选区"));
+                    continue;
+                };
+                let got = crate::editor::cross_sel_text(&app.doc, Some(sel)).unwrap_or_default();
+                let want = crate::editor::cross_sel_text(&app.doc, Some((0, 0, app.doc.blocks.len() - 1, usize::MAX)))
+                    .unwrap_or_default();
+                let sg: String = got.chars().filter(|c| !c.is_whitespace()).collect();
+                let sw: String = want.chars().filter(|c| !c.is_whitespace()).collect();
+                if sg != sw {
+                    // 报出第一段没进选区的内容，便于定位是哪一块漏了。
+                    let mut tail = String::new();
+                    for w in sw.split_inclusive(|c: char| c == '。' || c == '\n') {
+                        if !sg.contains(&w[..w.len().min(6)]) {
+                            tail.push_str(w);
+                        }
+                    }
+                    bad.push(format!(
+                        "{name}｜{style:?}｜active={active}：只选中一部分（选区 {sel:?}）漏：{}",
+                        if tail.is_empty() {
+                            "（内容顺序或末尾差异）".to_string()
+                        } else {
+                            tail
+                        }
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "拖选扫描发现 {} 个未通过组合：\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}
+
+/// 诊断：表格起拖 + L 形路径，逐帧打印锚点与选区。
+#[test]
+fn diag_table_lshaped_anchor() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new(
+        "| 甲列 | 乙列 |\n|:--|--:|\n| 一 | 二 |\n\n- [ ] 任务项内容\n- [x] 已完成项\n\n表格之后的段落。",
+        None,
+    );
+    app.home = false;
+    app.editor.active = 2;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let start = point_at(&shapes, "甲列", 70.0, 0);
+    let (_, g) = editor_galley(&shapes, "表格之后的段落", 70.0);
+    let end = point_at(&shapes, "表格之后的段落", 70.0, g.text().chars().count());
+    println!("诊断 start={start:?} end={end:?} 块数={}", app.doc.blocks.len());
+    for i in 0..app.doc.blocks.len() {
+        println!("  块 {i}: plain={:?}", app.doc.blocks[i].plain());
+    }
+    run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(start)]);
+    run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(start, true)]);
+    println!("  按下后 cross_sel={:?} press_caret={:?}", app.editor.cross_sel, app.editor.press_caret);
+    let mid = egui::pos2(start.x, end.y);
+    run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(mid)]);
+    println!("  竖直到 {mid:?} 后 cross_sel={:?} press_caret={:?}", app.editor.cross_sel, app.editor.press_caret);
+    run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(end)]);
+    println!("  水平到终点后 cross_sel={:?}", app.editor.cross_sel);
+    run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(end, false)]);
+    println!("  松开后 cross_sel={:?}", app.editor.cross_sel);
+    println!("  文本 {:?}", crate::editor::cross_sel_text(&app.doc, app.editor.cross_sel));
+}
+
+/// 拖到「块内第 k 个字符」与「下一块首字」这类精确落点，选中文字必须逐字相等。
+fn sweep_expect(doc: &Document, sel: Option<(usize, usize, usize, usize)>) -> String {
+    let Some(sel) = sel else { return String::new() };
+    crate::editor::cross_sel_text(doc, Some(sel)).unwrap_or_default()
+}
+
+/// 长文档 + 多行内标记混排：逐行、逐块拖选都不能漏。
+#[test]
+fn drag_sweep_multiline_and_marked_text_is_exact() {
+    let long = "这一段足够长会自然换行到第二行甚至第三行，中间还夹着 `some_code`、**粗体文字**、\
+                [一个链接](https://example.com) 以及行内公式 $x_i^2 + y_i^2$，后面继续补充内容：\
+                水准测量在每个测段都要做前后视距差检核，超过限值就要重测；这里再写一些文字，\
+                保证排版一定会折到第二行、第三行上去，这样拖选跨行时的端点才检验得出来。";
+    let src = format!(
+        "# 混排标题在上方\n\n{long}\n\n{long}\n\n> 引用同样带 `代码` 与 **粗体**，也要能整段拖选出来。\n\n\
+         - 列表项里带 `代码` 的长文字，用来检查列表项作为端点时选区是否落全内容。\n- 第二个列表项文字。\n\n\
+         结束段。"
+    );
+    let styles = [
+        PathStyle::Fine,
+        PathStyle::Coarse,
+        PathStyle::Fast,
+        PathStyle::LShaped,
+        PathStyle::LeftMargin,
+        PathStyle::RightBlank,
+    ];
+    let mut bad: Vec<String> = Vec::new();
+    for style in styles {
+        for active in [0usize, 2, 4, 8] {
+            let ctx = egui::Context::default();
+            let mut app = test_app();
+            let mut frame = eframe::Frame::_new_kittest();
+            app.doc = Document::new(&src, None);
+            app.home = false;
+            app.editor.active = active.min(app.doc.blocks.len() - 1);
+            for _ in 0..3 {
+                run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+            }
+            let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+            let Some((_, g)) = shapes.iter().find_map(|cs| match &cs.shape {
+                egui::Shape::Text(t) if t.galley.text().contains("some_code") && t.pos.y > 70.0 => {
+                    Some((t.pos, &*t.galley))
+                }
+                _ => None,
+            }) else {
+                bad.push(format!("{style:?}｜active={active}：没渲染出混排段落"));
+                continue;
+            };
+            let rows = g.rows.len();
+            assert!(rows >= 2, "混排段落应换行，实际 {rows} 行（用例前提不成立）");
+            // 目标：从本段首字拖到「结束段」的最后一个字之后。
+            let end_key = "结束段。";
+            let (_, ge) = editor_galley(&shapes, end_key, 70.0);
+            // 起点取「混排段落第一个字」，与下面 want 从该块整块起算保持一致。
+            let start = point_at(&shapes, "some_code", 70.0, 0);
+            let end = point_at(&shapes, end_key, 70.0, ge.text().chars().count());
+            drag_with_style(&ctx, &mut app, &mut frame, start, end, style);
+            let got = sweep_expect(&app.doc, app.editor.cross_sel);
+            let want = {
+                let n = app.doc.blocks.len() - 1;
+                let start_block = app
+                    .doc
+                    .blocks
+                    .iter()
+                    .position(|b| b.plain().contains("some_code"))
+                    .expect("混排段落存在");
+                let mut v: Vec<String> = Vec::new();
+                for i in start_block..=n {
+                    v.push(app.doc.blocks[i].plain());
+                }
+                v.join("\n\n")
+            };
+            let sg: String = got.chars().filter(|c| !c.is_whitespace()).collect();
+            let sw: String = want.chars().filter(|c| !c.is_whitespace()).collect();
+            if sg != sw {
+                bad.push(format!(
+                    "{style:?}｜active={active}｜起点段 {rows} 行：漏字（选区 {:?}）",
+                    app.editor.cross_sel
+                ));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "混排长文拖选未通过：\n{}",
+        bad.join("\n")
+    );
+}
+
+/// 长文档（内容高于视口）：拖到视口之外要能自动滚动并一路选到底部块。
+#[test]
+fn drag_beyond_viewport_autoscrolls_to_bottom_block() {
+    let mut src = String::new();
+    for i in 0..40 {
+        src.push_str(&format!("第 {i} 段文字内容，带 `code_{i}` 的行内代码也一并排进去。\n\n"));
+    }
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new(&src, None);
+    app.home = false;
+    app.editor.active = 0;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let start = point_of_key(&shapes, "code_0", 70.0, 0);
+    // 终点在视口外：按下后先滚一帧再落到视口底缘之外，靠越界自动滚动延伸。
+    let below = egui::pos2(start.x + 40.0, 1400.0);
+    run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(start)]);
+    run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(start, true)]);
+    for k in 1..=20 {
+        let p = egui::pos2(start.x + 40.0, start.y + (below.y - start.y) * k as f32 / 20.0);
+        run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(p)]);
+    }
+    // 停在视口之外持续滚动，直到内容不再移动（最多 120 帧）
+    let mut prev_top = ctx.input(|_| 0.0);
+    let _ = prev_top;
+    let mut last_sel_end = app.editor.cross_sel.map_or(0, |s| s.2);
+    let mut still = 0;
+    for _ in 0..120 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(below)]);
+        let end = app.editor.cross_sel.map_or(0, |s| s.2.max(s.0));
+        if end == last_sel_end {
+            still += 1;
+            if still >= 6 {
+                break;
+            }
+        } else {
+            still = 0;
+            last_sel_end = end;
+        }
+    }
+    let last = app.doc.blocks.len() - 1;
+    // 松手前指针仍在视口外：按最后一次落点松手
+    let p = ctx.input(|i| i.pointer.interact_pos()).unwrap_or(below);
+    run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(p, false)]);
+    let sel = app.editor.cross_sel.unwrap_or((0, 0, 0, 0));
+    assert!(
+        sel.0.min(sel.2) == 0 && sel.0.max(sel.2) >= last - 2,
+        "拖到视口外应自动滚动并选到文档末尾附近，实际选区 {sel:?}（末块 {last}）"
+    );
+    let got = sweep_expect(&app.doc, app.editor.cross_sel);
+    assert!(
+        got.contains("第 30 段") || got.contains("第 39 段"),
+        "选区应包含视口外的段落文字，实际长度 {}",
+        got.chars().count()
+    );
+}
+
+/// 网格扫查用的文档集合：块类型尽量铺满（标题、段落、行内代码、加粗、链接、
+/// 行内公式、图片、脚注、列表、任务项、有序列表、嵌套引用、代码块、表格、块级公式）。
+const GRID_DOCS: [&str; 5] = [
+    "# 网格扫查用的标题\n\n\
+     带 `inline_code` 的段落文字内容，用来检查代码片附近的落点。\n\n\
+     > 引用一行带 `code` 的文字内容。\n\n\
+     - 列表项一内容带 `code`\n- 列表项二内容\n\n\
+     ```rust\nfn grid() {}\n```\n\n\
+     | 网格甲 | 网格乙 |\n|:--|--:|\n| 一 | 二 |\n\n\
+     收尾段落文字内容在这里。",
+    "# 带标记的标题\n\n\
+     先看 `alpha_code` 与 **粗体文字** 再加 [一个链接](https://example.com) 后面的中文内容，\
+     段落要足够长才会折行，第二行同样夹着 `beta_code` 与 **另一段粗体**，用来逐点验证归属。\n\n\
+     前 $x_i^2 + y_i^2$ 后的行内公式段落文字内容。\n\n\
+     ![配图说明](pics/notexist-9f3a.png)\n\n\
+     尾注句子[^n1]与下一段。\n\n[^n1]: 网格用例的脚注内容文字。\n\n\
+     收尾段落文字内容在这里。",
+    "# 列表阶梯标题\n\n\
+     - 任务项一内容带 `code`\n- [x] 已完成任务项内容\n\n\
+     1. 有序项一内容\n2. 有序项二内容\n\n\
+     > 引用第一层文字内容带 `code`。\n\n>> 引用第二层文字内容。\n\n\
+     ```python\nprint('网格代码块内容')\n```\n\n\
+     | 甲 | 乙 | 丙 |\n|:--|:-:|--:|\n| 1 | 2 | 3 |\n\n$$\nx^2+y^2=z^2\n$$\n\n\
+     收尾段落文字内容在这里。",
+    "# 段落与换行\n\n\
+     一段非常长的中文正文，用来把段落撑到两三行，中间还要夹一个 `code_in_long_paragraph`\
+     让代码片出现在行中与行首的位置上，看看拖选会不会漏掉后半截内容，因此继续补充文字\
+     直到必然折行为止，最后一行只剩几个字。\n\n另一段普通文字内容。",
+    // 用户截图那种多层嵌套列表：缩进越深、圆点与文字之间空隙越宽，
+    // 左侧 -24px 采样必须照样锚定与延伸。
+    "- 有哪些大模型应用开发框架呢\n  \
+     - 截止到2025年7月26日，GitHub统计数据：\n    \
+     - LangChain：这些工具里出现最早、最成熟的，适合复杂任务分解和单智能体应用\n      \
+     - Llamalndex：专注于高效的索引和检索，适合 RAG 场景。\n        \
+     - DeepSeek：注意不是Meta开发的，功能略少于LangChain，但核心功能都有。\n  \
+     - [ ] 任务条目带 `code`，复选框左边也属于本行\n\
+     收尾段落文字内容在这里。",
+];
+
+/// 指针网格扫查：在正文的每一个 y（含块内留白、块间空档、左侧缩进、右侧空白）
+/// 落点都必须 ① 建立选区，② 终点块 = 产品本帧真实矩形里该行的归属块，
+/// ③ 锚点与终点之间的所有内容块必须整块进选区（不允许「只选中一部分」）。
+#[test]
+fn drag_endpoint_grid_covers_every_pointer_row() {
+    for src in GRID_DOCS {
+        grid_sweep(src);
+    }
+}
+
+fn grid_sweep(src: &str) {
+    let offsets_x = [-24.0f32, 0.0, 60.0, 240.0, 520.0];
+    let mut bad: Vec<String> = Vec::new();
+    let mut samples = 0usize;
+    for dx in offsets_x {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        let mut frame = eframe::Frame::_new_kittest();
+        app.doc = Document::new(src, None);
+        app.home = false;
+        app.editor.active = 0;
+        for _ in 0..3 {
+            run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+        }
+        let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+        let first_key = {
+            let k: String = app.doc.blocks[0]
+                .plain()
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .take(8)
+                .collect();
+            if k.is_empty() {
+                app.doc
+                    .blocks
+                    .iter()
+                    .find_map(|b| {
+                        let k: String = b
+                            .plain()
+                            .chars()
+                            .filter(|c| !c.is_whitespace())
+                            .take(8)
+                            .collect();
+                        (!k.is_empty()).then_some(k)
+                    })
+                    .expect("文档有可读块")
+            } else {
+                k
+            }
+        };
+        let anchor = point_at(&shapes, &first_key, 70.0, 0);
+        // 本帧真实块矩形（含空白行——空行本身也是可选中、可停留的一行）。
+        let rects: Vec<(usize, egui::Rect)> = app
+            .editor
+            .last_block_rects
+            .iter()
+            .map(|(i, r)| {
+                (
+                    *i,
+                    egui::Rect::from_min_max(egui::pos2(r.0, r.1), egui::pos2(r.2, r.3)),
+                )
+            })
+            .collect();
+        assert!(
+            rects.len() >= 4,
+            "可见块太少，网格前提不成立：{}",
+            rects.len()
+        );
+        let lo = rects.iter().map(|(_, r)| r.top()).fold(f32::INFINITY, f32::min) - 4.0;
+        let hi = rects.iter().map(|(_, r)| r.bottom()).fold(0.0f32, f32::max) + 4.0;
+        let mut y = lo;
+        while y <= hi {
+            samples += 1;
+            let px = anchor.x + dx;
+            let expect = rects
+                .iter()
+                .find(|(_, r)| r.contains(egui::pos2(px, y)))
+                .map(|(i, _)| *i)
+                .unwrap_or_else(|| {
+                    rects
+                        .iter()
+                        .min_by_key(|(_, r)| {
+                            let d = if y < r.top() {
+                                r.top() - y
+                            } else if y > r.bottom() {
+                                y - r.bottom()
+                            } else {
+                                0.0
+                            };
+                            (d * 1000.0) as i32
+                        })
+                        .map(|(i, _)| *i)
+                        .unwrap_or(0)
+                });
+            run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(anchor)]);
+            run_real_frame(
+                &ctx,
+                &mut app,
+                &mut frame,
+                vec![pointer_button(anchor, true)],
+            );
+            // 先横着走 40px 保证被判定成拖动，再走向目标落点。
+            let warm = egui::pos2(anchor.x + 40.0, anchor.y);
+            run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(warm)]);
+            let mut cur = warm;
+            for k in 1..=8 {
+                let t = k as f32 / 8.0;
+                cur = egui::pos2(warm.x + (px - warm.x) * t, warm.y + (y - warm.y) * t);
+                run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(cur)]);
+            }
+            run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(cur, false)]);
+            let Some(sel) = app.editor.cross_sel else {
+                bad.push(format!(
+                    "文档「{}」dx={dx:>6.0} y={y:>6.1}：没有选区（期望块 {expect}）",
+                    &src[..src.chars().take(10).collect::<Vec<_>>().len().min(30)]
+                ));
+                y += 12.0;
+                continue;
+            };
+            let end_block = sel.0.max(sel.2);
+            let start_block = sel.0.min(sel.2);
+            if start_block != 0 {
+                bad.push(format!("dx={dx:>6.0} y={y:>6.1}：锚点块 {start_block} 应为 0（{sel:?}）"));
+            }
+            if end_block != expect {
+                bad.push(format!(
+                    "dx={dx:>6.0} y={y:>6.1}：终点块 {end_block} ≠ 归属块 {expect}（{sel:?}）"
+                ));
+            }
+            // 中间所有内容块必须整块进选区。
+            let got: String = crate::editor::cross_sel_text(&app.doc, Some(sel))
+                .unwrap_or_default()
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            for i in (start_block + 1)..end_block {
+                let Some(b) = app.doc.blocks.get(i) else { continue };
+                if matches!(b, crate::ast::Block::Blank { .. }) {
+                    continue;
+                }
+                let key: String = b
+                    .plain()
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .take(6)
+                    .collect();
+                if !key.is_empty() && !got.contains(&key) {
+                    bad.push(format!(
+                        "dx={dx:>6.0} y={y:>6.1}：中间块 {i}「{key}」整块漏选（{sel:?}）"
+                    ));
+                }
+            }
+            app.editor.cross_sel = None;
+            y += 12.0;
+        }
+    }
+    println!("网格扫查（{} 字文档）共采样 {samples} 个落点，失败 {} 个", src.chars().count(), bad.len());
+    assert!(
+        bad.is_empty(),
+        "网格扫查失败 {} 个落点（前 24 个）：\n{}",
+        bad.len(),
+        bad.iter().take(24).cloned().collect::<Vec<_>>().join("\n")
+    );
+}
+
+/// 行内代码 / 加粗 / 链接混排的活动段落：把指针逐点放到每个字符上，
+/// 松手后的终点必须与该点在最终版式下对应的可见字符一致（允许 ±1 字符）。
+/// 这一条专治「有行内代码就只选中半截」：光标进入标记内部会露出 `**`/反引号，
+/// 版式当场位移，端点算错就表现为漏选。
+#[test]
+fn drag_endpoint_char_matches_pointer_over_marked_text() {
+    let src = "先看 `alpha_code` 与 **粗体文字** 再加 [一个链接](https://example.com) 后面的中文内容，\
+               段落要足够长才会折行，第二行同样夹着 `beta_code` 与 **另一段粗体**，用来逐点验证终点字符。\n\n\
+               收尾段落。";
+    for (tag, active) in [("活动块（编辑态）", 0usize), ("渲染态（活动块在别处）", 2usize)] {
+        let ctx = egui::Context::default();
+        let mut app = test_app();
+        let mut frame = eframe::Frame::_new_kittest();
+        app.doc = Document::new(src, None);
+        app.home = false;
+        app.editor.active = active;
+        for _ in 0..3 {
+            run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+        }
+        let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+        let key = "alpha_code";
+        let (_, g) = editor_galley(&shapes, key, 70.0);
+        let n = g.text().chars().count();
+        let anchor = point_at(&shapes, key, 70.0, 0);
+        let plain: String = app.doc.blocks[0].plain();
+        let mut bad: Vec<String> = Vec::new();
+        // 逐字符取样（步长 3 个字符，兼顾覆盖与耗时）。
+        let mut ch = 2usize;
+        while ch < n {
+            let target = point_at(&shapes, key, 70.0, ch);
+            run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(anchor)]);
+            run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(anchor, true)]);
+            let warm = egui::pos2(anchor.x + 30.0, anchor.y);
+            run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(warm)]);
+            let mut cur = warm;
+            let steps = (((target - warm).length() / 10.0).ceil() as usize).max(1);
+            for k in 1..=steps {
+                let t = k as f32 / steps as f32;
+                cur = egui::pos2(warm.x + (target.x - warm.x) * t, warm.y + (target.y - warm.y) * t);
+                run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(cur)]);
+            }
+            run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(cur, false)]);
+            let Some(sel) = app.editor.cross_sel else {
+                bad.push(format!("{tag} 字符 {ch}：没有选区"));
+                ch += 3;
+                continue;
+            };
+            // 以「松手后的实际版式」为基准换算期望字符。
+            let (shapes2, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+            let (o2, g2) = editor_galley(&shapes2, key, 70.0);
+            let expect_buf = g2
+                .cursor_from_pos(cur - o2)
+                .index
+                .0
+                .min(g2.text().chars().count());
+            let expect = crate::render::plain_char_index(g2, expect_buf).min(plain.chars().count());
+            let got = if sel.2 == 0 { sel.3 } else { sel.1 };
+            if got.abs_diff(expect) > 1 {
+                bad.push(format!(
+                    "{tag} 取样字符 {ch}（p={cur:?}）：终点字符 {got} ≠ 落点 {expect}"
+                ));
+            }
+            app.editor.cross_sel = None;
+            ch += 3;
+        }
+        assert!(
+            bad.is_empty(),
+            "{tag}：逐点拖选终点未通过 {} 处：\n{}",
+            bad.len(),
+            bad.iter().take(12).cloned().collect::<Vec<_>>().join("\n")
+        );
+    }
+}
+
+fn kind_of(b: &crate::ast::Block) -> &'static str {
+    use crate::ast::Block as B;
+    match b {
+        B::Heading { .. } => "Heading",
+        B::Paragraph { .. } => "Paragraph",
+        B::Quote { .. } => "Quote",
+        B::ListItem { .. } => "ListItem",
+        B::Code { .. } => "Code",
+        B::Table { .. } => "Table",
+        B::Math { .. } => "Math",
+        B::Footnote { .. } => "Footnote",
+        B::Blank { .. } => "Blank",
+        _ => "其它",
+    }
+}
+
+/// 逐块起拖：文档里每一种块都当作拖选的起点按下，向下拖到最后一块，
+/// 锚点必须锁在被按下的块上（专治「在表格/代码块/引用/任务项上按下拖不动」）。
+#[test]
+fn every_block_type_can_start_a_drag() {
+    let src = "# 起点扫查标题\n\n\
+               起点扫查段落带 `code_a` 文字内容。\n\n\
+               > 起点扫查引用文字内容。\n\n\
+               - 起点扫查列表项内容带 `code_b`\n\
+               - [ ] 起点扫查任务项内容\n\n\
+               1. 起点扫查有序项内容\n\n\
+               ```rust\nfn grid_start() {}\n```\n\n\
+               | 起点甲 | 起点乙 |\n|:--|--:|\n| 丙 | 丁 |\n\n\
+               $$\nx^2+y^2=z^2\n$$\n\n\
+               尾注句子[^gn]与收尾段落。\n\n[^gn]: 起点扫查脚注内容文字。";
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new(src, None);
+    app.home = false;
+    for _ in 0..3 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    // 每个块的按下点：取该块可见文本里一个词的实际位置；纯公式块取不到文字，
+    // 用块矩形中心（表格/代码块等也走同一路径，避免只测有文字的块）。
+    let rects: Vec<(usize, egui::Rect)> = app
+        .editor
+        .last_block_rects
+        .iter()
+        .map(|(i, r)| {
+            (
+                *i,
+                egui::Rect::from_min_max(egui::pos2(r.0, r.1), egui::pos2(r.2, r.3)),
+            )
+        })
+        .collect();
+    let last = rects.last().expect("有块矩形").0;
+    let mut bad: Vec<String> = Vec::new();
+    for (i, r) in &rects {
+        if matches!(app.doc.blocks[*i], crate::ast::Block::Blank { .. }) || *i == last {
+            continue;
+        }
+        // 按下点：块内文字优先，没有文字的块用矩形中心。
+        let key: String = app.doc.blocks[*i]
+            .plain()
+            .split_whitespace()
+            .max_by_key(|w| w.chars().count())
+            .unwrap_or("")
+            .chars()
+            .take(8)
+            .collect();
+        let press = match (key.is_empty(), shapes.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text().contains(&key) && t.pos.y > 70.0 => Some(t.pos),
+            _ => None,
+        })) {
+            (false, Some(p)) => egui::pos2(p.x + 4.0, p.y + 7.0),
+            _ => r.center(),
+        };
+        let end = egui::pos2(
+            rects[last].1.center().x,
+            rects.last().expect("有块矩形").1.bottom() - 3.0,
+        );
+        app.editor.cross_sel = None;
+        run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(press)]);
+        run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(press, true)]);
+        let mut cur = press;
+        for k in 1..=8 {
+            let t = k as f32 / 8.0;
+            cur = egui::pos2(press.x + (end.x - press.x) * t, press.y + (end.y - press.y) * t);
+            run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(cur)]);
+        }
+        run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(cur, false)]);
+        let Some(sel) = app.editor.cross_sel else {
+            bad.push(format!("块 {i} 起拖：没有建立选区（按下点 {press:?}）"));
+            continue;
+        };
+        let anchor = sel.0.min(sel.2);
+        if anchor != *i {
+            bad.push(format!(
+                "块 {i}（{}）起拖：锚点应锁在本块，实际 {anchor}（{sel:?}，按下点 {press:?}）",
+                kind_of(&app.doc.blocks[*i])
+            ));
+            continue;
+        }
+        if sel.0.max(sel.2) < last {
+            bad.push(format!("块 {i} 起拖：终点没到最后一块 {last}（{sel:?}）"));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "逐块起拖未通过 {} 处：\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}

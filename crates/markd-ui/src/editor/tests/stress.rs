@@ -703,7 +703,8 @@ fn stress_source_parts() {
     let ctx = egui::Context::default();
     markd_platform::fonts::install(&ctx);
     // fonts 要跑过一帧才存在（Context::fonts_mut 在此之前是 None）。
-    ctx.run_ui(egui::RawInput::default(), |_| {});
+    let mut _warm = ctx.run_ui(egui::RawInput::default(), |_| {});
+    _warm.textures_delta.clear();
     let t = Instant::now();
     let cold = layout(&ctx);
     log(&ttag, "galley_cold_ms", ms(t.elapsed()));
@@ -969,4 +970,158 @@ fn stress_block_kinds() {
         log(kind, "verts", last.1);
         log(kind, "rss_mb", format!("{:.0}", rss_mb()));
     }
+}
+
+/// 读入指定文件，打印应用「统计」面板用到的各项计数。
+///
+/// 用于核对生成语料的口径：状态栏的「字符」是 `plain()`（剥掉 Markdown 标记）后
+/// 的非空白字符数，比文件的 Unicode 字符数小得多。
+///
+/// `MARKD_STRESS=1 MARKD_STRESS_FILE=/path/to.md cargo test --release -p markd-ui \
+///   stress_stats_of_file -- --nocapture --test-threads=1`
+#[test]
+fn stress_stats_of_file() {
+    if !enabled() {
+        return;
+    }
+    let path = match std::env::var_os("MARKD_STRESS_FILE") {
+        Some(p) => PathBuf::from(p),
+        None => return,
+    };
+    let text = std::fs::read_to_string(&path).expect("读文件失败");
+    let doc = Document::new(&text, Some(path.clone()));
+    let s = doc.stats();
+    let tag = "file";
+    log(tag, "path", path.display());
+    log(tag, "bytes", text.len());
+    log(tag, "unicode_chars", text.chars().count());
+    log(tag, "lines", text.lines().count());
+    log(tag, "blocks", doc.blocks.len());
+    log(tag, "stats_chars", s.chars);
+    log(tag, "stats_words", s.words);
+    log(tag, "stats_cjk", s.cjk);
+    log(tag, "stats_lines", s.lines);
+    log(
+        tag,
+        "plain_ratio",
+        format!("{:.3}", s.chars as f64 / text.chars().count() as f64),
+    );
+}
+
+/// 对**指定文件**跑一遍帧成本探针（`stress_frames` 用的是自造语料，
+/// 用户手工测试用的文档需要自己的数字）。
+///
+/// `MARKD_STRESS=1 MARKD_STRESS_FILE=/path/to.md cargo test --release -p markd-ui \
+///   stress_frames_of_file -- --nocapture --test-threads=1`
+#[test]
+fn stress_frames_of_file() {
+    if !enabled() {
+        return;
+    }
+    let path = match std::env::var_os("MARKD_STRESS_FILE") {
+        Some(p) => std::path::PathBuf::from(p),
+        None => return,
+    };
+    let text = std::fs::read_to_string(&path).expect("读文件失败");
+    let tag = format!("file-{}", mtag(text.chars().count()));
+
+    // 打开流水线：解析 / 大纲 / 统计 / 导出 / 全文扫描，都是「刚打开那几秒」的账。
+    let t = Instant::now();
+    let parsed = Document::new(&text, None);
+    log(&tag, "parse_ms", ms(t.elapsed()));
+    let t = Instant::now();
+    let items = parsed.outline().len();
+    log(&tag, "outline_ms", ms(t.elapsed()));
+    log(&tag, "outline_items", items);
+    let t = Instant::now();
+    let _st = parsed.stats();
+    log(&tag, "stats_ms", ms(t.elapsed()));
+    let t = Instant::now();
+    let _html = crate::export::to_html("压测", &text, false);
+    log(&tag, "export_ms", ms(t.elapsed()));
+    let t = Instant::now();
+    let hits = crate::find::scan_hits(
+        &parsed.blocks,
+        &regex::Regex::new("压力不存在词xy").unwrap(),
+    );
+    log(&tag, "find_scan_ms", ms(t.elapsed()));
+    log(&tag, "find_hits", hits.len());
+    drop(parsed);
+
+    let mut rig = Rig::new(&text, 2.0);
+    let total = rig.blocks;
+    let s = rig.doc.stats();
+    log(&tag, "path", path.display());
+    log(&tag, "unicode_chars", text.chars().count());
+    log(&tag, "stats_chars", s.chars);
+    log(&tag, "blocks", total);
+    log(&tag, "rss_after_parse_mb", format!("{:.0}", rss_mb()));
+
+    let t = Instant::now();
+    let (layout, _, _, _) = rig.frame(false);
+    log(&tag, "first_frame_ms", ms(t.elapsed()));
+    log(&tag, "first_layout_ms", ms(layout));
+
+    let mut worst = Duration::ZERO;
+    let mut sum = Duration::ZERO;
+    let mut last = (0usize, 0usize);
+    for _ in 0..5 {
+        let (layout, shapes, verts, _) = rig.frame(false);
+        sum += layout;
+        worst = worst.max(layout);
+        last = (shapes, verts);
+    }
+    log(&tag, "idle_frame_avg_ms", ms(avg(sum, 5)));
+    log(&tag, "idle_frame_worst_ms", ms(worst));
+    log(&tag, "shapes_per_frame", last.0);
+    log(&tag, "verts_per_frame", last.1);
+
+    let mut worst = Duration::ZERO;
+    let mut sum = Duration::ZERO;
+    for k in 0..20 {
+        let b = (total.saturating_sub(1) * k) / 20;
+        rig.state.active = b;
+        rig.state.scroll_req = Some(b);
+        let (layout, _, _, _) = rig.frame(false);
+        sum += layout;
+        worst = worst.max(layout);
+    }
+    log(&tag, "scroll_frame_avg_ms", ms(avg(sum, 20)));
+    log(&tag, "scroll_frame_worst_ms", ms(worst));
+
+    rig.state.active = total / 2;
+    rig.state.scroll_req = None;
+    let mut worst = Duration::ZERO;
+    let mut sum = Duration::ZERO;
+    for k in 0..10 {
+        let t = Instant::now();
+        rig.doc.edit_block(total / 2, &format!("连续输入测试 {k}"));
+        let e = t.elapsed();
+        let (layout, _, _, _) = rig.frame(false);
+        sum += layout;
+        worst = worst.max(e + layout);
+    }
+    log(&tag, "keypress_frame_avg_ms", ms(avg(sum, 10)));
+    log(&tag, "keypress_worst_ms", ms(worst));
+
+    // 撤销这 10 次编辑：栈里存的是块级差量，代价应与文档规模无关。
+    let t = Instant::now();
+    for _ in 0..10 {
+        rig.doc.undo();
+    }
+    log(&tag, "undo10_ms", ms(t.elapsed()));
+    log(&tag, "undo_stack_kb", format!("{:.1}", rig.doc.undo_bytes() as f64 / 1024.0));
+
+    // 源码模式：整篇一个 TextEdit，冷首帧与暖帧分开看。
+    let t = Instant::now();
+    let (cold, _, _, _) = rig.frame(true);
+    log(&tag, "source_first_frame_ms", ms(t.elapsed()));
+    log(&tag, "source_first_layout_ms", ms(cold));
+    let (warm, _, _, _) = rig.frame(true);
+    log(&tag, "source_frame_ms", ms(warm));
+    let t = Instant::now();
+    rig.doc.set_source(&rig.doc.source());
+    log(&tag, "set_source_ms", ms(t.elapsed()));
+
+    log(&tag, "rss_end_mb", format!("{:.0}", rss_mb()));
 }

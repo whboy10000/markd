@@ -29,6 +29,7 @@ fn inline_math_image_aligns_to_text_baseline() {
         baseline,
         reserved: size.x,
         scale,
+        tall: false,
     };
     let origin = egui::pos2(100.0, 50.0);
     let shapes = math_image_shapes(&galley, origin, &[run], theme.text);
