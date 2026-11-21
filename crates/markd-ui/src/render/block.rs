@@ -2,9 +2,57 @@
 
 use super::*;
 
+/// YAML Front Matter 悬浮条的尺寸：`(宽, 高)`，宽度按「折叠 + 删除 + 复制」
+/// 三个按钮最坏情况留足，超出部分会被按钮自己的右对齐布局吃掉。
+const FLOATING_STRIP: (f32, f32) = (140.0, 24.0);
+
+/// 代码面板的操作按钮（折叠 / 删除 / 复制），从右往左排。
+/// 普通代码块把它们画在功能栏那一行，YAML Front Matter 画在悬停浮现的悬浮条里，
+/// 两处行为完全一致。返回是否点了「复制」。
+fn panel_buttons(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    env: &mut RenderEnv<'_>,
+    idx: usize,
+    folded: bool,
+) -> bool {
+    let mut copied = false;
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // 最右：折叠/展开；其次删除（弹确认窗）；再复制
+        let fold_label = if folded { "展开" } else { "折叠" };
+        if ui
+            .button(egui::RichText::new(fold_label).size(theme.body * 0.85))
+            .on_hover_cursor(egui::CursorIcon::Default)
+            .clicked()
+        {
+            env.actions.push(Action::FoldToggle(idx));
+        }
+        if !folded {
+            if ui
+                .button(egui::RichText::new("删除").size(theme.body * 0.85))
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .clicked()
+            {
+                env.actions.push(Action::AskDeleteBlock(idx));
+            }
+            if ui
+                .button(egui::RichText::new("复制").size(theme.body * 0.85))
+                .on_hover_cursor(egui::CursorIcon::Default)
+                .clicked()
+            {
+                copied = true;
+            }
+        }
+    });
+    copied
+}
+
 /// 代码块外观的面板：功能栏（语言 + 折叠 / 删除 / 复制）+ 分隔线 + 语法高亮代码区。
 /// `lang_editable=false` 时语言位显示固定标签——YAML Front Matter 走这条：外观与普通
 /// 代码块一致，但语言恒为 yaml（`Action::SetLang` 也只对 Code 块生效，改它没有意义）。
+/// `floating_header=true`（YAML Front Matter）时整条功能栏与分隔线都不画，面板只有代码区
+/// 那么高；三个按钮改在指针进入面板时浮现在右上角（[`FLOATING_STRIP`]）。不这么做的话
+/// 一 hover 就插进来一行，下面整篇文档跟着往下跳。
 /// 返回整块 Response，供上层判定点击激活与跨块拖选的选区矩形。
 fn code_panel(
     ui: &mut egui::Ui,
@@ -15,6 +63,7 @@ fn code_panel(
     code: &str,
     quote: usize,
     lang_editable: bool,
+    floating_header: bool,
 ) -> egui::Response {
     let folded = env.folded.contains(&idx);
     // 折叠动画：1=完全展开、0=完全折叠，中间平滑过渡。
@@ -42,70 +91,36 @@ fn code_panel(
         let r = ui
             .vertical(|ui| {
                 panel_frame(theme).show(ui, |ui| {
-                    // 功能栏：左语言 + 右操作按钮（code_header 背景色块）
-                    header_rect = code_header_frame(theme)
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                if lang_editable {
-                                    if let Some(l) = language_combo(ui, ("code_lang", idx), lang) {
-                                        new_lang = Some(l);
-                                    }
-                                } else {
-                                    // Front Matter 的语言恒为 yaml：只作标签显示，
-                                    // 免得出现一个改了没反应的下拉（SetLang 只认 Code 块）。
-                                    ui.label(
-                                        egui::RichText::new(lang)
-                                            .size(theme.body * 0.9)
-                                            .color(theme.text),
-                                    )
-                                    .on_hover_text("YAML Front Matter 固定按 yaml 高亮");
-                                }
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        // 最右：折叠/展开；其次删除（弹确认窗）；再复制
-                                        let fold_label = if folded { "展开" } else { "折叠" };
-                                        if ui
-                                            .button(
-                                                egui::RichText::new(fold_label)
-                                                    .size(theme.body * 0.85),
-                                            )
-                                            .on_hover_cursor(egui::CursorIcon::Default)
-                                            .clicked()
+                    if !floating_header {
+                        // 功能栏：左语言 + 右操作按钮（code_header 背景色块）
+                        header_rect = code_header_frame(theme)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    if lang_editable {
+                                        if let Some(l) =
+                                            language_combo(ui, ("code_lang", idx), lang)
                                         {
-                                            env.actions.push(Action::FoldToggle(idx));
+                                            new_lang = Some(l);
                                         }
-                                        if !folded {
-                                            if ui
-                                                .button(
-                                                    egui::RichText::new("删除")
-                                                        .size(theme.body * 0.85),
-                                                )
-                                                .on_hover_cursor(egui::CursorIcon::Default)
-                                                .clicked()
-                                            {
-                                                env.actions.push(Action::AskDeleteBlock(idx));
-                                            }
-                                            if ui
-                                                .button(
-                                                    egui::RichText::new("复制")
-                                                        .size(theme.body * 0.85),
-                                                )
-                                                .on_hover_cursor(egui::CursorIcon::Default)
-                                                .clicked()
-                                            {
-                                                copied = true;
-                                            }
-                                        }
-                                    },
-                                );
-                            });
-                        })
-                        .response
-                        .rect;
-                    ui.add_space(6.0);
-                    code_divider(ui, theme);
-                    ui.add_space(6.0);
+                                    } else {
+                                        // Front Matter 的语言恒为 yaml：只作标签显示，
+                                        // 免得出现一个改了没反应的下拉（SetLang 只认 Code 块）。
+                                        ui.label(
+                                            egui::RichText::new(lang)
+                                                .size(theme.body * 0.9)
+                                                .color(theme.text),
+                                        )
+                                        .on_hover_text("YAML Front Matter 固定按 yaml 高亮");
+                                    }
+                                    copied |= panel_buttons(ui, theme, env, idx, folded);
+                                });
+                            })
+                            .response
+                            .rect;
+                        ui.add_space(6.0);
+                        code_divider(ui, theme);
+                        ui.add_space(6.0);
+                    }
                     // 代码区：完全折叠只留提示；过渡中代码淡出、提示淡入。
                     if openness <= 0.0 {
                         ui.label(
@@ -157,6 +172,22 @@ fn code_panel(
         r
     });
     let r = hr.inner;
+    // YAML Front Matter 的悬浮条：指针进入面板才出现，画在代码区右上角内侧。
+    // 面板高度一帧之间不变，所以 hover 不会把下面的整篇文档顶下去。
+    let floating_strip = if floating_header
+        && env
+            .ctx
+            .input(|i| i.pointer.hover_pos())
+            .is_some_and(|p| r.response.rect.contains(p))
+    {
+        let panel = r.response.rect;
+        Some(Rect::from_min_max(
+            Pos2::new(panel.max.x - FLOATING_STRIP.0, panel.min.y + 5.0),
+            Pos2::new(panel.max.x - 5.0, panel.min.y + 5.0 + FLOATING_STRIP.1),
+        ))
+    } else {
+        None
+    };
     if copied {
         env.ctx.copy_text(code.to_string());
         env.actions.push(Action::Notify("复制成功".to_string()));
@@ -168,8 +199,16 @@ fn code_panel(
     // 空代码块的 galley 又窄又矮，只把文字 label 当点击区时，
     // 鼠标离开后再点代码区空白处命不中，看起来像「代码块不能编辑」。
     // 面板矩形仍参与 union，保证跨块拖选时为整块叠选区色。
+    // 悬浮条模式下没有功能栏那行，命中区从面板顶开始。
     let zone = Rect::from_min_max(
-        Pos2::new(r.response.rect.left(), header_rect.bottom()),
+        Pos2::new(
+            r.response.rect.left(),
+            if floating_header {
+                r.response.rect.top()
+            } else {
+                header_rect.bottom()
+            },
+        ),
         r.response.rect.right_bottom(),
     );
     let content = ui.interact(zone, ui.id().with(("code_click", idx)), Sense::click());
@@ -203,7 +242,10 @@ fn code_panel(
                 && p.x <= band.1
                 && p.y >= zone.top() - 2.0
                 && p.y <= zone.bottom() + 2.0;
-            in_band || (anchored_here && r.response.rect.contains(p))
+            // 悬浮条里的按下点不算代码：否则点「删除」会顺手把光标/选区
+            // 锚到第一行 yaml 的某个字符上。
+            (in_band || (anchored_here && r.response.rect.contains(p)))
+                && !floating_strip.is_some_and(|s| s.contains(p))
         };
         let char_at = |p: Pos2| galley.cursor_from_pos(p - *origin).index.0.min(len);
         let pressed_now = env
@@ -240,6 +282,20 @@ fn code_panel(
                 .filter(|p| hit(*p))
         {
             env.actions.push(Action::Caret(idx, p - *origin));
+        }
+    }
+    // 悬浮条画在最后：控件也在这一帧才注册，命中测试按注册顺序取最上层，
+    // 所以点按钮时上面那个「整块可点击」的 content 不会同时被判定为点击。
+    if let Some(strip) = floating_strip {
+        ui.painter().rect_filled(strip, 4.0, theme.code_header);
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(strip)
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        if panel_buttons(&mut child, theme, env, idx, folded) {
+            env.ctx.copy_text(code.to_string());
+            env.actions.push(Action::Notify("复制成功".to_string()));
         }
     }
     content.union(r.response)
@@ -399,7 +455,7 @@ pub fn render_block(
             }
             Block::Code {
                 lang, code, quote, ..
-            } => code_panel(ui, theme, env, idx, lang, code, *quote, true),
+            } => code_panel(ui, theme, env, idx, lang, code, *quote, true, false),
             Block::CodeGroup { items, .. } => {
                 let folded = env.folded.contains(&idx);
                 let openness = env.ctx.animate_value_with_time(
@@ -1106,9 +1162,10 @@ pub fn render_block(
                 content.union(r.response)
             }
             Block::FrontMatter { yaml, .. } => {
-                // 与普通代码块同款面板：功能栏 + 分隔线 + yaml 高亮，
-                // 折叠 / 复制 / 删除都按代码块的交互走。
-                code_panel(ui, theme, env, idx, "yaml", yaml, 0, false)
+                // 与普通代码块同款代码区（yaml 高亮），但**不画功能栏与分隔线**：
+                // 文档顶部那一长条灰栏很抢眼，而 Front Matter 基本没人想折叠或复制它。
+                // 折叠 / 复制 / 删除改成指针进面板时浮现在右上角，功能一个不少。
+                code_panel(ui, theme, env, idx, "yaml", yaml, 0, false, true)
             }
             Block::Footnote { id, content, .. } => {
                 ui.horizontal(|ui| {

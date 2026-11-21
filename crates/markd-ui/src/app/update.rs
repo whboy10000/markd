@@ -29,6 +29,14 @@ impl eframe::App for MarkdApp {
         for c in pending {
             self.execute(c, &ctx);
         }
+        // 「跟随系统」：系统深浅档一变就重算主题（配色表只认浅色/深色两档）。
+        let dark = matches!(ctx.system_theme(), Some(egui::Theme::Dark));
+        if dark != self.system_dark {
+            self.system_dark = dark;
+            if self.config.theme_follow_system {
+                self.rebuild_theme();
+            }
+        }
         if self.theme_dirty {
             self.theme.apply(&ctx);
             self.theme_dirty = false;

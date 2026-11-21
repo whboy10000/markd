@@ -1,6 +1,6 @@
 # Markd 用户手册
 
-适用于 **Markd 2026.11.20.5**（macOS / Windows / Linux）。
+适用于 **Markd 2026.11.21.1**（macOS / Windows / Linux）。
 文中 `Cmd` 指 macOS 的 ⌘，在 Windows / Linux 上对应 `Ctrl`；标注「macOS」的绑定只在 macOS 生效。
 每条功能都可在应用内验证：`F1` 打开快捷键一览，`Cmd/Ctrl + P` 打开命令面板搜索命令名。
 
@@ -120,7 +120,7 @@
 | ` ```lang ` … ` ``` ` | 围栏代码块，`lang` 决定高亮语言与代码组标签 |
 | `\| 列 \| 列 \|` + `---` 行 | 表格，`---:` / `:---:` / `:---:` 控制右 / 左 / 对齐 |
 | `[^1]` 与 `[^1]: 内容` | 脚注引用与定义，自动编号 |
-| 文件顶部 `---` … `---` | YAML Front Matter，以代码块面板呈现（语言固定 `yaml`），不混入正文 |
+| 文件顶部 `---` … `---` | YAML Front Matter，以代码面板呈现（无功能栏，悬停才浮现操作按钮），不混入正文 |
 | `[TOC]` | 就地插入目录（可在偏好设置里整体关掉） |
 
 **行内**
@@ -162,7 +162,7 @@
 - **注释语法按语言**给出，而不是跟着配色族：`//`、`#`、`--`、`%`、`;`、`!`、`::` / `rem`、`dnl`、`\*`、`%%`，块注释支持 `/* */`、`<!-- -->`、`{- -}`、`(* *)`、`{ }`、`--[[ ]]`、`#= =#`、`(: :)`；正文型语言（Markdown/纯文本/CSV/diff/LaTeX 正文）不启用 `//`，链接里的 `//` 不会被染成注释；
 - **关键字表**：通用表按族取用，Dockerfile、Makefile、CMake、Terraform/HCL、Nginx、Lua、Haskell、Ruby、Go、LaTeX、MATLAB、Julia、R、Elixir、Clojure、Solidity、GraphQL 另有一张专属表，避免把别族的关键字误标或漏标。
 
-**YAML Front Matter 用同一个代码面板渲染**：文件顶部的 `---` … `---` 块显示成与普通代码块同款的功能栏 + 高亮区，语言位是固定的 `yaml` 标签（不可更改——改语言对 front matter 没有意义），折叠 / 删除 / 复制、折叠动画、点击进编辑态都与代码块一致。「复制」取到的是两行 `---` 之间的 YAML 正文；源码里的 `---` 边界、导出 HTML 的 front matter 处理、大纲归类都不受这次外观变化影响。点进编辑态时仍是含 `---` 的原始文本且不逐字高亮：编辑 front matter 必须看得见、也删得掉那两行边界。
+**YAML Front Matter 用同一个代码面板渲染，但不画功能栏**：文件顶部的 `---` … `---` 块只显示 YAML 高亮区，静止时上方没有任何按钮条——front matter 紧挨着文档开头，常驻功能栏会把「一个字段列表」渲染成「一块要操作的工具面板」，看着吵。鼠标移进这块面板时，折叠 / 删除 / 复制三个按钮浮现在面板右上角（悬停前后代码区的位置完全不变，不会一动鼠标整篇文档就往下跳），点「删除」只弹确认窗、不会顺手把光标锚进 YAML。悬浮条上没有语言标签：改语言对 front matter 没有意义。「复制」取到的是两行 `---` 之间的 YAML 正文；源码里的 `---` 边界、导出 HTML 的 front matter 处理、大纲归类都不受这次外观变化影响。点进编辑态时仍是含 `---` 的原始文本且不逐字高亮：编辑 front matter 必须看得见、也删得掉那两行边界。普通代码块不受影响，功能栏常驻。
 
 **代码组**（菜单「段落 → 插入代码组（多语言 Tab）」，或工具条「代码」下拉的第三项）把同一算法的多语言实现放进一个块，渲染成可切换的 Tab；导出 HTML 时保留 Tab 切换。
 
@@ -200,12 +200,23 @@
 
 ### 6.8 图床（把图片传到远端，文档里写公网 URL）
 
-偏好设置 → 图像 → 图床，平台选「Gitee 仓库」，填：用户名、仓库、分支、目录、保存路径模板（支持 `{year}` `{month}` `{day}` `{hour}` `{minute}` 占位符，默认 `{year}/{month}/{day}`）、私人令牌。
+偏好设置 → 图像 → 图床，平台九个选项：关闭、Gitee 仓库、GitHub 仓库、阿里云 OSS、七牛云 Kodo、火山引擎 TOS、百度智能云 BOS、华为云 OBS、腾讯云 COS。仓库平台填用户名、仓库、分支、令牌；OSS 填地域、存储空间（Bucket）、AccessKey ID、AccessKey Secret；七牛填区域、空间名称、AccessKey、SecretKey、访问域名；火山填地域、存储桶、AccessKey、Secret Access Key；百度填地域、存储桶、AccessKey、Secret Access Key；华为填区域、桶名、访问密钥 ID（Access Key Id）、秘密访问密钥（Secret Access Key）；腾讯填地域、存储桶、SecretId、SecretKey。目录与保存路径模板是所有平台公用的。
+
+- 保存路径模板支持 `{year}` `{month}` `{day}` `{hour}` `{minute}` `{random}` `{filename}` `{suffix}` `{.suffix}`，默认 `{year}/{month}/{day}`；`{random}` 是每次上传换一次的 6 位十六进制，`{filename}` 是清理成 ASCII 的原名主干，`{.suffix}` 带点、`{suffix}` 不带点。
+- 模板里写了 `{filename}` 就等于由模板决定文件名，不再自动加毫秒时间戳前缀；没写就沿用「毫秒时间戳-原名」。
+- **GitHub**：走仓库 Contents API（一次上传 = 一次提交），令牌要 **Contents: Read and write**（Fine-grained token 的 Repository permissions → Contents），链接是 `https://raw.githubusercontent.com/<用户名>/<仓库>/<分支>/<路径>`。同路径重复写会先读旧文件 SHA 再覆盖（不这么做实测回 `422 "sha" wasn't supplied`）。
+- **Gitee**：走 OpenAPI v5，令牌需要 projects 权限。
+- **阿里云 OSS**：`PUT https://<桶>.<地域>.aliyuncs.com/<对象名>`，用 V1 签名（`base64(HMAC-SHA1(AccessKeySecret, 待签字符串))`，待签字符串里带 `Date` 与 `Content-Type`）。地域写 `oss-cn-shanghai`，也接受 `cn-shanghai`、完整 endpoint、桶的三级域名和控制台中文名「华东2（上海）」，设置页会归一处理。链接是 `https://<桶>.<地域>.aliyuncs.com/<对象名>`。**桶必须是公共读**：私有桶写进去的链接公网打不开（编辑器预览也读不到）。签名依赖本机时间，与标准时间差 15 分钟以上会 403。
+- **七牛云 Kodo**：走「表单上传」——`POST https://up-<区域>.qiniup.com/`，`multipart/form-data` 里带 `key`、`token` 与文件本体；`token` 是上传凭证 `AccessKey:urlsafe_base64(HMAC-SHA1(SecretKey, urlsafe_base64(上传策略))):urlsafe_base64(上传策略)`，上传策略就是 `{"scope":"<空间名>:<对象名>","deadline":<秒>}`，每次上传现签、1 小时有效。区域写 `z2`，也接受控制台中文名「华南-广东」、只写「华南」「广东」，以及 `up-z2.qiniup.com` / `rs-z2.qiniuapi.com` 这种整串域名，设置页会归一；填了不认的区域会在「测试上传」时直接把八个可选项列出来。同名对象直接覆盖，不需要像 GitHub 那样先取 SHA。**访问域名必填**（七牛不能从空间名推出域名）：填了自定义域名按 `https://<域名>/<对象名>` 写链接，填的是 `*.clouddn.com` 这类七牛测试域名则按 `http://` 写——实测测试域名没有匹配该主名的 HTTPS 证书（https 回 421、http 回 200）。测试域名只作联调用（有效期与限速都有约束），长期用建议绑自己的域名。签名与凭证都依赖本机时间，时钟不准会一直 401。
+- **百度智能云 BOS**：走 `PUT https://<桶>.<地域>.bcebos.com/<对象名>` + `bce-auth-v1` 签名。签名是两段的：先用 SecretKey 对信任状 `bce-auth-v1/<AccessKey>/<UTC 时间>/1800` 做 HMAC-SHA256 取十六进制，**再把这段十六进制字符串本身当密钥**去签规范请求（`方法\n规范化 URI\n规范化查询串\n规范化头`）。规范化头里名与值都要百分号编码——实测 `image/png` 进签名是 `image%2Fpng`、时间里的 `:` 是 `%3A`，只编码名字不编码值是签不上的；空值的头不参与，各行按字节排序。发出去的 `Authorization` 末尾形如 `/1800//<签名>`，中间那段「参与签名的头名」留空表示按服务端默认集合（`host`、`content-md5`、`content-length`、`content-type` 加所有 `x-bce-*`）算，与官方 SDK 一致。请求必须带 `x-bce-date`：实测不带它服务端直接回 `400 MissingDateHeader`。地域写 `bj`，也接受控制台全称「华北-北京」、只写「北京」，以及 `bj.bcebos.com`、`https://bj.bcebos.com` 和桶的三级域名 `markd-markd.bj.bcebos.com`，设置页会归一；官方开放的八个地域是 bj/bd/su/gz/cd/hkg/fwh/fsh，写成认不出的文字会在「测试上传」时把这份列表列给你，写成没列过但形如两三个小写字母的 ID 则放行。链接就是桶域名拼对象名，不需要额外填域名；要挂自己的 CDN 就填 `image_host_public_base`。信任状里带 UTC 时间与 1800 秒有效期，本机时钟不准会一直 403（`SignatureDoesNotMatch`）；桶是私有读时文档里的链接公网打不开，需要设成公共读或自己配 CDN。
+- **火山引擎 TOS**：走 `PUT https://<桶>.tos-<地域>.volces.com/<对象名>` + V4 签名（`Authorization: TOS4-HMAC-SHA256 Credential=<AK>/<日期>/<地域>/tos/request, SignedHeaders=…, Signature=<hex>`，签名密钥是 `SecretKey → 日期 → 地域 → tos → request` 的四轮 HMAC-SHA256，请求体摘要 `x-tos-content-sha256` 也进签名链）。地域写 `cn-beijing`，也接受控制台中文名「华北2（北京）」、只写「北京」，以及 `tos-cn-beijing.volces.com`、`tos-s3-cn-beijing.volces.com` 和桶的三级域名，设置页会归一；填了没见过的 `xx-yyyy` 直接放行，写成别的文字则报错并列出可用地域。链接就是桶域名拼对象名，不需要额外填域名；要挂自己的 CDN 就填 `image_host_public_base`。原生端点只认 TOS4 签名（实测给它 AWS SigV4 会回 `InvalidArgument: Unsupported Authorization Type`），火山另有 S3 兼容域名 `tos-s3-<地域>.volces.com`，Markd 不走那条。签名带 UTC 时间戳，本机时钟不准会 403；桶是私有读时文档里的链接公网打不开，需要设成公共读或自己配 CDN。
+- **华为云 OBS**：走 `PUT https://<桶>.obs.<区域>.myhuaweicloud.com/<对象名>` + V2 签名（`Authorization: OBS <访问密钥 ID>:<base64(HMAC-SHA1(秘密访问密钥, 待签字符串))>`）。待签字符串五段`PUT\n<空 Content-MD5>\n<Content-Type>\n<Date>\n/<桶>/<对象名>`，与阿里云 OSS 的 V1 同一条式子（代码里共用一个函数），差别只有一处：**对象名必须先百分号编码再进签名**，斜杠保留、空格与 `#` 与中文都编码（实测对象名写成 `探针 A#1 目录/Shot.png`，编码后 200、公网读回字节一致；把原始对象名直接签进去，华为回 `403 SignatureDoesNotMatch`）。`Date` 用 RFC1123 GMT 且不受系统 locale 影响，华为文档写明与服务器时间差过 15 分钟就回 403。区域写 `cn-east-3`，也接受控制台全称「华东-上海一」，以及 `obs.cn-east-3.myhuaweicloud.com` 和桶的三级域名 `markd-makrd.obs.cn-east-3.myhuaweicloud.com`，设置页会归一；八个有中文全称的区域是「华北-北京一/二/四、华北-乌兰察布一、华东-上海一/二、华南-广州、西南-贵阳一」，其它区域请直接写区域编码；写成认不出的文字会报错并列出这份名单（只写「上海」「北京」这种半截名不猜，按原样交出去）。实测桶名对、区域错时华为回的是 `404 NoSuchBucket`，不是签名错。错误正文是 XML（`<Code>`/`<Message>`），跟阿里云 OSS 一样按 Code 翻成中文并把华为原话带出来。链接就是桶域名拼对象名；桶是公共读时文档里的链接才打得开，要挂自己的 CDN 就填 `image_host_public_base`。
+- **腾讯云 COS**：走 `PUT https://<桶>.cos.<地域>.myqcloud.com/<对象名>` + v5 签名（`Authorization: q-sign-algorithm=sha1&q-ak=<SecretId>&q-sign-time=<起>;<止>&q-key-time=<同>&q-header-list=<头名排序>&q-url-param-list=&q-signature=<hex>`）。签名是**两段**的：先用 SecretKey 对 `q-sign-time` 那串做 HMAC-SHA1 取十六进制，**再把这段十六进制字符串本身当密钥**去签待签字符串 `sha1\n{时间窗}\n{格式串的 SHA1}\n`；格式串是 `put\n/{对象名}\n\n{签名头}\n`（第三行是 URL 参数，对象写入恒为空）。**这里与华为 OBS 正好相反：对象名要按原样进签名，不能百分号编码**（实测对象名 `探针 A#1 目录 %x+y/Shot.png` 原样签 200、逐字节读回一致；先编码反而回 `403 SignatureDoesNotMatch`）；反过来**头的值要编码**（`image/png` 签进去是 `image%2Fpng`），且 `q-header-list` 必须与真正签进去的头一一对应——实测声明了没签、或签了没声明都回 `SignatureDoesNotMatch`。时间窗是 `{现在-60};{现在+10000}`，超了回 `403 AccessDenied`（原话 `Request has expired`）。**桶名必须写成「名称-APPID」**（如 `markd-1253518225`）：实测不带后缀回 `400 InvalidRequest`，原话直接给了 `Bucket format should be <bucketname>-<appid>`。地域写 `ap-nanjing`，也接受控制台全称「南京」「公有云园区-中国-南京」，以及 `cos.ap-nanjing.myqcloud.com` 和桶的三级域名 `markd-1253518225.cos.ap-nanjing.myqcloud.com`，设置页会归一；官方 22 个地域都带中文对照（境内 7 + 金融云 3 + 港澳亚太 7 + 中东/欧美 5），写成认不出的文字会报错并列出这份表，写成没在表里但形如 `ap-xxx` 的新地域放行；粘全球加速域名 `cos.accelerate.myqcloud.com` 会单独提示 Markd 不走那条。实测桶名对、地域错回的是 `404 NoSuchBucket`，不是签名错；错误正文是 XML（`<Code>`/`<Message>`，与华为 OBS 同构，实体如 `&lt;` 会还原成 `<` 再显示）。链接就是桶域名拼对象名，要求桶是公有读；要挂自己的 CDN 就填 `image_host_public_base`。\n- 自定义访问前缀（CDN / 加速域名）设置页里没有这一项，需要手改 `~/.markd/config.json` 的 `image_host_public_base`；填了就只替换文档里的链接前缀，写入地址仍走平台自己的端点。七牛有专门的「访问域名」输入框（`image_host_qiniu_domain`），不用改这一项；两者都填时以访问域名优先。
 
 - 「测试上传」按钮会在后台线程上传一张测试图并回报成功 URL 或失败原因；
-- 命令「上传本地图片到图床」只在命令面板里（`Cmd/Ctrl + P` 搜「图床」），用于把文档里的本地图片批量换成长期有效的公网链接。
+- 命令「上传本地图片到图床」只在命令面板里（`Cmd/Ctrl + P` 搜「图床」），用于把文档里的本地图片批量换成长期有效的公网链接。批量上传在同一个后台线程里顺序执行，每张间隔 200ms，避免被平台限流。
 
-> ⚠️ 令牌以明文存在 `~/.markd/config.json`。这台机器上的配置不要提交进仓库、不要共享。
+> ⚠️ 令牌与 AccessKey / SecretKey 以明文存在 `~/.markd/config.json`（该文件权限 0600）。这台机器上的配置不要提交进仓库、不要共享；AccessKey 建议只授予目标桶/空间的读写权限，泄露后在阿里云 RAM（或七牛「个人面板 → 证书管理」、火山引擎「访问控制 → API 访问密钥」、华为云「我的凭证 → 访问密钥」）里直接禁用重建。华为云的密钥按文档只在创建时可下载一次，每个用户最多两个，丢了只能新建；腾讯云的 SecretId / SecretKey 同样只在创建时可见，丢了只能另建一把。七牛的 SecretKey 与火山的 Secret Access Key 都只在创建时显示一次，丢了只能重新生成。
 
 ### 6.9 脚注、双向链接
 
@@ -354,10 +365,10 @@
 | 插入图片时复制到资源目录 | 开关 | 开 |
 | 资源目录名 | 文本 | `imgs` |
 | 使用相对路径引用图片 | 开关 | 开 |
-| 图床平台 | 下拉：关闭 / Gitee 仓库 | 关闭 |
-| 用户名 / 仓库 / 分支 / 目录 | 文本 | `domitius` / `markd_images` / `master` / `images` |
-| 保存路径模板 | 文本（支持 `{year}{month}{day}{hour}{minute}`） | `{year}/{month}/{day}` |
-| 令牌 | 密码框（明文存本地，勿外泄） | 空 |
+| 图床平台 | 下拉：关闭 / Gitee 仓库 / GitHub 仓库 / 阿里云 OSS / 七牛云 Kodo / 火山引擎 TOS / 百度智能云 BOS / 华为云 OBS / 腾讯云 COS | 关闭 |
+| 用户名 / 仓库 / 分支 / 目录 | 文本（仓库平台）；OSS 换成 地域 / 存储空间 / AccessKey ID / AccessKey Secret；七牛换成 区域 / 空间名称 / AccessKey / SecretKey / 访问域名；火山换成 地域 / 存储桶 / AccessKey / Secret Access Key | `domitius` / `markd_images` / `master` / `images` |
+| 保存路径模板 | 文本（支持 `{year}{month}{day}{hour}{minute}{random}{filename}{.suffix}`） | `{year}/{month}/{day}` |
+| 令牌 / AccessKey Secret / SecretKey / Secret Access Key | 密码框（明文存本地，勿外泄） | 空 |
 | 测试上传 | 按钮 + 状态文本 | — |
 
 ### Markdown
@@ -467,7 +478,7 @@
 
 | 文件 / 目录 | 内容 |
 |---|---|
-| `config.json` | 全部偏好设置、上次打开文件、最近打开列表、图床配置（含令牌，明文） |
+| `config.json` | 全部偏好设置、上次打开文件、最近打开列表、图床配置（含令牌 / AccessKey Secret，明文，文件权限 0600） |
 | `folds.json` | 代码块折叠状态，按文档绝对路径分组、以块的源码为键 |
 | `fonts/` | 自定义字体目录（优先加载 Regular 字重） |
 | `assets/` | 未保存文档（还没有落盘目录）插入图片时的回退目录；正常情况图片写进**文档所在目录**下的资源子目录（默认名 `imgs`） |
@@ -568,7 +579,7 @@
 用「界面缩放」调，而不是改系统 DPI；缩放范围 0.8–1.6。
 
 **图床上传失败？**
-「测试上传」按钮会给出具体错误。常见原因是令牌权限不足、仓库或分支不存在、目录路径模板写了非法字符。
+「测试上传」按钮会给出具体错误。常见原因是凭证权限不足（GitHub 回 403 = 令牌的 Contents 没给写权限；OSS 回 403 = AccessKey 没写权限，或本机时钟与标准时间差了 15 分钟以上导致签名失效；七牛回 401 = AccessKey/SecretKey 不对，或本机时钟不准让刚签的凭证一出生就过期）、百度回 `AccessDenied` 是桶没设公共读或这把密钥没有写入权限，回 `NoSuchBucket` 是桶名与地域没配对，回 `SignatureDoesNotMatch` 是 SecretKey 不对或本机时钟偏了（信任状 1800 秒过期）；注意 `MissingDateHeader` 不该出现，出现了说明是 Markd 自己的缺陷、请反馈或升级、仓库/桶或分支不存在（GitHub 回 404、OSS 回 404 说明桶名或地域不对）、区域与空间不匹配（七牛回 400，错误里会直接写出该用哪个上传域名，例如 `incorrect region, please use up-z2.qiniup.com`——照它改「区域」即可；火山回 `InvalidAccessKeyId` 是这把 AccessKey 在火山那边查不到（先在控制台核对：取自「访问控制 → API 访问密钥」、状态「启用」、与桶同账号），回 `AccessDenied` 是没有该桶的 PutObject 权限，回 `NoSuchBucket` 是桶名与地域没配对；华为回 `SignatureDoesNotMatch` 是秘密访问密钥不对或本机时钟偏了 15 分钟以上（对象名该编码的地方没编码也会走到这一条），回 `InvalidAccessKeyId` 是这把密钥在华为查不到（核对「我的凭证 → 访问密钥」，并与桶同账号），回 `NoSuchBucket` 也是桶名与区域没配对；腾讯回 `SignatureDoesNotMatch` 是 SecretKey 不对、或对象名被多编码了一次（本平台恰恰要求**原样**签），回 `AccessDenied` + `Request has expired` 是本机时钟偏了（签名时间窗 10000 秒），回 `InvalidRequest` 且原话提到 `Appid` 是桶名漏了 `-APPID` 后缀，回 `InvalidAccessKeyId` 是这把 SecretId 在腾讯云查不到，回 `NoSuchBucket` 是桶名与地域没配对）、目录路径模板写了非法字符。上传失败时本地图片仍在，文档链接不会被改坏。七牛用测试域名（`*.clouddn.com`）时链接是 `http://`：这是七牛没给测试域名配 HTTPS 证书（实测 https 回 421），不是 Markd 写错。
 
 ---
 
@@ -577,8 +588,8 @@
 - **表格没有增删行列的图形化菜单**：结构改动要进源码态改分隔行与竖线。
 - **源码模式在大文档上代价高**：冷首帧数秒、每键整篇重解析（约 1 秒 / 键）。混合模式不受影响。
 - **PDF 需要借道浏览器打印**，没有内置排版引擎。
-- **图床目前只支持 Gitee 仓库**（其它平台需要新增适配）；令牌明文保存在本地配置里。
-- **图片 / 公式纹理缓存只增不减**：图片极多的文档长时间翻阅内存会持续上升，重开文档释放。
+- **图床目前支持 Gitee 仓库、GitHub 仓库、阿里云 OSS、七牛云 Kodo、火山引擎 TOS、百度智能云 BOS、华为云 OBS 与腾讯云 COS**（其它平台需要新增适配）；令牌与 AccessKey / SecretKey 明文保存在本地配置里。GitHub 走 Contents API，每张图一次提交；OSS 要求桶是公共读，否则文档里的链接公网打不开；七牛走表单上传（实测 5MB 单文件也没问题），空间是私有读时同样只能靠签名下载地址。单图上限 20MB。
+- **对象名带空格、`#` 或中文时，编辑器里的远程图片预览不出来**：上传与文档链接都正常（浏览器会自己补编码），但预览用的是链接原样，实测这种 URL 取不回图，改成百分号编码后的地址就能取回。默认命名（`{filename}` 只留字母数字与 `-`/`_`）不会触发；把「目录」填成中文或带空格就会。修法要在预览处补一层编码，又不能把本来就带 `%XX` 的旧链接二次编码，涉及所有平台的既有链接，暂未动。：图片极多的文档长时间翻阅内存会持续上升，重开文档释放。
 - **超长引用点进编辑态后，换行点会挪一点点**：渲染态的行宽用满正文宽度，编辑态的输入框给光标留了 8px，所以一段需要软换行的长引用在编辑态可能提前一个字符换行。左侧竖线和文字起点都不动，动的只是断在哪里。
 - **不支持协作、批注、插件系统**。
 - 内容完全相同的两个代码块会共享同一条折叠记录（折叠状态以源码文本为键）。

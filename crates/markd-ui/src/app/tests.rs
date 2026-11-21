@@ -349,7 +349,6 @@ fn test_app() -> MarkdApp {
         status: String::new(),
         toast: None,
         about: false,
-        shortcuts: false,
         table_dialog: false,
         table_rows: 3,
         table_cols: 3,
@@ -363,6 +362,7 @@ fn test_app() -> MarkdApp {
         image_uploads: Vec::new(),
         force_quit: false,
         theme_dirty: false,
+        system_dark: false,
         menu_guard: false,
         workspace_dialog: false,
         quick_cache_dir: String::new(),
@@ -3854,5 +3854,100 @@ fn toolbar_code_dropdown_holds_three_items() {
         find(&shapes, "表格").is_some() && find(&shapes, "分隔线").is_some(),
         "「插入」剩下的项不能被动到：{:?}",
         app.doc.source()
+    );
+}
+
+/// 跑一帧并指定系统深浅档（测「跟随系统」用；普通帧脚手架不带这个字段）。
+fn run_frame_os_theme(
+    ctx: &egui::Context,
+    app: &mut MarkdApp,
+    frame: &mut eframe::Frame,
+    os: Option<egui::Theme>,
+) {
+    use eframe::App as _;
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        system_theme: os,
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |root| {
+        let mut root = egui::Ui::new(
+            root.ctx().clone(),
+            egui::Id::unique("markd_test_root"),
+            egui::UiBuilder::new(),
+        );
+        app.ui(&mut root, frame);
+    });
+    out.textures_delta.clear();
+}
+
+/// 跟随系统：系统深浅档一变，配色立刻跟着换；关掉跟随后系统档不再插手。
+#[test]
+fn theme_follow_system_tracks_the_os_theme() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.config.theme = ThemeKind::Light;
+    app.config.theme_follow_system = true;
+    app.rebuild_theme();
+    assert_eq!(app.theme.kind, ThemeKind::Light, "没收到系统档时按浅色兜底");
+
+    run_frame_os_theme(&ctx, &mut app, &mut frame, Some(egui::Theme::Dark));
+    assert_eq!(app.theme.kind, ThemeKind::Dark, "系统转深色应立刻换配色");
+    run_frame_os_theme(&ctx, &mut app, &mut frame, Some(egui::Theme::Light));
+    assert_eq!(app.theme.kind, ThemeKind::Light, "系统转回浅色也要跟着换");
+
+    app.config.theme_follow_system = false;
+    app.rebuild_theme();
+    run_frame_os_theme(&ctx, &mut app, &mut frame, Some(egui::Theme::Dark));
+    assert_eq!(
+        app.theme.kind,
+        ThemeKind::Light,
+        "不跟随时系统档不该插手手动选择"
+    );
+}
+
+/// 源码模式里最长的一个 galley 的行高（= 字号 × 行距倍数）。
+fn source_row_height(ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame) -> f32 {
+    let (shapes, _) = run_real_frame_ext(ctx, app, frame, vec![]);
+    let galley = shapes
+        .iter()
+        .filter_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) => Some(t.galley.clone()),
+            _ => None,
+        })
+        .max_by_key(|g| g.rows.len())
+        .expect("源码模式应渲染出整篇文本");
+    assert!(
+        galley.rows.len() >= 4,
+        "至少要四行才测得出行距，实际 {} 行",
+        galley.rows.len()
+    );
+    galley.rows.iter().map(|r| r.size.y).fold(0.0_f32, f32::max)
+}
+
+/// 「源码模式行距」这个设置项要真的改动渲染出来的行高，不是只存进配置。
+#[test]
+fn line_height_setting_changes_source_mode_row_height() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("甲\n乙\n丙\n丁", None);
+    app.home = false;
+    app.execute(Command::ToggleSource, &ctx);
+    assert!(app.config.source_mode, "夹具应已切到源码模式");
+
+    app.config.line_height = 1.0;
+    app.apply_config(&ctx);
+    let tight = source_row_height(&ctx, &mut app, &mut frame);
+    app.config.line_height = 2.0;
+    app.apply_config(&ctx);
+    let loose = source_row_height(&ctx, &mut app, &mut frame);
+    assert!(
+        loose > tight * 1.4,
+        "行距倍数从 1.0 调到 2.0，渲染行高没跟着变大：{tight} → {loose}"
     );
 }

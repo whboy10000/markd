@@ -190,7 +190,6 @@ pub struct MarkdApp {
     /// 轻提示弹窗：(文案, 弹出时间)。复制代码等操作的浮动反馈，淡出后自动清除。
     toast: Option<(String, f64)>,
     about: bool,
-    shortcuts: bool,
     table_dialog: bool,
     table_rows: usize,
     table_cols: usize,
@@ -211,6 +210,8 @@ pub struct MarkdApp {
     /// 用户已选择「不保存」，下次关闭请求直接放行。
     force_quit: bool,
     theme_dirty: bool,
+    /// 系统当前是不是深色档（每帧从 egui 同步）。只在「跟随系统」打开时参与主题解析。
+    system_dark: bool,
     menu_guard: bool,
     workspace_dialog: bool,
     quick_cache_dir: String,

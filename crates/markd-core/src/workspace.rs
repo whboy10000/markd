@@ -12,6 +12,31 @@ fn default_sidebar_header() -> bool {
     true
 }
 
+fn default_line_height() -> f32 {
+    1.4
+}
+
+/// 界面语言。目前只写入配置文件，界面文字仍是中文——设置页的下拉也这么标注，
+/// 等真接上多语言再改读取端。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Language {
+    #[default]
+    #[serde(alias = "zh-CN")]
+    ZhCn,
+    En,
+}
+
+impl Language {
+    pub const ALL: [Language; 2] = [Language::ZhCn, Language::En];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Language::ZhCn => "简体中文",
+            Language::En => "English",
+        }
+    }
+}
+
 fn default_sidebar_width() -> f32 {
     240.0
 }
@@ -25,8 +50,15 @@ fn default_show_workspace_bar() -> bool {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub theme: ThemeKind,
+    /// 主题跟着系统的深色/浅色走；为真时 `theme` 里的档位只当作手动档记录。
+    #[serde(default)]
+    pub theme_follow_system: bool,
+    /// 界面语言，详见 `Language`：当前只存配置，不参与渲染。
+    #[serde(default)]
+    pub language: Language,
     pub focus_mode: bool,
     pub typewriter: bool,
     pub source_mode: bool,
@@ -34,6 +66,9 @@ pub struct Config {
     pub show_outline: bool,
     pub auto_save: bool,
     pub font_size: f32,
+    /// 源码模式的行距，按字号的倍数算（1.0 = 贴着排）。
+    #[serde(default = "default_line_height")]
+    pub line_height: f32,
     pub workspace: Option<String>,
     #[serde(default = "default_sidebar_header")]
     pub show_sidebar_header: bool,
@@ -105,7 +140,8 @@ pub struct Config {
     #[serde(default = "default_image_host_dir")]
     pub image_host_dir: String,
     /// 仓库根目录下的保存路径模板，支持
-    /// `{year}` `{month}` `{day}` `{hour}` `{minute}` 占位符。
+    /// `{year}` `{month}` `{day}` `{hour}` `{minute}` `{random}` `{filename}`
+    /// `{suffix}` `{.suffix}` 占位符。
     #[serde(default = "default_image_host_path")]
     pub image_host_path: String,
     /// 私人令牌：只保存在本地配置文件里，不会写进文档。
@@ -114,6 +150,77 @@ pub struct Config {
     /// 可选的自定义访问前缀（CDN）；留空按平台默认规则生成 URL。
     #[serde(default)]
     pub image_host_public_base: String,
+    /// 阿里云 OSS 地域，写成 `oss-cn-shanghai` 或控制台的「华东2（上海）」都行。
+    #[serde(default)]
+    pub image_host_oss_region: String,
+    /// 阿里云 OSS 存储空间名（Bucket）。
+    #[serde(default)]
+    pub image_host_oss_bucket: String,
+    #[serde(default)]
+    pub image_host_oss_key_id: String,
+    /// AccessKey Secret：只保存在本地配置文件里，不会写进文档。
+    #[serde(default)]
+    pub image_host_oss_key_secret: String,
+    /// 七牛云区域，写成 `z2` 或控制台的「华南-广东」都行。
+    #[serde(default)]
+    pub image_host_qiniu_region: String,
+    /// 七牛云空间名称（Bucket）。
+    #[serde(default)]
+    pub image_host_qiniu_bucket: String,
+    #[serde(default)]
+    pub image_host_qiniu_access_key: String,
+    /// SecretKey：只保存在本地配置文件里，不会写进文档。
+    #[serde(default)]
+    pub image_host_qiniu_secret_key: String,
+    /// 七牛空间的访问域名；写进文档的 URL 前缀，七牛没法从空间名推出，必须填。
+    /// 可以直接带 `http://` 或 `https://` 前缀。
+    #[serde(default)]
+    pub image_host_qiniu_domain: String,
+    /// 火山引擎 TOS 地域，写成 `cn-beijing` 或控制台的「华北2（北京）」都行。
+    #[serde(default)]
+    pub image_host_volc_region: String,
+    /// 火山引擎 TOS 存储桶名。
+    #[serde(default)]
+    pub image_host_volc_bucket: String,
+    #[serde(default)]
+    pub image_host_volc_access_key: String,
+    /// Secret Access Key：只保存在本地配置文件里，不会写进文档。
+    #[serde(default)]
+    pub image_host_volc_secret_key: String,
+    /// 百度智能云 BOS 地域，写成 `bj` 或控制台的「华北-北京」都行。
+    #[serde(default)]
+    pub image_host_bos_region: String,
+    /// 百度智能云 BOS 存储桶名。
+    #[serde(default)]
+    pub image_host_bos_bucket: String,
+    #[serde(default)]
+    pub image_host_bos_access_key: String,
+    /// Secret Access Key：只保存在本地配置文件里，不会写进文档。
+    #[serde(default)]
+    pub image_host_bos_secret_key: String,
+    /// 华为云 OBS 区域，写成 `cn-east-3` 或控制台的「华东-上海一」都行。
+    #[serde(default)]
+    pub image_host_obs_region: String,
+    /// 华为云 OBS 桶名。
+    #[serde(default)]
+    pub image_host_obs_bucket: String,
+    #[serde(default)]
+    pub image_host_obs_access_key: String,
+    /// 秘密访问密钥：只保存在本地配置文件里，不会写进文档。
+    #[serde(default)]
+    pub image_host_obs_secret_key: String,
+    /// 腾讯云 COS 地域，写成 `ap-nanjing` 或控制台的「南京」都行。
+    #[serde(default)]
+    pub image_host_cos_region: String,
+    /// 腾讯云 COS 存储桶名，必须带 `-APPID` 后缀。
+    #[serde(default)]
+    pub image_host_cos_bucket: String,
+    /// SecretId：访问密钥 ID。
+    #[serde(default)]
+    pub image_host_cos_secret_id: String,
+    /// SecretKey：只保存在本地配置文件里，不会写进文档。
+    #[serde(default)]
+    pub image_host_cos_secret_key: String,
     /// 用户对主题颜色的覆盖；每项 None 表示跟随当前主题默认色。
     #[serde(default)]
     pub color_overrides: ColorOverrides,
@@ -154,6 +261,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             theme: ThemeKind::Light,
+            theme_follow_system: false,
+            language: Language::ZhCn,
             focus_mode: false,
             typewriter: false,
             source_mode: false,
@@ -161,6 +270,7 @@ impl Default for Config {
             show_outline: false,
             auto_save: true,
             font_size: 16.0,
+            line_height: 1.4,
             workspace: None,
             show_sidebar_header: true,
             sidebar_width: 240.0,
@@ -195,12 +305,44 @@ impl Default for Config {
             image_host_path: default_image_host_path(),
             image_host_token: String::new(),
             image_host_public_base: String::new(),
+            image_host_oss_region: String::new(),
+            image_host_oss_bucket: String::new(),
+            image_host_oss_key_id: String::new(),
+            image_host_oss_key_secret: String::new(),
+            image_host_qiniu_region: String::new(),
+            image_host_qiniu_bucket: String::new(),
+            image_host_qiniu_access_key: String::new(),
+            image_host_qiniu_secret_key: String::new(),
+            image_host_qiniu_domain: String::new(),
+            image_host_volc_region: String::new(),
+            image_host_volc_bucket: String::new(),
+            image_host_volc_access_key: String::new(),
+            image_host_volc_secret_key: String::new(),
+            image_host_bos_region: String::new(),
+            image_host_bos_bucket: String::new(),
+            image_host_bos_access_key: String::new(),
+            image_host_bos_secret_key: String::new(),
+            image_host_obs_region: String::new(),
+            image_host_obs_bucket: String::new(),
+            image_host_obs_access_key: String::new(),
+            image_host_obs_secret_key: String::new(),
+            image_host_cos_region: String::new(),
+            image_host_cos_bucket: String::new(),
+            image_host_cos_secret_id: String::new(),
+            image_host_cos_secret_key: String::new(),
             color_overrides: ColorOverrides::default(),
         }
     }
 }
 
 impl Config {
+    /// 手动选主题档位的唯一入口：菜单、命令面板、设置页都走这里。
+    /// 选了具体档位就不可能还在「跟随系统」，一起清掉，避免两个字段互相盖。
+    pub fn set_theme(&mut self, kind: ThemeKind) {
+        self.theme = kind;
+        self.theme_follow_system = false;
+    }
+
     pub fn dir() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         PathBuf::from(home).join(".markd")
@@ -208,10 +350,33 @@ impl Config {
 
     pub fn load() -> Self {
         let p = Self::dir().join("config.json");
-        fs::read_to_string(p)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        let Ok(text) = fs::read_to_string(p) else {
+            return Self::default();
+        };
+        if let Ok(c) = serde_json::from_str::<Config>(&text) {
+            return c;
+        }
+        Self::load_lenient(&text)
+    }
+
+    /// 逐字段回退。整体解析失败多半是**某一个字段**的值这个版本读不懂——
+    /// 例如旧版本的程序碰到新版本写进配置的平台名——此时只该丢那一项，
+    /// 而不是像直接 `unwrap_or_default()` 那样把用户的全部偏好清零。
+    fn load_lenient(text: &str) -> Self {
+        let Ok(map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+        else {
+            return Self::default();
+        };
+        let mut kept = serde_json::Map::new();
+        for (key, value) in map {
+            let mut trial = kept.clone();
+            trial.insert(key, value);
+            let probe = serde_json::Value::Object(trial.clone());
+            if serde_json::from_value::<Config>(probe).is_ok() {
+                kept = trial;
+            }
+        }
+        serde_json::from_value::<Config>(serde_json::Value::Object(kept)).unwrap_or_default()
     }
 
     pub fn save(&self) {
@@ -390,6 +555,10 @@ mod tests {
         assert!(c.focus_mode);
         assert!(!c.show_outline);
         assert_eq!(c.font_size, 18.0);
+        // 本轮新增的三项在老配置里没有键：必须落默认值，既不能解析失败也不能乱填。
+        assert_eq!(c.language, Language::ZhCn, "老配置的语言应落默认值");
+        assert_eq!(c.line_height, 1.4, "老配置的源码行距应落 1.4");
+        assert!(!c.theme_follow_system, "老配置不该凭空开启跟随系统");
         assert!(c.show_sidebar_header);
         assert_eq!(c.sidebar_width, 240.0);
         assert!(!c.show_workspace_bar);
@@ -436,6 +605,47 @@ mod tests {
         assert!(!back.show_toolbar);
     }
 
+    /// 单个字段读不懂时，只丢那一项，不许把用户全部偏好清零。
+    /// （旧版本程序碰到新版本写的平台名就是这种情形：实测旧实例把整份
+    /// config.json 回写成了默认值，用户名/仓库/令牌一起没了。）
+    #[test]
+    fn one_unreadable_field_keeps_the_rest() {
+        let json = r#"{"theme":"Dark","font_size":19.0,"focus_mode":true,"show_sidebar":false,
+            "recent":["/tmp/a.md","/tmp/b.md"],"image_host":"brand-new-host",
+            "image_host_owner":"me","image_host_oss_bucket":"my-bucket"}"#;
+        let c = Config::load_lenient(json);
+        assert_eq!(c.theme, ThemeKind::Dark, "主题要保住");
+        assert_eq!(c.font_size, 19.0);
+        assert!(c.focus_mode);
+        assert!(!c.show_sidebar);
+        assert_eq!(
+            c.recent,
+            vec!["/tmp/a.md".to_string(), "/tmp/b.md".to_string()]
+        );
+        assert_eq!(c.image_host_owner, "me", "同族里能读的字段要留下");
+        assert_eq!(c.image_host_oss_bucket, "my-bucket");
+        assert_eq!(
+            c.image_host,
+            crate::image_host::ImageHostKind::Disabled,
+            "认不出的平台名退回默认"
+        );
+        // 整份不是 JSON：安静回退默认，不 panic。
+        let bad = Config::load_lenient("{ 这不是 json");
+        assert_eq!(bad.theme, ThemeKind::Light);
+        assert!(bad.recent.is_empty());
+        // 每项都坏：结果仍是默认值。
+        let all_bad = Config::load_lenient(r#"{"theme":"紫","font_size":"很大"}"#);
+        assert_eq!(all_bad.theme, ThemeKind::Light);
+        assert_eq!(all_bad.font_size, 16.0);
+        // 好文件走原来的路径也必须照样通过（别让回退逻辑掩盖主路径的回归）。
+        let good: Config = serde_json::from_str(
+            r#"{"theme":"Dark","font_size":19.0,"image_host":"oss","image_host_oss_bucket":"b"}"#,
+        )
+        .unwrap();
+        assert_eq!(good.image_host, crate::image_host::ImageHostKind::Oss);
+        assert_eq!(good.image_host_oss_bucket, "b");
+    }
+
     /// 旧配置没有图床字段：应回退到「关闭」+ 预置仓库信息，不能反序列化失败。
     #[test]
     fn old_config_gets_image_host_defaults() {
@@ -448,5 +658,240 @@ mod tests {
         assert_eq!(c.image_host_dir, "images");
         assert_eq!(c.image_host_path, "{year}/{month}/{day}");
         assert!(c.image_host_token.is_empty());
+        // 七牛那几项也一样：缺字段回退空值，不报错。
+        assert_eq!(c.image_host_qiniu_region, "");
+        assert!(c.image_host_qiniu_bucket.is_empty());
+        assert!(c.image_host_qiniu_domain.is_empty());
+        assert!(c.image_host_qiniu_access_key.is_empty());
+        assert!(c.image_host_qiniu_secret_key.is_empty());
+        // 百度那几项也一样：缺字段回退空值，不报错。
+        assert_eq!(c.image_host_bos_region, "");
+        assert!(c.image_host_bos_bucket.is_empty());
+        assert!(c.image_host_bos_access_key.is_empty());
+        assert!(c.image_host_bos_secret_key.is_empty());
+        // 华为那几项也一样：缺字段回退空值，不报错。
+        assert_eq!(c.image_host_obs_region, "");
+        assert!(c.image_host_obs_bucket.is_empty());
+        assert!(c.image_host_obs_access_key.is_empty());
+        assert!(c.image_host_obs_secret_key.is_empty());
+    }
+
+    /// 七牛字段要能存能取；「平台=七牛」在配置里写的是小写 `qiniu`。
+    #[test]
+    fn qiniu_fields_roundtrip() {
+        let mut c = Config::default();
+        c.image_host = crate::image_host::ImageHostKind::Qiniu;
+        c.image_host_qiniu_region = "华南-广东".to_string();
+        c.image_host_qiniu_bucket = "markd-markd".to_string();
+        c.image_host_qiniu_access_key = "AKID".to_string();
+        c.image_host_qiniu_secret_key = "SECRET".to_string();
+        c.image_host_qiniu_domain = "img.example.com".to_string();
+        let json = serde_json::to_string(&c).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.image_host, crate::image_host::ImageHostKind::Qiniu);
+        assert_eq!(back.image_host_qiniu_region, "华南-广东");
+        assert_eq!(back.image_host_qiniu_bucket, "markd-markd");
+        assert_eq!(back.image_host_qiniu_access_key, "AKID");
+        assert_eq!(back.image_host_qiniu_secret_key, "SECRET");
+        assert_eq!(back.image_host_qiniu_domain, "img.example.com");
+        // 密钥不落在文档里，只在这份 JSON 里；确认没被别的字段串台。
+        assert!(back.image_host_oss_key_secret.is_empty());
+    }
+
+    /// 旧实例读不懂新平台名时逐字段回退，七牛那几项要原样保住。
+    #[test]
+    fn lenient_load_keeps_qiniu_fields() {
+        let json = r#"{"theme":"Dark","image_host":"qiniu","image_host_qiniu_bucket":"markd-markd",
+            "image_host_qiniu_domain":"touadcd4p.hn-bkt.clouddn.com","font_size":"很大"}"#;
+        let c = Config::load_lenient(json);
+        assert_eq!(c.theme, ThemeKind::Dark);
+        assert_eq!(c.image_host, crate::image_host::ImageHostKind::Qiniu);
+        assert_eq!(c.image_host_qiniu_bucket, "markd-markd");
+        assert_eq!(c.image_host_qiniu_domain, "touadcd4p.hn-bkt.clouddn.com");
+        // 只有那一项坏：字号退回默认。
+        assert_eq!(c.font_size, 16.0);
+    }
+
+    /// 火山引擎 TOS 字段要能存能取；旧配置缺这几项时回退空值不报错。
+    #[test]
+    fn volc_fields_roundtrip_and_default_to_empty() {
+        let mut c = Config::default();
+        c.image_host = crate::image_host::ImageHostKind::Volcengine;
+        c.image_host_volc_region = "华北2（北京）".to_string();
+        c.image_host_volc_bucket = "markd-markd".to_string();
+        c.image_host_volc_access_key = "AKID".to_string();
+        c.image_host_volc_secret_key = "SECRET".to_string();
+        let json = serde_json::to_string(&c).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.image_host,
+            crate::image_host::ImageHostKind::Volcengine
+        );
+        assert_eq!(back.image_host_volc_region, "华北2（北京）");
+        assert_eq!(back.image_host_volc_bucket, "markd-markd");
+        assert_eq!(back.image_host_volc_access_key, "AKID");
+        assert_eq!(back.image_host_volc_secret_key, "SECRET");
+        // 不与七牛/OSS 的字段串台。
+        assert!(back.image_host_qiniu_bucket.is_empty());
+        assert!(back.image_host_oss_bucket.is_empty());
+        // 旧配置（还没有火山字段）照读，火山各项为空。
+        let old_json = r#"{"theme":"Dark","image_host":"oss","image_host_oss_bucket":"b"}"#;
+        let old: Config = serde_json::from_str(old_json).unwrap();
+        assert!(old.image_host_volc_bucket.is_empty());
+        assert!(old.image_host_volc_region.is_empty());
+        assert!(old.image_host_volc_access_key.is_empty());
+        assert!(old.image_host_volc_secret_key.is_empty());
+        // 逐字段回退路径也要保住火山那几项。
+        let lenient = Config::load_lenient(
+            r#"{"theme":"Dark","image_host":"volcengine","image_host_volc_bucket":"markd-markd","font_size":"很大"}"#,
+        );
+        assert_eq!(
+            lenient.image_host,
+            crate::image_host::ImageHostKind::Volcengine
+        );
+        assert_eq!(lenient.image_host_volc_bucket, "markd-markd");
+        assert_eq!(lenient.font_size, 16.0);
+    }
+
+    /// 百度 BOS 四个字段要能存能取；平台在配置里写的是小写 `baidu`；
+    /// 缺字段的旧配置与逐字段回退路径都不能把它们连带清零。
+    #[test]
+    fn bos_fields_roundtrip_and_default_to_empty() {
+        let mut c = Config::default();
+        c.image_host = crate::image_host::ImageHostKind::Baidu;
+        c.image_host_bos_region = "华北-北京".to_string();
+        c.image_host_bos_bucket = "markd-markd".to_string();
+        c.image_host_bos_access_key = "ALTAKid".to_string();
+        c.image_host_bos_secret_key = "SECRET".to_string();
+        let json = serde_json::to_string(&c).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.image_host, crate::image_host::ImageHostKind::Baidu);
+        assert_eq!(back.image_host_bos_region, "华北-北京");
+        assert_eq!(back.image_host_bos_bucket, "markd-markd");
+        assert_eq!(back.image_host_bos_access_key, "ALTAKid");
+        assert_eq!(back.image_host_bos_secret_key, "SECRET");
+        // 不与火山/七牛/OSS 的字段串台。
+        assert!(back.image_host_volc_bucket.is_empty());
+        assert!(back.image_host_qiniu_bucket.is_empty());
+        assert!(back.image_host_oss_bucket.is_empty());
+        // 旧配置（还没有百度字段）照读，百度各项为空。
+        let old_json = r#"{"theme":"Dark","image_host":"baidu","image_host_bos_bucket":"b"}"#;
+        let old: Config = serde_json::from_str(old_json).unwrap();
+        assert_eq!(old.image_host_bos_bucket, "b");
+        assert!(old.image_host_bos_region.is_empty());
+        assert!(old.image_host_bos_access_key.is_empty());
+        assert!(old.image_host_bos_secret_key.is_empty());
+        // 逐字段回退路径（有个字段类型写错时）也要保住百度那几项。
+        let lenient = Config::load_lenient(
+            r#"{"theme":"Dark","image_host":"baidu","image_host_bos_bucket":"markd-markd","font_size":"很大"}"#,
+        );
+        assert_eq!(lenient.image_host, crate::image_host::ImageHostKind::Baidu);
+        assert_eq!(lenient.image_host_bos_bucket, "markd-markd");
+        assert!(lenient.image_host_bos_region.is_empty());
+    }
+
+    /// 华为云 OBS 四个字段要能存能取；平台在配置里写的是小写 `huawei`；
+    /// 缺字段的旧配置与逐字段回退路径都不能把它们连带清零。
+    #[test]
+    fn obs_fields_roundtrip_and_default_to_empty() {
+        let mut c = Config::default();
+        c.image_host = crate::image_host::ImageHostKind::Huawei;
+        c.image_host_obs_region = "华东-上海一".to_string();
+        c.image_host_obs_bucket = "markd-makrd".to_string();
+        c.image_host_obs_access_key = "HWAKID".to_string();
+        c.image_host_obs_secret_key = "SECRET".to_string();
+        let json = serde_json::to_string(&c).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.image_host, crate::image_host::ImageHostKind::Huawei);
+        assert_eq!(back.image_host_obs_region, "华东-上海一");
+        assert_eq!(back.image_host_obs_bucket, "markd-makrd");
+        assert_eq!(back.image_host_obs_access_key, "HWAKID");
+        assert_eq!(back.image_host_obs_secret_key, "SECRET");
+        // 不与百度/火山/阿里云的字段串台（阿里云那几项同样叫 bucket，但是另一个键名）。
+        assert!(back.image_host_bos_bucket.is_empty());
+        assert!(back.image_host_volc_bucket.is_empty());
+        assert!(back.image_host_oss_bucket.is_empty());
+        // 旧配置（还没有华为字段）照读，华为各项为空。
+        let old_json = r#"{"theme":"Dark","image_host":"huawei","image_host_obs_bucket":"b"}"#;
+        let old: Config = serde_json::from_str(old_json).unwrap();
+        assert_eq!(old.image_host_obs_bucket, "b");
+        assert!(old.image_host_obs_region.is_empty());
+        assert!(old.image_host_obs_access_key.is_empty());
+        assert!(old.image_host_obs_secret_key.is_empty());
+        // 逐字段回退路径也要保住华为那几项。
+        let lenient = Config::load_lenient(
+            r#"{"theme":"Dark","image_host":"huawei","image_host_obs_bucket":"markd-makrd","font_size":"很大"}"#,
+        );
+        assert_eq!(lenient.image_host, crate::image_host::ImageHostKind::Huawei);
+        assert_eq!(lenient.image_host_obs_bucket, "markd-makrd");
+        assert!(lenient.image_host_obs_region.is_empty());
+    }
+
+    /// 腾讯云 COS 四个字段要能存能取；平台在配置里写的是小写 `tencent`；
+    /// 缺字段的旧配置与逐字段回退路径都不能把它们连带清零。
+    #[test]
+    fn cos_fields_roundtrip_and_default_to_empty() {
+        let mut c = Config::default();
+        c.image_host = crate::image_host::ImageHostKind::Tencent;
+        c.image_host_cos_region = "公有云园区-中国-南京".to_string();
+        c.image_host_cos_bucket = "markd-1253518225".to_string();
+        c.image_host_cos_secret_id = "AKIDX".to_string();
+        c.image_host_cos_secret_key = "SECKEYX".to_string();
+        let json = serde_json::to_string(&c).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.image_host, crate::image_host::ImageHostKind::Tencent);
+        assert_eq!(back.image_host_cos_region, "公有云园区-中国-南京");
+        assert_eq!(back.image_host_cos_bucket, "markd-1253518225");
+        assert_eq!(back.image_host_cos_secret_id, "AKIDX");
+        assert_eq!(back.image_host_cos_secret_key, "SECKEYX");
+        // 与另外五家对象存储的字段互不串台（华为那几项同样存桶名，但是另一个键名）。
+        assert!(back.image_host_obs_bucket.is_empty());
+        assert!(back.image_host_bos_bucket.is_empty());
+        assert!(back.image_host_volc_bucket.is_empty());
+        assert!(back.image_host_oss_bucket.is_empty());
+        assert!(back.image_host_qiniu_bucket.is_empty());
+        // 默认值与旧配置（还没有腾讯字段）照读，腾讯各项为空。
+        let d = Config::default();
+        assert_eq!(d.image_host_cos_region, "");
+        assert!(d.image_host_cos_bucket.is_empty());
+        assert!(d.image_host_cos_secret_id.is_empty());
+        assert!(d.image_host_cos_secret_key.is_empty());
+        let old: Config = serde_json::from_str(
+            r#"{"theme":"Dark","image_host":"tencent","image_host_cos_bucket":"b-1"}"#,
+        )
+        .unwrap();
+        assert_eq!(old.image_host_cos_bucket, "b-1");
+        assert!(old.image_host_cos_region.is_empty());
+        assert!(old.image_host_cos_secret_key.is_empty());
+        // 逐字段回退路径也要保住腾讯那几项。
+        let lenient = Config::load_lenient(
+            r#"{"theme":"Dark","image_host":"tencent","image_host_cos_bucket":"markd-1253518225","font_size":"很大"}"#,
+        );
+        assert_eq!(
+            lenient.image_host,
+            crate::image_host::ImageHostKind::Tencent
+        );
+        assert_eq!(lenient.image_host_cos_bucket, "markd-1253518225");
+        assert!(lenient.image_host_cos_region.is_empty());
+    }
+
+    /// 读到不认识的 `image_host` 时会怎样：逐字段回退会**丢掉这一项**（落回 `disabled`），
+    /// 其余字段原样保住。这正是「装不上新平台的旧实例」遇到新平台名时的遭遇——
+    /// 旧进程一存盘就把图床关掉，所以加平台后要提醒用户用新版界面重选一次。
+    #[test]
+    fn unknown_image_host_kind_falls_back_to_disabled_and_keeps_the_rest() {
+        let lenient = Config::load_lenient(
+            r#"{"theme":"Dark","image_host":"tencent-two","image_host_cos_bucket":"markd-1253518225","image_host_obs_bucket":"markd-makrd","font_size":"很大"}"#,
+        );
+        assert_eq!(
+            lenient.image_host,
+            crate::image_host::ImageHostKind::Disabled,
+            "解析不了的平台名要落回默认值"
+        );
+        assert_eq!(lenient.image_host_cos_bucket, "markd-1253518225");
+        assert_eq!(lenient.image_host_obs_bucket, "markd-makrd");
+        // 出错那项之前的 theme、之后的两家桶名都要活下来。
+        assert_eq!(lenient.theme, crate::theme::ThemeKind::Dark);
+        assert_eq!(lenient.image_host_cos_secret_id, "", "没写的项保持为空");
     }
 }

@@ -1,10 +1,59 @@
-//! PTY 会话与终端面板绘制。
+//! 单个 PTY 会话：屏幕模型渲染、键盘输入与 PTY 读写。
+//!
+//! 一个 `Session` 就是一个独立的 shell（一个 PTY + 一块字符网格）。
+//! 上层 `Terminal` 负责把多个 Session 组织成分屏树与页签，这里只管「一个格子
+//! 怎么画、一个按键怎么转发」，不关心自己被摆在窗口的哪个位置。
 
 use super::*;
 
-pub struct Terminal {
-    pub open: bool,
-    pub height: f32,
+/// 终端自己的配色。可独立于应用主题切到固定深色（月亮按钮）。
+#[derive(Clone, Copy)]
+pub(super) struct TermColors {
+    /// 默认前景色。
+    pub text: Color32,
+    /// 次要文字（cwd、未聚焦提示）。
+    pub dim: Color32,
+    /// 强调色（光标、聚焦边框）。
+    pub accent: Color32,
+    /// 终端背景色。
+    pub bg: Color32,
+    /// 报错文字。
+    pub error: Color32,
+    /// 等宽字体字号（用户设置里的 terminal 字号）。
+    pub mono: f32,
+}
+
+impl TermColors {
+    /// `dark = true` 时用一套固定的深色终端配色，不随应用浅色主题变白。
+    pub(super) fn new(theme: &Theme, dark: bool) -> Self {
+        let base = Self {
+            text: theme.text,
+            dim: theme.dim,
+            accent: theme.accent,
+            bg: theme.panel,
+            error: Color32::from_rgb(220, 95, 90),
+            mono: theme.mono,
+        };
+        if dark {
+            Self {
+                text: Color32::from_rgb(212, 216, 224),
+                dim: Color32::from_rgb(120, 130, 146),
+                accent: Color32::from_rgb(86, 156, 214),
+                bg: Color32::from_rgb(24, 26, 31),
+                error: Color32::from_rgb(240, 110, 104),
+                ..base
+            }
+        } else {
+            base
+        }
+    }
+}
+
+pub(super) struct Session {
+    /// 稳定唯一 id：既做 egui widget id（焦点），也做页签/窗格的标识。
+    pub(super) id: u64,
+    /// 页签标题，通常是 shell 名。
+    pub(super) title: String,
     cwd: PathBuf,
     screen: Screen,
     parser: vte::Parser,
@@ -13,18 +62,33 @@ pub struct Terminal {
     writer: Option<Box<dyn Write + Send>>,
     child: Option<Box<dyn Child + Send + Sync>>,
     size: (u16, u16),
-    exited: bool,
+    pub(super) exited: bool,
     pub(super) error: Option<String>,
     pub(super) focus_req: bool,
-    focused: bool,
+    pub(super) focused: bool,
     body_id: egui::Id,
 }
 
-impl Terminal {
-    pub fn new(cwd: PathBuf) -> Self {
+impl Session {
+    pub(super) fn new(id: u64, cwd: PathBuf) -> Self {
+        // shell 名做页签标题，取路径最后一段，跨平台。
+        let title = std::env::var("SHELL")
+            .ok()
+            .and_then(|s| {
+                PathBuf::from(s)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+            })
+            .unwrap_or_else(|| {
+                if cfg!(windows) {
+                    "cmd".into()
+                } else {
+                    "shell".into()
+                }
+            });
         Self {
-            open: false,
-            height: 220.0,
+            id,
+            title,
             cwd,
             screen: Screen::new(24, 80),
             parser: vte::Parser::new(),
@@ -37,30 +101,19 @@ impl Terminal {
             error: None,
             focus_req: false,
             focused: false,
-            body_id: egui::Id::unique("markd_terminal_body"),
+            body_id: egui::Id::new(("markd_terminal_body", id)),
         }
     }
 
-    pub fn toggle(&mut self) {
-        self.open = !self.open;
-        self.focus_req = self.open;
+    pub(super) fn body_id(&self) -> egui::Id {
+        self.body_id
     }
 
     /// shell 启动后自己维护工作目录，只在启动前接受外部 cwd。
-    pub fn set_cwd(&mut self, path: PathBuf) {
+    pub(super) fn set_cwd(&mut self, path: PathBuf) {
         if self.master.is_none() {
             self.cwd = path;
         }
-    }
-
-    pub fn has_focus(&self) -> bool {
-        self.open && self.focused
-    }
-
-    /// 主动让出键盘焦点（点回编辑区时调用）。
-    pub fn blur(&mut self, ctx: &egui::Context) {
-        ctx.memory_mut(|m| m.surrender_focus(self.body_id));
-        self.focused = false;
     }
 
     pub(super) fn write_bytes(&mut self, data: &[u8]) {
@@ -68,6 +121,16 @@ impl Terminal {
             let _ = w.write_all(data);
             let _ = w.flush();
         }
+    }
+
+    pub(super) fn has_focus(&self) -> bool {
+        self.focused
+    }
+
+    /// 主动让出键盘焦点（点回编辑区时调用）。
+    pub(super) fn blur(&mut self, ctx: &egui::Context) {
+        ctx.memory_mut(|m| m.surrender_focus(self.body_id));
+        self.focused = false;
     }
 
     pub(super) fn start(&mut self, ctx: &egui::Context) {
@@ -153,7 +216,7 @@ impl Terminal {
     }
 
     /// 每帧把后台线程收到的字节喂给 vte 解析器。
-    pub fn poll(&mut self) {
+    pub(super) fn poll(&mut self) {
         let mut events = Vec::new();
         if let Some(rx) = &self.rx {
             while let Ok(ev) = rx.try_recv() {
@@ -206,15 +269,12 @@ impl Terminal {
         s
     }
 
-    fn cell_colors(&self, cell: &Cell, theme: &Theme) -> (Color32, Color32) {
+    fn cell_colors(&self, cell: &Cell, colors: &TermColors) -> (Color32, Color32) {
         let (mut fg, bg) = if cell.inverse {
-            (
-                cell.bg.unwrap_or(theme.panel),
-                cell.fg.unwrap_or(theme.text),
-            )
+            (cell.bg.unwrap_or(colors.bg), cell.fg.unwrap_or(colors.text))
         } else {
             (
-                cell.fg.unwrap_or(theme.text),
+                cell.fg.unwrap_or(colors.text),
                 cell.bg.unwrap_or(Color32::TRANSPARENT),
             )
         };
@@ -228,46 +288,18 @@ impl Terminal {
         (fg, bg)
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, theme: &Theme) {
+    /// 在当前 Ui 里绘制这个会话（调用方已把它放进分屏对应的矩形）。
+    /// `frame` 为 true 时在四周画一圈聚焦/普通边框。
+    pub(super) fn ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, colors: TermColors) {
         ui.style_mut().interaction.selectable_labels = false;
         self.ensure_started(ctx);
 
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("终端").strong().color(theme.accent));
-            ui.label(
-                RichText::new(self.cwd.to_string_lossy())
-                    .small()
-                    .color(theme.dim),
-            );
-            if self.master.is_some() && !self.focused {
-                ui.label(RichText::new("· 点击下方区域输入").small().color(theme.dim));
-            }
-            if let Some(e) = &self.error {
-                ui.label(
-                    RichText::new(e)
-                        .small()
-                        .color(Color32::from_rgb(220, 95, 90)),
-                );
-            } else if self.exited {
-                ui.label(
-                    RichText::new("shell 已退出")
-                        .small()
-                        .color(Color32::from_rgb(220, 95, 90)),
-                );
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .button("关闭")
-                    .on_hover_cursor(egui::CursorIcon::Default)
-                    .clicked()
-                {
-                    self.open = false;
-                }
-            });
-        });
-        ui.separator();
+        // 背景铺满整个可用区域，深色终端才不会透出应用面板的浅色。
+        let area = ui.available_rect_before_wrap();
+        ui.painter()
+            .rect_filled(area, egui::CornerRadius::ZERO, colors.bg);
 
-        let font_id = FontId::new(theme.mono, FontFamily::Monospace);
+        let font_id = FontId::new(colors.mono, FontFamily::Monospace);
         let (cw, rh) = ctx.fonts_mut(|f| {
             let cw = f.glyph_width(&font_id, 'M');
             let rh = f.row_height(&font_id);
@@ -285,7 +317,7 @@ impl Terminal {
         let total_lines = sb + self.screen.grid.len();
 
         ScrollArea::vertical()
-            .id_salt("terminal_output")
+            .id_salt(("terminal_output", self.id))
             .auto_shrink([false, false])
             .stick_to_bottom(true)
             .show(ui, |ui| {
@@ -322,15 +354,12 @@ impl Terminal {
                     let mut ci = 0;
                     while ci < row.len() {
                         let cell = &row[ci];
-                        let (fg, bg) = self.cell_colors(cell, theme);
+                        let (fg, bg) = self.cell_colors(cell, &colors);
                         let x = rect.min.x + ci as f32 * cw;
                         if cell.ch == '\0' {
                             if bg != Color32::TRANSPARENT {
                                 painter.rect_filled(
-                                    egui::Rect::from_min_size(
-                                        egui::pos2(x, y),
-                                        egui::vec2(cw, rh),
-                                    ),
+                                    egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cw, rh)),
                                     0.0,
                                     bg,
                                 );
@@ -370,7 +399,7 @@ impl Terminal {
                                 let c2 = &row[ci];
                                 if c2.ch == '\0'
                                     || !c2.ch.is_ascii()
-                                    || self.cell_colors(c2, theme) != (fg, bg)
+                                    || self.cell_colors(c2, &colors) != (fg, bg)
                                 {
                                     break;
                                 }
@@ -402,7 +431,7 @@ impl Terminal {
                     let x = rect.min.x + cursor_col as f32 * cw;
                     let y = rect.min.y + cursor_line as f32 * rh;
                     let crect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cw, rh));
-                    painter.rect_filled(crect, 0.0, theme.accent);
+                    painter.rect_filled(crect, 0.0, colors.accent);
                     // 光标下的字符反色重绘；宽字符只重绘落在光标格里的那一半。
                     let row = row_at(cursor_line);
                     if let Some(cell) = row.get(cursor_col) {
@@ -417,7 +446,7 @@ impl Terminal {
                                 egui::Align2::LEFT_TOP,
                                 ch.to_string(),
                                 font_id.clone(),
-                                theme.panel,
+                                colors.bg,
                             );
                         }
                     }
@@ -434,7 +463,7 @@ impl Terminal {
                     ui.painter().rect_stroke(
                         response.rect,
                         egui::CornerRadius::ZERO,
-                        egui::Stroke::new(1.0, theme.accent),
+                        egui::Stroke::new(1.0, colors.accent),
                         egui::StrokeKind::Inside,
                     );
                 }

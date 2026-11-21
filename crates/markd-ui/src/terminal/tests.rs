@@ -218,20 +218,24 @@ fn clicking_body_takes_focus() {
 fn pty_shell_executes_command() {
     let ctx = egui::Context::default();
     let mut term = Terminal::new(std::env::temp_dir());
-    term.start(&ctx);
-    assert!(term.master.is_some(), "PTY 未启动：{:?}", term.error);
+    term.sessions[0].start(&ctx);
+    assert!(
+        term.sessions[0].master.is_some(),
+        "PTY 未启动：{:?}",
+        term.sessions[0].error
+    );
     std::thread::sleep(std::time::Duration::from_millis(300));
-    term.write_bytes(b"echo $((123456*2))\r");
+    term.sessions[0].write_bytes(b"echo $((123456*2))\r");
     let mut text = String::new();
     for _ in 0..60 {
         std::thread::sleep(std::time::Duration::from_millis(50));
         term.poll();
-        text = term.plain_text();
+        text = term.sessions[0].plain_text();
         if text.contains("246912") {
             break;
         }
     }
-    term.write_bytes(b"exit\r");
+    term.sessions[0].write_bytes(b"exit\r");
     assert!(text.contains("246912"), "PTY 没有回显命令结果：\n{text}");
 }
 
@@ -241,20 +245,24 @@ fn pty_shell_executes_command() {
 fn pty_echoes_chinese() {
     let ctx = egui::Context::default();
     let mut term = Terminal::new(std::env::temp_dir());
-    term.start(&ctx);
-    assert!(term.master.is_some(), "PTY 未启动：{:?}", term.error);
+    term.sessions[0].start(&ctx);
+    assert!(
+        term.sessions[0].master.is_some(),
+        "PTY 未启动：{:?}",
+        term.sessions[0].error
+    );
     std::thread::sleep(std::time::Duration::from_millis(300));
-    term.write_bytes("echo 你好终端\r".as_bytes());
+    term.sessions[0].write_bytes("echo 你好终端\r".as_bytes());
     let mut text = String::new();
     for _ in 0..60 {
         std::thread::sleep(std::time::Duration::from_millis(50));
         term.poll();
-        text = term.plain_text();
+        text = term.sessions[0].plain_text();
         if text.matches("你好终端").count() >= 2 {
             break;
         }
     }
-    term.write_bytes(b"exit\r");
+    term.sessions[0].write_bytes(b"exit\r");
     assert!(
         text.matches("你好终端").count() >= 2,
         "PTY 中文回显/输出不完整：\n{text}"

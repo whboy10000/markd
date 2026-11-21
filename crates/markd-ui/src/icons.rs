@@ -347,6 +347,12 @@ fn ui_icon_bytes(key: &str) -> Option<&'static [u8]> {
     icons! {
         "ui:panel" => "panel.svg",
         "ui:panel-close" => "panel-close.svg",
+        "ui:split-horizontal" => "split-horizontal.svg",
+        "ui:split-vertical" => "split-vertical.svg",
+        "ui:add" => "add.svg",
+        "ui:moon" => "moon.svg",
+        "ui:sun" => "sun.svg",
+        "ui:close" => "close.svg",
     }
 }
 

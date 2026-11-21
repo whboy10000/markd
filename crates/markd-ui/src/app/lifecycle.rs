@@ -12,9 +12,16 @@ impl MarkdApp {
             config.show_outline = false;
             config.show_toolbar = false;
         }
-        let mut theme = Theme::get_with_overrides(config.theme, &config.color_overrides);
+        // 「跟随系统」时先按系统档解析：egui 的系统主题要等首个 RawInput 才送到，
+        // 这里拿不到深色就当浅色，第一帧的检测会立刻纠正。
+        let start_dark = matches!(cc.egui_ctx.system_theme(), Some(egui::Theme::Dark));
+        let mut theme = Theme::get_with_overrides(
+            Self::resolved_theme(&config, start_dark),
+            &config.color_overrides,
+        );
         theme.body = config.font_size;
         theme.mono = (config.font_size * 0.84).max(11.0);
+        theme.line_height = config.line_height.clamp(1.0, 2.4);
         theme.apply(&cc.egui_ctx);
         // 放宽「点击」判定：鼠标/触控板轻微抖动（默认 6px）、按得稍久（默认 0.8s）
         // 都会被当成拖动，表现就是工具条按钮「点一次没反应、要点两次」。
@@ -123,7 +130,6 @@ impl MarkdApp {
             status: String::new(),
             toast: None,
             about: false,
-            shortcuts: false,
             table_dialog: false,
             table_rows: 3,
             table_cols: 3,
@@ -137,6 +143,7 @@ impl MarkdApp {
             image_uploads: Vec::new(),
             force_quit: false,
             theme_dirty: false,
+            system_dark: start_dark,
             menu_guard: false,
             workspace_dialog: false,
             quick_cache_dir: String::new(),
@@ -175,11 +182,24 @@ impl MarkdApp {
     /// 按当前配置（主题类型 + 用户颜色覆盖 + 字号）重建主题并标脏。
     /// 所有改主题的入口统一走这里，避免漏掉颜色覆盖。
     pub(super) fn rebuild_theme(&mut self) {
-        self.theme =
-            Theme::get_with_overrides(self.config.theme, &self.config.color_overrides);
+        self.theme = Theme::get_with_overrides(
+            Self::resolved_theme(&self.config, self.system_dark),
+            &self.config.color_overrides,
+        );
         self.theme.body = self.config.font_size;
         self.theme.mono = (self.config.font_size * 0.84).max(11.0);
+        self.theme.line_height = self.config.line_height.clamp(1.0, 2.4);
         self.theme_dirty = true;
+    }
+
+    /// 「跟随系统」开启时，配色取系统那一档（系统给不到深色就按浅色），
+    /// 否则用配置里的手动档位。返回的档位只会是浅色/深色，主题配色表按它查。
+    fn resolved_theme(config: &Config, system_dark: bool) -> ThemeKind {
+        if config.theme_follow_system && system_dark {
+            ThemeKind::Dark
+        } else {
+            config.theme
+        }
     }
 
     /// 把配置里的外观项应用到主题/缩放/编辑器。

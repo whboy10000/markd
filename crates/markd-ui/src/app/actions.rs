@@ -190,8 +190,8 @@ impl MarkdApp {
                 self.graph.open = true;
             }
             Command::Stats => self.stats.open = true,
-            Command::Shortcuts => self.shortcuts = true,
-            Command::Settings => self.settings.open(),
+            Command::Shortcuts => self.settings.open_shortcuts(ctx),
+            Command::Settings => self.settings.open(ctx),
             Command::About => self.about = true,
             Command::Minimize => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
             Command::ToggleMaximize => {
@@ -282,7 +282,7 @@ impl MarkdApp {
             return;
         }
         if key(egui::Key::F1) {
-            self.shortcuts = true;
+            self.execute(Command::Shortcuts, ctx);
             return;
         }
         // Typora: Ctrl+Shift+` 删除线（macOS 上 Ctrl 与 Cmd 是分开的）

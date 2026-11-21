@@ -52,6 +52,8 @@ pub struct Theme {
     pub selection: Color32,
     pub body: f32,
     pub mono: f32,
+    /// 源码模式行距，字号的倍数；由配置项 `line_height` 注入。
+    pub line_height: f32,
 }
 
 fn rgb(r: u8, g: u8, b: u8) -> Color32 {
@@ -495,6 +497,7 @@ impl Theme {
             selection,
             body: 16.0,
             mono: 13.5,
+            line_height: 1.4,
             table_line: if kind == ThemeKind::Light {
                 // 表格线统一用 #F3F3F3（与侧栏同色），比通用 border 更浅
                 rgb(243, 243, 243)

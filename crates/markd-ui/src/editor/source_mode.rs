@@ -153,10 +153,10 @@ pub(super) fn show_source_mode(
             // 行号随之忽上忽下（用户反馈的"跳动"）。
             let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
                 let mut job = egui::text::LayoutJob::default();
-                // 行距放大到字号的 1.4 倍：行与行（含空行）之间的间隔
-                // 更舒展，行号数字不再显得挤在一起。
+                // 行距 = 字号 × 配置的「源码模式行距」（默认 1.4）：行与行（含空行）
+                // 之间的间隔更舒展，行号数字不再显得挤在一起。
                 let mut fmt = theme.mono_fmt();
-                fmt.line_height = Some(theme.mono * 1.4);
+                fmt.line_height = Some(theme.mono * theme.line_height);
                 job.append(buf.as_str(), 0.0, fmt);
                 job.wrap.max_width = f32::INFINITY;
                 ui.fonts_mut(|f| f.layout_job(job))

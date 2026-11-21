@@ -323,7 +323,7 @@ impl MarkdApp {
             .iter()
             .position(|t| *t == self.config.theme)
             .unwrap_or(0);
-        self.config.theme = all[(i + 1) % all.len()];
+        self.config.set_theme(all[(i + 1) % all.len()]);
         self.rebuild_theme();
         self.config.save();
         self.status = format!("主题: {}", self.theme.kind.name());
