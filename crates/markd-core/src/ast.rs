@@ -74,30 +74,139 @@ pub struct CodeGroupItem {
     pub code: String,
 }
 
+/// 大文档共享的整篇文本：既可以是接管来的 `String`，也可以是 mmap 的文件。
+///
+/// `text` 是指向 backing 的切片，生命周期靠 unsafe 延长到 `'static`；**只在
+/// `SharedText` 自身存活期间通过 `as_str()` 取出**，backing 与它同生共死，
+/// 因此不会悬垂。这样避免每次取块源码都重新做一遍整篇 UTF-8 校验。
+pub struct SharedText {
+    backing: Backing,
+    text: &'static str,
+}
+
+enum Backing {
+    String(std::sync::Arc<String>),
+    Mapped(std::sync::Arc<memmap2::Mmap>),
+}
+
+impl SharedText {
+    pub fn from_string(s: String) -> Self {
+        let backing = Backing::String(std::sync::Arc::new(s));
+        let slice: &str = match &backing {
+            Backing::String(v) => v.as_str(),
+            Backing::Mapped(_) => unreachable!(),
+        };
+        // SAFETY: backing 与 text 同在本结构体里，只要 Self 存活，Arc 的堆内存就不释放。
+        let text: &'static str = unsafe { std::mem::transmute(slice) };
+        Self { backing, text }
+    }
+
+    /// 把文件映射成整篇文本；UTF-8 在这里校验一次，之后所有块直接切片。
+    pub fn from_path(path: &std::path::Path) -> std::io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        if file.metadata()?.len() == 0 {
+            return Ok(Self::from_string(String::new()));
+        }
+        // SAFETY: 映射期间调用方不修改文件；映射只读，文件被截断/改写属调用方契约。
+        let map = std::sync::Arc::new(unsafe { memmap2::MmapOptions::new().map(&file)? });
+        std::str::from_utf8(&map[..])
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let slice: &str = unsafe { std::str::from_utf8_unchecked(&map[..]) };
+        // SAFETY: 同 from_string，Arc<Mmap> 与切片同生共死。
+        let text: &'static str = unsafe { std::mem::transmute(slice) };
+        Ok(Self {
+            backing: Backing::Mapped(map),
+            text,
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.text
+    }
+}
+
+// `&'static str` 与 Arc<Mmap>/Arc<String> 都是 Send + Sync。
+unsafe impl Send for SharedText {}
+unsafe impl Sync for SharedText {}
+
+/// 块的原始源码。
+///
+/// 小文档走 `Owned(String)`，编辑时可直接改；大文档打开时走 `Shared`，
+/// 只持有整篇共享文本与字节区间，866 万个块不再各拷一份源码。
+#[derive(Clone)]
+pub enum SourceText {
+    Owned(String),
+    Shared {
+        text: std::sync::Arc<SharedText>,
+        start: usize,
+        end: usize,
+    },
+}
+
+impl SourceText {
+    pub fn as_str(&self) -> &str {
+        match self {
+            SourceText::Owned(s) => s,
+            SourceText::Shared { text, start, end } => &text.as_str()[*start..*end],
+        }
+    }
+
+    /// 共享源码表示「行内内容尚未构建」，由渲染路径按需补全。
+    pub fn is_shared(&self) -> bool {
+        matches!(self, SourceText::Shared { .. })
+    }
+}
+
+impl std::fmt::Debug for SourceText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.as_str().fmt(f)
+    }
+}
+
+impl PartialEq for SourceText {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for SourceText {}
+
+impl From<String> for SourceText {
+    fn from(s: String) -> Self {
+        SourceText::Owned(s)
+    }
+}
+
+impl From<&str> for SourceText {
+    fn from(s: &str) -> Self {
+        SourceText::Owned(s.to_string())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Block {
     Heading {
         level: u8,
         content: Vec<Inline>,
-        source: String,
+        source: SourceText,
     },
     Paragraph {
         content: Vec<Inline>,
-        source: String,
+        source: SourceText,
     },
     Quote {
         level: usize,
         content: Vec<Inline>,
-        source: String,
+        source: SourceText,
     },
     ListItem {
         item: ListItem,
-        source: String,
+        source: SourceText,
     },
     Code {
         lang: String,
         code: String,
-        source: String,
+        source: SourceText,
         /// 引用层级：> 0 表示这段代码块写在引用内部（`> ```…`），
         /// 渲染时左侧带引用竖线，源码里的每一行都保留 `>` 前缀。
         quote: usize,
@@ -105,45 +214,45 @@ pub enum Block {
     /// 代码组：同一个代码区用 Tab 切换多种语言（如 Java / Python）。
     CodeGroup {
         items: Vec<CodeGroupItem>,
-        source: String,
+        source: SourceText,
     },
     Table {
         head: Vec<Vec<Inline>>,
         rows: Vec<Vec<Vec<Inline>>>,
         align: Vec<Align>,
-        source: String,
+        source: SourceText,
     },
     Rule {
-        source: String,
+        source: SourceText,
     },
     Math {
         tex: String,
-        source: String,
+        source: SourceText,
     },
     Diagram {
         kind: DiagramKind,
         code: String,
-        source: String,
+        source: SourceText,
     },
     FrontMatter {
         yaml: String,
-        source: String,
+        source: SourceText,
     },
     Footnote {
         id: String,
         content: Vec<Inline>,
-        source: String,
+        source: SourceText,
     },
     Toc {
-        source: String,
+        source: SourceText,
     },
     Blank {
-        source: String,
+        source: SourceText,
     },
 }
 
 impl Block {
-    pub fn source(&self) -> &str {
+    fn source_ref(&self) -> &SourceText {
         match self {
             Block::Heading { source, .. }
             | Block::Paragraph { source, .. }
@@ -162,7 +271,26 @@ impl Block {
         }
     }
 
-    pub fn source_mut(&mut self) -> &mut String {
+    pub fn source(&self) -> &str {
+        self.source_ref().as_str()
+    }
+
+    /// 共享源码的块还没建行内树；渲染前必须先补全。
+    pub fn needs_inline(&self) -> bool {
+        self.source_ref().is_shared()
+            && matches!(
+                self,
+                Block::Heading { .. }
+                    | Block::Paragraph { .. }
+                    | Block::Quote { .. }
+                    | Block::Footnote { .. }
+                    | Block::ListItem { .. }
+                    | Block::Table { .. }
+            )
+    }
+
+    /// 整块替换源码（编辑器写回用）。写回后源码变成独占，不再共享原文。
+    pub fn set_source(&mut self, new_src: String) {
         match self {
             Block::Heading { source, .. }
             | Block::Paragraph { source, .. }
@@ -177,7 +305,7 @@ impl Block {
             | Block::FrontMatter { source, .. }
             | Block::Footnote { source, .. }
             | Block::Toc { source }
-            | Block::Blank { source } => source,
+            | Block::Blank { source } => *source = SourceText::Owned(new_src),
         }
     }
 
@@ -196,12 +324,25 @@ impl Block {
 
     pub fn heading(&self) -> Option<(u8, String)> {
         match self {
-            Block::Heading { level, content, .. } => Some((*level, inline_plain(content))),
+            Block::Heading { level, content, .. } => {
+                let title = if self.needs_inline() {
+                    let body = heading(self.source().trim_end()).map(|(_, b)| b).unwrap_or("");
+                    let mut out = String::new();
+                    plain_inline(body, &mut out);
+                    out
+                } else {
+                    inline_plain(content)
+                };
+                Some((*level, title))
+            }
             _ => None,
         }
     }
 
     pub fn plain(&self) -> String {
+        if self.needs_inline() {
+            return self.plain_from_source();
+        }
         match self {
             Block::Heading { content, .. }
             | Block::Paragraph { content, .. }
@@ -225,6 +366,63 @@ impl Block {
             _ => String::new(),
         }
     }
+
+    /// 共享源码（行内树尚未构建）时，直接从源码剥离标记得到纯文本。
+    /// 语义与上面走行内树的分支一致，供首次打开的统计与大纲使用。
+    fn plain_from_source(&self) -> String {
+        let mut out = String::new();
+        self.plain_from_source_into(&mut out);
+        out
+    }
+
+    /// 同上，但直接写入调用方提供的接收器，避免每个块分配一次 String。
+    pub(crate) fn plain_from_source_into<S: PlainSink>(&self, out: &mut S) {
+        let src = self.source();
+        match self {
+            Block::Heading { .. } => {
+                if let Some((_, body)) = heading(src.trim_end()) {
+                    plain_inline(body, out);
+                }
+            }
+            Block::Paragraph { .. } => plain_inline(src, out),
+            Block::Quote { .. } => {
+                if let Some((_, body)) = quote_level(src.trim_end()) {
+                    plain_inline(body, out);
+                }
+            }
+            Block::Footnote { .. } => {
+                if let Some((_, body)) = footnote_def(src.trim_end()) {
+                    plain_inline(body, out);
+                }
+            }
+            Block::ListItem { .. } => {
+                if let Some((_, _, _, body)) = list_marker(src) {
+                    plain_inline(body, out);
+                }
+            }
+            Block::Table { .. } => {
+                let mut first = true;
+                let mut emit = |line: &str, out: &mut S| {
+                    for cell in split_cells(line) {
+                        if !first {
+                            out.push_plain(" ");
+                        }
+                        first = false;
+                        plain_inline(&cell, out);
+                    }
+                };
+                if let Some(head) = src.split('\n').next() {
+                    emit(head, out);
+                }
+                for line in src.split('\n').skip(2) {
+                    emit(line, out);
+                }
+            }
+            Block::Code { code, .. } | Block::Diagram { code, .. } => out.push_plain(code),
+            Block::Math { tex, .. } => out.push_plain(tex),
+            _ => {}
+        }
+    }
 }
 
 pub fn inline_plain(inlines: &[Inline]) -> String {
@@ -246,6 +444,191 @@ pub fn inline_plain(inlines: &[Inline]) -> String {
         }
     }
     s
+}
+
+fn utf8_end(b: &[u8], i: usize) -> usize {
+    match b[i] {
+        0..=0x7f => i + 1,
+        0xc0..=0xdf => (i + 2).min(b.len()),
+        0xe0..=0xef => (i + 3).min(b.len()),
+        _ => (i + 4).min(b.len()),
+    }
+}
+
+fn find_byte(b: &[u8], from: usize, target: u8) -> Option<usize> {
+    b[from..].iter().position(|&c| c == target).map(|p| from + p)
+}
+
+fn find_bytes(b: &[u8], from: usize, pat: &[u8]) -> Option<usize> {
+    if pat.is_empty() || from + pat.len() > b.len() {
+        return None;
+    }
+    b[from..]
+        .windows(pat.len())
+        .position(|w| w == pat)
+        .map(|p| from + p)
+}
+
+/// `[label](url)` / `![alt](url)` 的标签区间与 ')' 之后的位置。
+fn link_span(b: &[u8], open: usize) -> Option<(usize, usize, usize)> {
+    let close = find_byte(b, open + 1, b']')?;
+    if b.get(close + 1) != Some(&b'(') {
+        return None;
+    }
+    let end = find_byte(b, close + 2, b')')?;
+    Some((open + 1, close, end + 1))
+}
+
+/// 从 Markdown 源码直接得到纯文本，语义等价于 `inline_plain(parse_inline(s))`，
+/// 但不构建行内树、不做 `Vec<char>` 分配。共享源码模式靠它给出正确统计。
+pub trait PlainSink {
+    fn push_plain(&mut self, s: &str);
+}
+
+impl PlainSink for String {
+    fn push_plain(&mut self, s: &str) {
+        self.push_str(s);
+    }
+}
+
+pub fn plain_inline<S: PlainSink>(s: &str, out: &mut S) {
+    let b = s.as_bytes();
+    let mut i = 0usize;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'\\' && i + 1 < b.len() {
+            let e = utf8_end(b, i + 1);
+            out.push_plain(&s[i + 1..e]);
+            i = e;
+            continue;
+        }
+        if c == b'\n' {
+            out.push_plain(" ");
+            i += 1;
+            continue;
+        }
+        if c == b'`' {
+            if let Some(end) = find_byte(b, i + 1, b'`') {
+                out.push_plain(&s[i + 1..end]);
+                i = end + 1;
+                continue;
+            }
+        }
+        if c == b'!' && b.get(i + 1) == Some(&b'[') {
+            if let Some((a, z, mut end)) = link_span(b, i + 1) {
+                out.push_plain(&s[a..z]);
+                // 图片后的 {width=300} 属性整块吃掉，与 image_width_attr 一致。
+                if b.get(end) == Some(&b'{') {
+                    if let Some(close) = find_byte(b, end + 1, b'}') {
+                        end = close + 1;
+                    }
+                }
+                i = end;
+                continue;
+            }
+        }
+        if c == b'[' {
+            if b.get(i + 1) == Some(&b'[') {
+                if let Some(end) = find_bytes(b, i + 2, b"]]") {
+                    out.push_plain(&s[i + 2..end]);
+                    i = end + 2;
+                    continue;
+                }
+            }
+            if b.get(i + 1) == Some(&b'^') {
+                if let Some(end) = find_byte(b, i + 2, b']') {
+                    out.push_plain(&s[i + 2..end]);
+                    i = end + 1;
+                    continue;
+                }
+            }
+            if let Some((a, z, end)) = link_span(b, i) {
+                plain_inline(&s[a..z], out);
+                i = end;
+                continue;
+            }
+        }
+        if c == b'$' {
+            if let Some(end) = find_byte(b, i + 1, b'$') {
+                let span = &s[i..=end];
+                match inline_math_tex(span) {
+                    Some(tex) => out.push_plain(&tex),
+                    None => out.push_plain(&s[i + 1..end]),
+                }
+                i = end + 1;
+                continue;
+            }
+        }
+        if (c == b'*' || c == b'_') && b.get(i + 1) == Some(&c) {
+            if let Some(end) = find_bytes(b, i + 2, &[c, c]) {
+                plain_inline(&s[i + 2..end], out);
+                i = end + 2;
+                continue;
+            }
+        }
+        if c == b'<' {
+            // <u>…</u>
+            if b.get(i + 1) == Some(&b'u') && b.get(i + 2) == Some(&b'>') {
+                if let Some(end) = find_bytes(b, i + 3, b"</u>") {
+                    plain_inline(&s[i + 3..end], out);
+                    i = end + 4;
+                    continue;
+                }
+            }
+            // <em>…</em>
+            if b.get(i + 1..i + 4) == Some(b"em>") {
+                if let Some(end) = find_bytes(b, i + 4, b"</em>") {
+                    plain_inline(&s[i + 4..end], out);
+                    i = end + 5;
+                    continue;
+                }
+            }
+            // <strong>…</strong>
+            if b.get(i + 1..i + 8) == Some(b"strong>") {
+                if let Some(end) = find_bytes(b, i + 8, b"</strong>") {
+                    plain_inline(&s[i + 8..end], out);
+                    i = end + 9;
+                    continue;
+                }
+            }
+        }
+        if c == b'~' && b.get(i + 1) == Some(&b'~') {
+            if let Some(end) = find_bytes(b, i + 2, b"~~") {
+                plain_inline(&s[i + 2..end], out);
+                i = end + 2;
+                continue;
+            }
+        }
+        if c == b'=' && b.get(i + 1) == Some(&b'=') {
+            if let Some(end) = find_bytes(b, i + 2, b"==") {
+                plain_inline(&s[i + 2..end], out);
+                i = end + 2;
+                continue;
+            }
+        }
+        if c == b'*' || c == b'_' {
+            if let Some(end) = find_byte(b, i + 1, c) {
+                if end > i + 1 {
+                    plain_inline(&s[i + 1..end], out);
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        if c == b'<' {
+            if let Some(end) = find_byte(b, i + 1, b'>') {
+                let inside = &s[i + 1..end];
+                if inside.starts_with("http://") || inside.starts_with("https://") {
+                    plain_inline(inside, out);
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        let e = utf8_end(b, i);
+        out.push_plain(&s[i..e]);
+        i = e;
+    }
 }
 
 pub fn collect_wiki(inlines: &[Inline], out: &mut Vec<String>) {
@@ -559,7 +942,33 @@ fn heading(line: &str) -> Option<(u8, &str)> {
     }
 }
 
+/// 判断分隔线。原实现是 `chars().filter(...).collect::<String>()` 后连扫三遍，
+/// 而它被块扫描与段落合并对**每一行**各调一次：1000 万字约 66 万行就要分配
+/// 66 万次中间 String，2 亿字 1248 万行更是直接把解析拖到十几秒。
+///
+/// 这里改成一次字节遍历：绝大多数行是纯 ASCII，走快路径零分配；只有出现
+/// 非 ASCII 字节（如 U+3000 全角空格）才回退到原来的 char 实现，语义完全一致。
 fn is_rule(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    if bytes.is_ascii() {
+        let mut marker = 0u8;
+        let mut n = 0usize;
+        for &b in bytes {
+            if b.is_ascii_whitespace() {
+                continue;
+            }
+            if !matches!(b, b'-' | b'*' | b'_') {
+                return false;
+            }
+            if marker == 0 {
+                marker = b;
+            } else if marker != b {
+                return false;
+            }
+            n += 1;
+        }
+        return n >= 3;
+    }
     let t: String = line.chars().filter(|c| !c.is_whitespace()).collect();
     t.len() >= 3
         && (t.chars().all(|c| c == '-')
@@ -829,18 +1238,24 @@ struct InlineJobs<'a> {
     /// `(块下标, 输入下标)`：段落/标题/引用/列表项/脚注，一块一条。
     singles: Vec<(usize, usize)>,
     tables: Vec<(usize, TableShape)>,
+    /// 大文档快开模式：不登记任务、不构建行内树，渲染时按需补。
+    skip: bool,
 }
 
 impl<'a> InlineJobs<'a> {
-    fn new() -> Self {
+    fn new(skip: bool) -> Self {
         Self {
             inputs: Vec::new(),
             singles: Vec::new(),
             tables: Vec::new(),
+            skip,
         }
     }
 
     fn add(&mut self, text: JobText<'a>) -> usize {
+        if self.skip {
+            return 0;
+        }
         self.inputs.push(text);
         self.inputs.len() - 1
     }
@@ -854,15 +1269,24 @@ impl<'a> InlineJobs<'a> {
     }
 
     fn single(&mut self, block: usize, input: usize) {
+        if self.skip {
+            return;
+        }
         self.singles.push((block, input));
     }
 
     fn table(&mut self, block: usize, head: Vec<usize>, rows: Vec<Vec<usize>>) {
+        if self.skip {
+            return;
+        }
         self.tables.push((block, TableShape { head, rows }));
     }
 
     /// 跑完所有行内解析并写回。写回是「搬走」而不是复制：每个输入下标只被用一次。
     fn fill(self, blocks: &mut [Block], threads: usize) {
+        if self.skip {
+            return;
+        }
         let mut results = parse_inlines(&self.inputs, threads);
         for (b, n) in &self.singles {
             set_content(&mut blocks[*b], std::mem::take(&mut results[*n]));
@@ -938,23 +1362,234 @@ pub fn parse(src: &str) -> Vec<Block> {
     parse_with(src, inline_threads())
 }
 
+/// 自动选择解析路径：小文档走串行（起线程比解析本身贵），
+/// 大文档走按空行切片的并行解析。阈值按实测定：1000 万字（24MB）串行约 0.55s，
+/// 此时并行收益已能盖过切分与起线程成本。
+pub fn parse_auto(src: &str) -> Vec<Block> {
+    if src.len() < 4 * 1024 * 1024 {
+        parse(src)
+    } else {
+        // 大文档：源码由所有块共享，块不再各拷一份；行内树渲染时按需补。
+        let shared = std::sync::Arc::new(SharedText::from_string(src.to_string()));
+        parse_parallel_inner(shared.as_str(), Some(&shared))
+    }
+}
+
+/// 找可以安全切片的空行下标。
+///
+/// Markdown 的块（段落、表格、列表、标题、引用）都不会跨空行延续，唯一例外是
+/// 围栏代码块/数学块/front matter——它们的正文里可以有空行。这里用一遍轻量
+/// 状态机跳过围栏内部，只在「围栏外的空行」上切片，保证每一片独立解析出的块
+/// 序列拼起来，与整篇解析逐块一致。
+fn safe_split_points(lines: &[&str]) -> Vec<usize> {
+    let mut pts = Vec::new();
+    let mut i = 0usize;
+    // front matter 只出现在开头，且内部可以有空行：整段跳过。
+    if lines.first().map(|l| l.trim()) == Some("---") {
+        let mut j = 1;
+        while j < lines.len() && lines[j].trim() != "---" {
+            j += 1;
+        }
+        if j < lines.len() {
+            i = j + 1;
+        }
+    }
+    while i < lines.len() {
+        let line = lines[i];
+        let t = line.trim_end();
+        // 围栏：用与块扫描器相同的判定，找到闭合行整体跳过。
+        if t.starts_with("```") || t.starts_with("~~~") {
+            let fence = &t[..3];
+            i += 1;
+            while i < lines.len() && !lines[i].trim_start().starts_with(fence) {
+                i += 1;
+            }
+            i += 1; // 闭合行（未闭合时 i 已越界，下面循环自然结束）
+            continue;
+        }
+        if let Some(n) = code_group_open(t) {
+            i += 1;
+            while i < lines.len() && !is_fence_close(lines[i], n) {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if t.starts_with("$$") {
+            i += 1;
+            while i < lines.len() && !lines[i].trim().starts_with("$$") {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if quote_fence(t).is_some() {
+            i += 1;
+            while i < lines.len() && quote_level(lines[i]).is_some() {
+                i += 1;
+            }
+            continue;
+        }
+        if t.is_empty() {
+            pts.push(i);
+        }
+        i += 1;
+    }
+    pts
+}
+
+/// `parse_auto` 的零拷贝入口：调用方把已读到的整篇字符串交出来，
+/// 大文档直接装进 Arc 供所有块共享，不再复制一遍全文。
+pub fn parse_auto_owned(text: String) -> Vec<Block> {
+    if text.len() < 4 * 1024 * 1024 {
+        return parse(&text);
+    }
+    let shared = std::sync::Arc::new(SharedText::from_string(text));
+    parse_parallel_inner(shared.as_str(), Some(&shared))
+}
+
+/// 从 mmap 文件建块：文本不复制，块源码共享同一段映射。
+pub fn parse_mmap(shared: std::sync::Arc<SharedText>) -> Vec<Block> {
+    let src = shared.as_str();
+    if src.len() < 4 * 1024 * 1024 {
+        return parse(src);
+    }
+    parse_parallel_inner(src, Some(&shared))
+}
+
+/// 把大文档切成若干片并行解析，结果按原顺序拼接。
+///
+/// 切片只落在围栏外的空行上：前一片包含那条空行（解析成 `Block::Blank`），
+/// 后一片从下一行开始。各片的 `source()` 用 `\n` 拼回去正好是原文，
+/// 这是 Hybrid View 无损往返的前提，由 `parallel_parse_matches_serial` 守护。
+pub fn parse_parallel(src: &str) -> Vec<Block> {
+    parse_parallel_inner(src, None)
+}
+
+/// `parse_parallel` 的实现体，`shared` 非空时块源码走零拷贝共享模式。
+fn parse_parallel_inner(src: &str, shared: Option<&std::sync::Arc<SharedText>>) -> Vec<Block> {
+    let lines: Vec<&str> = src.split('\n').collect();
+    let threads = inline_threads();
+    if threads < 2 || lines.len() < 4096 {
+        return parse_with_inner(src, inline_threads(), true, shared);
+    }
+    let pts = safe_split_points(&lines);
+    if pts.is_empty() {
+        return parse_with_inner(src, threads, true, shared);
+    }
+    // 尽量均分：第 k 个切片点取 pts[k * len / threads]。
+    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(threads);
+    let mut start = 0usize;
+    for k in 1..threads {
+        let p = pts[k * pts.len() / threads];
+        if p + 1 > start {
+            ranges.push((start, p + 1));
+            start = p + 1;
+        }
+    }
+    ranges.push((start, lines.len()));
+    if ranges.len() < 2 {
+        return parse_with_inner(src, threads, true, shared);
+    }
+
+    let base = src.as_ptr() as usize;
+    let pieces: Vec<&str> = ranges
+        .iter()
+        .map(|&(s, e)| {
+            let from = lines[s].as_ptr() as usize - base;
+            // lines[e] 前面的那个 '\n' 是片间分隔符，不能带进本片，
+            // 否则 split('\n') 会多出一个尾部空行 → 多一个 Block::Blank。
+            let to = if e < lines.len() {
+                lines[e].as_ptr() as usize - base - 1
+            } else {
+                src.len()
+            };
+            &src[from..to]
+        })
+        .collect();
+
+    let ranges_ref = &ranges;
+    let lines_ref = &lines;
+    let mut chunks: Vec<Vec<Block>> = vec![Vec::new(); pieces.len()];
+    std::thread::scope(|s| {
+        for (idx, (dst, piece)) in chunks.iter_mut().zip(&pieces).enumerate() {
+            s.spawn(move || {
+                // front matter 只在整篇开头认一次，后续切片按普通行处理。
+                let (s0, e0) = ranges_ref[idx];
+                *dst = parse_with_lines(piece, &lines_ref[s0..e0], 1, idx == 0, shared);
+            });
+        }
+    });
+    let total: usize = chunks.iter().map(|c| c.len()).sum();
+    let mut out = Vec::with_capacity(total);
+    for c in chunks {
+        out.extend(c);
+    }
+    out
+}
+
+/// 从原文的一段行区间生成块源码：快开模式零拷贝（只存 Arc + 字节区间），
+/// 普通模式才调用 `owned` 生成独占 String。
+fn block_source(
+    lines: &[&str],
+    a: usize,
+    b: usize,
+    shared: Option<&std::sync::Arc<SharedText>>,
+    owned: impl FnOnce() -> String,
+) -> SourceText {
+    match shared {
+        Some(arc) if a < b && b <= lines.len() => {
+            let base = arc.as_str().as_ptr() as usize;
+            let start = lines[a].as_ptr() as usize - base;
+            let end = lines[b - 1].as_ptr() as usize - base + lines[b - 1].len();
+            SourceText::Shared {
+                text: arc.clone(),
+                start,
+                end,
+            }
+        }
+        _ => SourceText::Owned(owned()),
+    }
+}
+
 /// `parse` 的实现，但行内阶段固定用 `threads` 个分片。
 /// 暴露给测试：并行与串行的结果必须逐块相同，这是「并行不改语义」的证明。
 pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
+    parse_with_inner(src, threads, true, None)
+}
+
+/// `parse_with` 的实现体，多一个「本片是否允许认 front matter」的开关。
+fn parse_with_inner(
+    src: &str,
+    threads: usize,
+    allow_front_matter: bool,
+    shared: Option<&std::sync::Arc<SharedText>>,
+) -> Vec<Block> {
     let lines: Vec<&str> = src.split('\n').collect();
-    let mut out: Vec<Block> = Vec::new();
-    let mut jobs = InlineJobs::new();
+    parse_with_lines(src, &lines, threads, allow_front_matter, shared)
+}
+
+/// 与 `parse_with_inner` 等价，但复用调用方已经拆好的行表。
+fn parse_with_lines(
+    src: &str,
+    lines: &[&str],
+    threads: usize,
+    allow_front_matter: bool,
+    shared: Option<&std::sync::Arc<SharedText>>,
+) -> Vec<Block> {
+    let mut out: Vec<Block> = Vec::with_capacity(lines.len() * 7 / 10);
+    let mut jobs = InlineJobs::new(shared.is_some());
     let mut i = 0usize;
 
     // YAML Front Matter（仅文档开头）
-    if lines.first().map(|l| l.trim()) == Some("---") {
+    if allow_front_matter && lines.first().map(|l| l.trim()) == Some("---") {
         let mut j = i + 1;
         while j < lines.len() && lines[j].trim() != "---" {
             j += 1;
         }
         if j < lines.len() {
             let yaml = lines[i + 1..j].join("\n");
-            let source = lines[i..=j].join("\n");
+            let source = block_source(&lines, i, j + 1, shared, || lines[i..=j].join("\n"));
             out.push(Block::FrontMatter { yaml, source });
             i = j + 1;
         }
@@ -966,14 +1601,14 @@ pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
 
         if t.is_empty() {
             out.push(Block::Blank {
-                source: String::new(),
+                source: String::new().into(),
             });
             i += 1;
             continue;
         }
         if is_rule(t) {
             out.push(Block::Rule {
-                source: line.to_string(),
+                source: block_source(&lines, i, i + 1, shared, || line.to_string()),
             });
             i += 1;
             continue;
@@ -1010,10 +1645,15 @@ pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
                 // 未闭合时按引用结束处收尾：补一行闭合围栏，写回仍是合法代码块。
                 parts.push(format!("{p} {fence3}"));
             }
+            let source = if closed {
+                block_source(&lines, i, j, shared, || parts.join("\n"))
+            } else {
+                SourceText::Owned(parts.join("\n"))
+            };
             out.push(Block::Code {
                 lang: info,
                 code: raw.join("\n"),
-                source: parts.join("\n"),
+                source,
                 quote: qlevel,
             });
             i = j;
@@ -1051,9 +1691,14 @@ pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
                     code: body.join("\n"),
                 });
             }
+            let source = if closed {
+                block_source(&lines, i, j, shared, || parts.join("\n"))
+            } else {
+                SourceText::Owned(parts.join("\n"))
+            };
             out.push(Block::CodeGroup {
                 items,
-                source: parts.join("\n"),
+                source,
             });
             i = j;
             continue;
@@ -1076,7 +1721,11 @@ pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
             let mut parts = vec![line.to_string()];
             parts.extend(body.iter().cloned());
             parts.push(closing);
-            let source = parts.join("\n");
+            let source = if j < lines.len() {
+                block_source(&lines, i, j + 1, shared, || parts.join("\n"))
+            } else {
+                SourceText::Owned(parts.join("\n"))
+            };
             let code = body.join("\n");
             let lang = info.to_lowercase();
             let block = if lang.starts_with("mermaid") {
@@ -1131,16 +1780,21 @@ pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
             let mut parts = vec![line.to_string()];
             parts.extend(body.iter().cloned());
             parts.push(closing);
+            let source = if j < lines.len() {
+                block_source(&lines, i, j + 1, shared, || parts.join("\n"))
+            } else {
+                SourceText::Owned(parts.join("\n"))
+            };
             out.push(Block::Math {
                 tex: body.join("\n"),
-                source: parts.join("\n"),
+                source,
             });
             i = if j < lines.len() { j + 1 } else { j };
             continue;
         }
         if t.eq_ignore_ascii_case("[toc]") {
             out.push(Block::Toc {
-                source: line.to_string(),
+                source: block_source(&lines, i, i + 1, shared, || line.to_string()),
             });
             i += 1;
             continue;
@@ -1150,7 +1804,7 @@ pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
             out.push(Block::Heading {
                 level,
                 content: Vec::new(),
-                source: line.to_string(),
+                source: block_source(&lines, i, i + 1, shared, || line.to_string()),
             });
             jobs.single(out.len() - 1, job);
             i += 1;
@@ -1164,7 +1818,7 @@ pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
             out.push(Block::Quote {
                 level,
                 content: Vec::new(),
-                source: line.to_string(),
+                source: block_source(&lines, i, i + 1, shared, || line.to_string()),
             });
             jobs.single(out.len() - 1, job);
             i += 1;
@@ -1179,7 +1833,7 @@ pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
                 row_cells.push(split_cells(lines[j]));
                 j += 1;
             }
-            let source = lines[i..j].join("\n");
+            let source: SourceText = block_source(&lines, i, j, shared, || lines[i..j].join("\n"));
             let head: Vec<usize> = head_cells.into_iter().map(|c| jobs.owned(c)).collect();
             let rows: Vec<Vec<usize>> = row_cells
                 .into_iter()
@@ -1206,7 +1860,7 @@ pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
             };
             out.push(Block::ListItem {
                 item,
-                source: line.to_string(),
+                source: block_source(&lines, i, i + 1, shared, || line.to_string()),
             });
             jobs.single(out.len() - 1, job);
             i += 1;
@@ -1217,7 +1871,7 @@ pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
             out.push(Block::Footnote {
                 id: id.to_string(),
                 content: Vec::new(),
-                source: line.to_string(),
+                source: block_source(&lines, i, i + 1, shared, || line.to_string()),
             });
             jobs.single(out.len() - 1, job);
             i += 1;
@@ -1245,23 +1899,25 @@ pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
             }
             i += 1;
         }
-        let source = lines[start..i].join("\n");
-        // 只有一行时源码就是那一行本身，任务直接借用原始文本，不再拷一份
+        // 只有一行时源码就是那一行本身，任务直接借用原始文本，不再拷一份。
+        // 共享模式连这份拼接都不做，整块源码直接指向原文区间。
         let job = if i == start + 1 {
             jobs.borrow(lines[start])
+        } else if shared.is_none() {
+            jobs.owned(lines[start..i].join("\n"))
         } else {
-            jobs.owned(source.clone())
+            0
         };
         out.push(Block::Paragraph {
             content: Vec::new(),
-            source,
+            source: block_source(&lines, start, i, shared, || lines[start..i].join("\n")),
         });
         jobs.single(out.len() - 1, job);
     }
 
     if out.is_empty() {
         out.push(Block::Blank {
-            source: String::new(),
+            source: SourceText::Owned(String::new()),
         });
     }
     jobs.fill(&mut out, threads);
@@ -1271,6 +1927,99 @@ pub(crate) fn parse_with(src: &str, threads: usize) -> Vec<Block> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 快开（共享源码）路径必须与普通路径逐块等价，且源码无损、纯文本一致。
+    #[test]
+    fn shared_parse_matches_owned() {
+        let mut src = String::new();
+        for i in 0..80_000 {
+            src.push_str(&format!(
+                "## 第 {i} 节\n\n段落 **粗体** 与 $x$ 和 [链接](http://x)。\n\n"
+            ));
+        }
+        assert!(src.len() > 4 * 1024 * 1024, "夹具需超过快开阈值");
+        let shared = parse_auto(&src);
+        let owned = parse(&src);
+        assert_eq!(shared.len(), owned.len());
+        assert!(shared.iter().any(|b| b.needs_inline()));
+        assert_eq!(
+            shared.iter().map(|b| b.source()).collect::<Vec<_>>().join("\n"),
+            src,
+            "共享源码必须无损往返"
+        );
+        for (i, (a, b)) in shared.iter().zip(&owned).enumerate() {
+            assert_eq!(a.source(), b.source(), "第 {i} 块源码不同");
+            assert_eq!(a.plain(), b.plain(), "第 {i} 块纯文本不同");
+        }
+    }
+
+    /// 快开模式的纯文本剥离必须与行内树逐例等价，否则统计会漂移。
+    #[test]
+    fn plain_inline_matches_tree() {
+        let cases = [
+            "普通文字与中文标点，。！",
+            "**粗体**与*斜体*和__粗__与_斜_",
+            "`代码` ~~删除线~~ ==高亮==",
+            "[标签](http://x) ![图片](y.png){width=300}",
+            "[[维基]] [^脚注] 与 [裸括号]",
+            "$x^2$ 与 \\(不改\\)",
+            "<u>下划线</u> <em>斜体</em> <strong>粗体</strong>",
+            "<http://example.com> 和 <不是链接>",
+            "转义 \\*星号\\* 与 \\`反引号",
+            "多行\n第二行\n第三行",
+            "**未闭合 *嵌套** 结尾",
+            "空 `` 代码与 $无闭合",
+            "- [ ] 任务",
+        ];
+        for s in cases {
+            let want = inline_plain(&parse_inline(s));
+            let mut got = String::new();
+            plain_inline(s, &mut got);
+            assert_eq!(got, want, "plain_inline({s:?}) 与行内树不一致");
+        }
+    }
+
+    /// 并行分块解析必须逐块等价于串行，且源码可无损回写。
+    #[test]
+    fn parallel_parse_matches_serial() {
+        let mut src = String::from("---\ntitle: 并行\n---\n\n# 标题\n\n");
+        for i in 0..300 {
+            src.push_str(&format!("## 第 {i} 章\n\n"));
+            src.push_str("一段 **加粗** 与 `代码` 与 [链接](http://x)。\n\n");
+            src.push_str("```rust\nfn main() {\n    // 围栏里有空行\n\n    println!(\"hi\");\n}\n```\n\n");
+            src.push_str("| a | b |\n|:--|--:|\n| 1 | 2 |\n\n");
+            src.push_str("- [ ] 待办\n- [x] 完成\n\n");
+            src.push_str("> 引用\n> 继续\n\n---\n\n");
+        }
+        let serial = parse_with(&src, 1);
+        let parallel = parse_parallel(&src);
+        assert_eq!(serial.len(), parallel.len(), "块数不一致");
+        for (i, (a, b)) in serial.iter().zip(&parallel).enumerate() {
+            assert_eq!(a, b, "第 {i} 块并行与串行不一致");
+        }
+        let joined = parallel.iter().map(|b| b.source()).collect::<Vec<_>>().join("\n");
+        assert_eq!(joined, src, "并行解析后源码不能无损往返");
+    }
+
+    /// 分隔线快路径必须与原来的 char 实现逐例一致（含全角空格等非 ASCII 空白）。
+    #[test]
+    fn is_rule_fast_path_matches_reference() {
+        fn reference(line: &str) -> bool {
+            let t: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+            t.len() >= 3
+                && (t.chars().all(|c| c == '-')
+                    || t.chars().all(|c| c == '*')
+                    || t.chars().all(|c| c == '_'))
+        }
+        let cases = [
+            "---", "***", "___", "- - -", "* * * ", "_ _ _",
+            "--", "- -", "----", "-*-", "-a-", "", "   ", "--- x",
+            "\u{3000}---\u{3000}", "\u{3000}-\u{3000}-\u{3000}", "— ——", "---\t",
+        ];
+        for s in cases {
+            assert_eq!(is_rule(s), reference(s), "is_rule({s:?}) 快路径与参考实现不一致");
+        }
+    }
 
     #[test]
     fn heading_and_paragraph() {
@@ -1688,7 +2437,7 @@ a = 1
                 assert_eq!(items[0].code, "int a = 1;");
                 assert_eq!(items[1].lang, "python");
                 assert_eq!(items[1].code, "a = 1");
-                assert_eq!(source, src, "源码应原样保留");
+                assert_eq!(source.as_str(), src, "源码应原样保留");
                 assert_eq!(code_group_source(items), src, "规范化源码应无损往返");
             }
             other => panic!("应解析为代码组: {other:?}"),

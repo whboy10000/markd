@@ -46,7 +46,7 @@ fn image_preview_is_capped_to_viewport() {
                             url: url.to_string(),
                             width: None,
                         }],
-                        source: format!("![图]({url})"),
+                        source: format!("![图]({url})").into(),
                     };
                     heights[i] = render_block(ui, i, &block, &mut env, false).rect.height();
                 }

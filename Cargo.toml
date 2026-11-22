@@ -31,6 +31,7 @@ eframe = { version = "0.37.0", default-features = false, features = [
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 muda = "0.21.2"
 regex = "1.12.4"
+memmap2 = "0.9.5"
 winresource = "0.1.27"
 rfd = "0.18.0"
 serde = { version = "1.0.229", features = ["derive"] }

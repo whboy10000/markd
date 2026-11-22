@@ -66,7 +66,7 @@ fn cross_sel_highlight_covers_last_char_and_sits_behind_text() {
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 400.0));
     let block = Block::Paragraph {
         content: vec![Inline::Text("abcde".to_string())],
-        source: "abcde".to_string(),
+        source: "abcde".to_string().into(),
     };
     let outline: Vec<OutlineItem> = Vec::new();
     let folded: HashSet<usize> = HashSet::new();

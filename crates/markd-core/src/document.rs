@@ -61,10 +61,62 @@ fn stat_of(b: &Block) -> BlockStat {
     }
 }
 
+/// 快开模式的统计接收器：边剥 Markdown 标记边计数，不给每个块分配纯文本 String。
+struct PlainCounter {
+    words: usize,
+    chars: usize,
+    cjk: usize,
+    in_word: bool,
+}
+
+impl ast::PlainSink for PlainCounter {
+    fn push_plain(&mut self, s: &str) {
+        for c in s.chars() {
+            if c.is_whitespace() {
+                self.in_word = false;
+            } else {
+                if !self.in_word {
+                    self.words += 1;
+                    self.in_word = true;
+                }
+                self.chars += 1;
+                if is_cjk(c) {
+                    self.cjk += 1;
+                }
+            }
+        }
+    }
+}
+
+fn stat_of_shared(b: &Block) -> BlockStat {
+    let mut c = PlainCounter {
+        words: 0,
+        chars: 0,
+        cjk: 0,
+        in_word: false,
+    };
+    b.plain_from_source_into(&mut c);
+    BlockStat {
+        words: c.words + c.cjk,
+        chars: c.chars,
+        cjk: c.cjk,
+        lines: b.source().split('\n').count(),
+    }
+}
+
 /// 整表重建：小文档直接串行，大文档按块分片到多核。
 /// `plain()` 要遍历行内树，1000 万字串行约 275ms，并行后约 40ms。
 fn build_stats(blocks: &[Block]) -> Vec<BlockStat> {
-    let serial = |blocks: &[Block]| blocks.iter().map(stat_of).collect::<Vec<_>>();
+    // 快开文档的块行内树为空，走源码直读计数，避免 866 万次 String 分配。
+    let shared = blocks.first().is_some_and(|b| b.needs_inline());
+    let stat = move |b: &Block| {
+        if shared {
+            stat_of_shared(b)
+        } else {
+            stat_of(b)
+        }
+    };
+    let serial = |blocks: &[Block]| blocks.iter().map(stat).collect::<Vec<_>>();
     if blocks.len() < 4096 {
         return serial(blocks);
     }
@@ -80,7 +132,7 @@ fn build_stats(blocks: &[Block]) -> Vec<BlockStat> {
         for (dst, src) in out.chunks_mut(chunk).zip(blocks.chunks(chunk)) {
             s.spawn(move || {
                 for (d, b) in dst.iter_mut().zip(src) {
-                    *d = stat_of(b);
+                    *d = stat(b);
                 }
             });
         }
@@ -141,7 +193,7 @@ fn blocks_from(srcs: &[String]) -> Vec<Block> {
         let parsed = ast::parse(s);
         if parsed.is_empty() {
             out.push(Block::Blank {
-                source: s.clone(),
+                source: s.clone().into(),
             });
         } else {
             out.extend(parsed);
@@ -190,8 +242,28 @@ pub struct Document {
 const MAX_OPS_PER_GROUP: usize = 4096;
 
 impl Document {
-    pub fn new(text: &str, path: Option<PathBuf>) -> Self {
-        let blocks = ast::parse(text);
+    /// 从路径直接打开：mmap 文件，不把整篇读进内存，也不复制。
+    pub fn open_path(path: &std::path::Path) -> std::io::Result<Self> {
+        let shared = std::sync::Arc::new(ast::SharedText::from_path(path)?);
+        let blocks = ast::parse_mmap(shared);
+        let bstats = build_stats(&blocks);
+        Ok(Self {
+            path: Some(path.to_path_buf()),
+            blocks,
+            dirty: false,
+            rev: 0,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            pending: Vec::new(),
+            last_record: Instant::now(),
+            changes: Vec::new(),
+            bstats,
+        })
+    }
+
+    /// 打开文件专用入口：接管读到的字符串，大文档不再额外复制全文。
+    pub fn open(text: String, path: Option<PathBuf>) -> Self {
+        let blocks = ast::parse_auto_owned(text);
         let bstats = build_stats(&blocks);
         Self {
             path,
@@ -204,6 +276,39 @@ impl Document {
             last_record: Instant::now(),
             changes: Vec::new(),
             bstats,
+        }
+    }
+
+    pub fn new(text: &str, path: Option<PathBuf>) -> Self {
+        // 大文档走并行分块解析；小文档保持串行，行为与以前完全一致。
+        let blocks = ast::parse_auto(text);
+        let bstats = build_stats(&blocks);
+        Self {
+            path,
+            blocks,
+            dirty: false,
+            rev: 0,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            pending: Vec::new(),
+            last_record: Instant::now(),
+            changes: Vec::new(),
+            bstats,
+        }
+    }
+
+    /// 快开模式下块源码共享原文、行内树尚未构建；块真正进入视口时才补这一块。
+    /// 只解析单块，代价与块大小成正比，与整篇文档规模无关。
+    pub fn ensure_inline(&mut self, idx: usize) {
+        let need = self.blocks.get(idx).is_some_and(|b| b.needs_inline());
+        if !need {
+            return;
+        }
+        let src = self.blocks[idx].source().to_string();
+        let mut parsed = ast::parse(&src);
+        if let Some(first) = parsed.first_mut() {
+            std::mem::swap(&mut self.blocks[idx], first);
+            self.bstats[idx] = stat_of(&self.blocks[idx]);
         }
     }
 
@@ -365,7 +470,7 @@ impl Document {
                     return;
                 }
                 *b = Block::Blank {
-                    source: String::new(),
+                    source: String::new().into(),
                 };
                 self.touch(Change::Splice {
                     at: idx,
@@ -408,7 +513,7 @@ impl Document {
         // 块下标从此不可信，排版缓存整篇作废。
         let old_all = self.srcs();
         if let Some(b) = self.blocks.get_mut(idx) {
-            *b.source_mut() = new_src.to_string();
+            b.set_source(new_src.to_string());
         }
         let s = self.source();
         self.blocks = ast::parse(&s);
@@ -525,7 +630,16 @@ impl Document {
 
     pub fn save(&mut self) -> std::io::Result<()> {
         if let Some(p) = self.path.clone() {
-            std::fs::write(p, self.source())?;
+            // 不能就地 fs::write：快开文档的块源码可能还指向该文件的 mmap，
+            // 截断会令映射失效（SIGBUS）。写临时文件再原子替换，旧 inode
+            // 由映射的 Arc 继续持有，直到相关块被替换或文档销毁。
+            let name = p
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "doc.md".to_string());
+            let tmp = p.with_file_name(format!(".{name}.markd-tmp-{}", std::process::id()));
+            std::fs::write(&tmp, self.source())?;
+            std::fs::rename(&tmp, &p)?;
             self.dirty = false;
         }
         Ok(())
@@ -607,6 +721,32 @@ pub fn block_inlines(b: &Block) -> Vec<&Inline> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// mmap 打开必须与接管字符串打开逐块等价，且不丢源码、不改变统计。
+    #[test]
+    fn open_path_matches_open() {
+        let mut src = String::new();
+        for i in 0..80_000 {
+            src.push_str(&format!(
+                "## 第 {i} 节\n\n段落 **粗体** 与 $x$ 和 [链接](http://x)。\n\n"
+            ));
+        }
+        let dir = std::env::temp_dir().join(format!("markd-mmap-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.md");
+        std::fs::write(&path, &src).unwrap();
+
+        let from_text = Document::open(src.clone(), Some(path.clone()));
+        let from_mmap = Document::open_path(&path).unwrap();
+        assert_eq!(from_mmap.blocks.len(), from_text.blocks.len());
+        assert_eq!(from_mmap.stats(), from_text.stats());
+        assert_eq!(from_mmap.source(), src);
+        assert!(from_mmap
+            .blocks
+            .iter()
+            .any(|b| b.needs_inline()), "大文档应走共享源码路径");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// 自动保存最终落到 Document::save：写盘后必须清掉脏标记，
     /// 否则每次检查都会重复写同一个文件。

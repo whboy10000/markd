@@ -920,7 +920,7 @@ pub fn render_block(
                     env.actions.push(Action::TableOp(idx, op));
                 }
                 if copied {
-                    env.ctx.copy_text(source.clone());
+                    env.ctx.copy_text(source.as_str().to_string());
                     env.actions.push(Action::Notify("复制成功".to_string()));
                 }
                 r.response.interact(Sense::click())
@@ -940,8 +940,8 @@ pub fn render_block(
             Block::Math { tex, source } => {
                 // ```math 代码块与 `$$...$$` 块级公式都交给 RaTeX 排成原生显示列表，
                 // 独占一行、居中显示。
-                let latex = crate::ast::math_fence_tex(source)
-                    .or_else(|| crate::ast::display_math_tex(source));
+                let latex = crate::ast::math_fence_tex(source.as_str())
+                    .or_else(|| crate::ast::display_math_tex(source.as_str()));
                 if let Some(latex) = latex {
                     let font_size = 22.0f32;
                     let rendered = env

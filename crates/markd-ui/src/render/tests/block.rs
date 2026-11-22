@@ -10,7 +10,7 @@ fn code_block_renders_with_copy_button() {
     let block = Block::Code {
         lang: "rust".to_string(),
         code: "fn main() {}".to_string(),
-        source: "```rust\nfn main() {}\n```".to_string(),
+        source: "```rust\nfn main() {}\n```".to_string().into(),
         quote: 0,
     };
     egui::__run_test_ui(|ui| {
@@ -42,7 +42,7 @@ fn folded_code_block_renders_collapsed() {
     let block = Block::Code {
         lang: "rust".to_string(),
         code: "fn main() {}\nfn foo() {}\nfn bar() {}\nfn baz() {}".to_string(),
-        source: "```rust\nfn main() {}\nfn foo() {}\nfn bar() {}\nfn baz() {}\n```".to_string(),
+        source: "```rust\nfn main() {}\nfn foo() {}\nfn bar() {}\nfn baz() {}\n```".to_string().into(),
         quote: 0,
     };
     // 展开/折叠各用独立 ctx：折叠动画跨帧，共享 ctx 会让「折叠态」仍处于
@@ -106,7 +106,7 @@ fn code_block_fold_button_clickable() {
     let block = Block::Code {
         lang: "rust".to_string(),
         code: "fn main() {}".to_string(),
-        source: "```rust\nfn main() {}\n```".to_string(),
+        source: "```rust\nfn main() {}\n```".to_string().into(),
         quote: 0,
     };
     let outline: Vec<OutlineItem> = Vec::new();
@@ -237,7 +237,7 @@ fn diagram_fold_button_does_not_activate_block() {
     let block = Block::Diagram {
         kind: crate::ast::DiagramKind::Flow,
         code: "flowchart TD\n  A[开始] --> B[结束]".to_string(),
-        source: "```mermaid\nflowchart TD\n  A[开始] --> B[结束]\n```".to_string(),
+        source: "```mermaid\nflowchart TD\n  A[开始] --> B[结束]\n```".to_string().into(),
     };
     let outline: Vec<OutlineItem> = Vec::new();
     let folded: HashSet<usize> = HashSet::new();
@@ -373,7 +373,7 @@ fn diagram_delete_button_requests_confirm() {
     let block = Block::Diagram {
         kind: crate::ast::DiagramKind::Flow,
         code: "flowchart TD\n  A[开始] --> B[结束]".to_string(),
-        source: "```mermaid\nflowchart TD\n  A[开始] --> B[结束]\n```".to_string(),
+        source: "```mermaid\nflowchart TD\n  A[开始] --> B[结束]\n```".to_string().into(),
     };
     let outline: Vec<OutlineItem> = Vec::new();
     let folded: HashSet<usize> = HashSet::new();
@@ -542,7 +542,7 @@ fn front_matter_panel_hides_its_header_until_hovered() {
     let ctx = egui::Context::default();
     let fm = Block::FrontMatter {
         yaml: "title: 标题\ntags: [a, b]".to_string(),
-        source: "---\ntitle: 标题\ntags: [a, b]\n---".to_string(),
+        source: "---\ntitle: 标题\ntags: [a, b]\n---".to_string().into(),
     };
     let mut images = ImageCache::new();
     let mut actions: Vec<Action> = Vec::new();
@@ -656,7 +656,7 @@ fn front_matter_panel_hides_its_header_until_hovered() {
     let code_block = Block::Code {
         lang: "rust".to_string(),
         code: "fn main() {}".to_string(),
-        source: "```rust\nfn main() {}\n```".to_string(),
+        source: "```rust\nfn main() {}\n```".to_string().into(),
         quote: 0,
     };
     actions.clear();

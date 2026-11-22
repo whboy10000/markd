@@ -57,7 +57,7 @@ impl MarkdApp {
             crate::trace_open!("read_ms", t.elapsed());
             let r = p.parent().map(|x| x.to_path_buf());
             let t = std::time::Instant::now();
-            let d = Document::new(&text, Some(p));
+            let d = Document::open(text, Some(p));
             crate::trace_open!("parse_ms", t.elapsed());
             (d, r)
         } else {

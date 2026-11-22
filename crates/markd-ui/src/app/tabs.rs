@@ -166,7 +166,7 @@ impl MarkdApp {
                 self.home = false;
                 self.push_recent(&path);
                 self.stash_active();
-                let doc = Document::new(&text, Some(path.clone()));
+                let doc = Document::open(text, Some(path.clone()));
                 let mut editor = EditorState {
                     focus_req: Some(0),
                     ..Default::default()

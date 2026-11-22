@@ -38,3 +38,7 @@ test_docs/
 
 # Qoder 会话元数据
 .qwen/
+
+# Python 缓存（gen-stress-doc.py 的伴生产物）
+__pycache__/
+*.pyc

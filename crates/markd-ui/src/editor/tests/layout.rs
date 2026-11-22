@@ -36,7 +36,7 @@ fn long_paragraph_wraps_in_editor_column() {
                         let quote = Block::Quote {
                             level: 1,
                             content: vec![crate::ast::Inline::Text(text.clone())],
-                            source: text.clone(),
+                            source: text.clone().into(),
                         };
                         let ctx_q = ui.ctx().clone();
                         let folded: HashSet<usize> = HashSet::new();

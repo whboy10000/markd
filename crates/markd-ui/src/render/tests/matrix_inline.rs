@@ -72,7 +72,7 @@ fn render_blocks(blocks: &[Block], max_width: f32) -> Vec<egui::Shape> {
 fn paragraph(src: &str) -> Block {
     Block::Paragraph {
         content: crate::ast::parse_inline(src),
-        source: src.to_string(),
+        source: src.to_string().into(),
     }
 }
 
@@ -265,7 +265,7 @@ fn block_matrix_between_paragraphs_does_not_overlap() {
         paragraph("上段：行列式如下所示。"),
         Block::Math {
             tex: "\\begin{vmatrix}a&b&c\\\\d&e&f\\\\g&h&i\\end{vmatrix}".to_string(),
-            source: "$$\\begin{vmatrix}a&b&c\\\\d&e&f\\\\g&h&i\\end{vmatrix}$$".to_string(),
+            source: "$$\\begin{vmatrix}a&b&c\\\\d&e&f\\\\g&h&i\\end{vmatrix}$$".to_string().into(),
         },
         paragraph("下段：按第一行展开。"),
     ];

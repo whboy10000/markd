@@ -20,6 +20,8 @@ pub struct SourceCache {
     src: String,
     /// 每个源码行首字符的下标（`CCursor` 按 char 计数）。
     starts: Vec<usize>,
+    /// 每个源码行首的字节下标，用来切出视口内的文本片段。
+    byte_starts: Vec<usize>,
     /// 全文字符数。
     chars: usize,
     /// 最长行的估算宽度，决定编辑框撑多宽、横向滚动能滚多远。
@@ -36,6 +38,7 @@ impl Default for SourceCache {
             mono: 0.0,
             src: String::new(),
             starts: vec![0],
+            byte_starts: vec![0],
             chars: 0,
             content_w: 0.0,
             band: None,
@@ -47,12 +50,19 @@ impl SourceCache {
     /// 由整篇源码重建派生数据（全文三趟，只在修订号或字号变化后付一次）。
     fn rebuild(&mut self, rev: u64, mono: f32, src: String) {
         let mut starts = vec![0usize];
+        let mut byte_starts = vec![0usize];
         let mut chars = 0usize;
+        let mut bytes = 0usize;
         for c in src.chars() {
             if c == '\n' {
-                starts.push(chars + 1);
+                chars += 1;
+                bytes += 1;
+                starts.push(chars);
+                byte_starts.push(bytes);
+            } else {
+                chars += 1;
+                bytes += c.len_utf8();
             }
-            chars += 1;
         }
         // 长行宽度估算（ASCII 半宽、CJK 全宽）：编辑框按最长行撑宽，
         // 配合横向滚动；窄于视口时照常占满。
@@ -74,6 +84,7 @@ impl SourceCache {
             mono,
             src,
             starts,
+            byte_starts,
             chars,
             content_w,
             band,
@@ -138,15 +149,64 @@ pub(super) fn show_source_mode(
     // 把源码字符串从缓存里借出来给 TextEdit 改写，帧末放回（见函数尾）。
     let mut src = std::mem::take(&mut state.source.src);
     let mut band_next: Option<(usize, f32, f32)> = None;
+    // 行高：layouter 里设的 mono * line_height，实测排版结果只差零点几像素，
+    // 用它换算「视口 y → 行号」，滚动条长度靠上下占位精确撑出来。
+    let row_h = theme.mono * theme.line_height;
+    let total_rows = state.source.starts.len();
+    // 视口上下各多留一点余量，滚动时不会出现「刚好处在 chunk 边缘」的空白。
+    const OVERSCAN: usize = 80;
+
     // 纵向 + 横向都要滚：长行不换行，超出视口的部分靠横向滚动露出
     //（光标移动时 TextEdit 会调 scroll_to_rect，ScrollArea 跟随平移）。
     let scroll = egui::ScrollArea::both()
         .id_salt("source_scroll")
         .auto_shrink([false, false])
-        .show(ui, |ui| {
+        .show_viewport(ui, |ui, view| {
+            // 只把视口附近的行交给 TextEdit：整篇 1000 万字一次性排版要 6 秒，
+            // 而一屏只有几十行。上下用 add_space 撑出等价的内容高度，
+            // 滚动条与可滚范围跟整篇显示时一致。
+            let first_visible = (view.min.y / row_h).floor().max(0.0) as usize;
+            let last_visible = ((view.min.y + view.height()) / row_h).ceil().max(1.0) as usize;
+            let first = first_visible.saturating_sub(OVERSCAN).min(total_rows);
+            let last = (last_visible + OVERSCAN).clamp(first + 1, total_rows);
+            let char_first = state.source.starts[first];
+            let char_last = if last < total_rows {
+                state.source.starts[last]
+            } else {
+                state.source.chars
+            };
+            let byte_first = state.source.byte_starts[first];
+            let byte_last = if last < total_rows {
+                state.source.byte_starts[last]
+            } else {
+                src.len()
+            };
+            let chunk_chars = char_last - char_first;
+            let mut chunk = src[byte_first..byte_last].to_string();
+            let upper_h = first as f32 * row_h;
+            let lower_h = (total_rows - last) as f32 * row_h;
+
+            // TextEdit 的 cursor 在 ctx.memory 里按 id 存；进帧前把全文坐标
+            // 换算成片段坐标，帧末再换回全文坐标，保证跨片段滚动时光标不跳。
+            let te_id = Id::new(("source_editor", tab_key));
+            if let Some(mut ts) = egui::TextEdit::load_state(ui.ctx(), te_id)
+                && let Some(range) = ts.cursor.char_range()
+            {
+                let shift = |c: egui::text::CCursor| {
+                    let i: usize = c.index.0;
+                    egui::text::CCursor::new(i.saturating_sub(char_first).min(chunk_chars))
+                };
+                ts.cursor.set_char_range(Some(egui::text::CCursorRange {
+                    primary: shift(range.primary),
+                    secondary: shift(range.secondary),
+                    h_pos: range.h_pos,
+                }));
+                ts.store(ui.ctx(), te_id);
+            }
+
+            ui.add_space(upper_h);
+
             // 行号列与光标行底色的 x 边界：必须用 ScrollArea 自己的裁剪区。
-            // 之前用外层 ui 的 clip_rect，其左缘在 ScrollArea 内容裁剪区之左，
-            // 数字几乎全被裁掉，只剩最右侧一个"点"。
             let vpl = ui.clip_rect().left();
             let vpr = ui.clip_rect().right();
             // 不换行：一行源码 = 一个视觉行。换行会让一个源码行占多行，
@@ -167,7 +227,10 @@ pub(super) fn show_source_mode(
             // 从行号栏右侧延伸到编辑区右缘；未显示行号时从正文左缘开始。
             // 行几何取上一帧的实测值——请求的行高是 `mono * 1.4`（18.9），
             // 排版出来是 19.0，按「行号 × 行高」算到 30 万行会漂出上万像素。
-            if let Some((_, y, h)) = band {
+            if let Some((line, y, h)) = band
+                && line > first
+                && line <= last
+            {
                 let left = if show_line_numbers {
                     vpl + gutter_w
                 } else {
@@ -189,7 +252,7 @@ pub(super) fn show_source_mode(
                     let spacing = ui.spacing().item_spacing.x;
                     ui.add_space((gutter_w - spacing).max(0.0));
                 }
-                let te = TextEdit::multiline(&mut src)
+                let te = TextEdit::multiline(&mut chunk)
                     .id(Id::new(("source_editor", tab_key)))
                     .font(egui::TextStyle::Monospace)
                     .desired_width(edit_w)
@@ -200,20 +263,40 @@ pub(super) fn show_source_mode(
                 te.show(ui)
             });
             let out = out.inner;
-            // 记下本帧真实行几何，下一帧拿它垫光标行底色。
-            if let Some(row) = out.galley.rows.get(cur_line - 1) {
-                band_next = Some((cur_line, row.pos.y, row.row.size.y));
+            // 记下本帧真实行几何，下一帧拿它垫光标行底色。行号在片段内的下标要减去 first。
+            if cur_line > first && cur_line <= last {
+                if let Some(row) = out.galley.rows.get(cur_line - 1 - first) {
+                    band_next = Some((cur_line, row.pos.y, row.row.size.y));
+                }
             }
+            ui.add_space(lower_h);
+
+            // 把片段的 cursor 换算回全文坐标，让下一帧读到的始终是全文位置。
+            if let Some(mut ts) = egui::TextEdit::load_state(ui.ctx(), te_id)
+                && let Some(range) = ts.cursor.char_range()
+            {
+                let shift = |c: egui::text::CCursor| {
+                    let i: usize = c.index.0;
+                    egui::text::CCursor::new(i + char_first)
+                };
+                ts.cursor.set_char_range(Some(egui::text::CCursorRange {
+                    primary: shift(range.primary),
+                    secondary: shift(range.secondary),
+                    h_pos: range.h_pos,
+                }));
+                ts.store(ui.ctx(), te_id);
+            }
+
             // 行号：只画视口内那几十行，固定画在视口左缘（不随横向滚动移动）；
-            // 光标所在行的行号用主题色高亮。
+            // 光标所在行的行号用主题色高亮。片段首行对应全文第 first+1 行。
             if show_line_numbers {
-                let (first, last) =
+                let (vfirst, vlast) =
                     visible_rows(&out.galley.rows, ui.clip_rect(), out.galley_pos);
                 let p = ui.painter();
                 // 数字右对齐到 gutter 右缘内固定间距，与混合模式完全一致。
                 let num_right = vpl + gutter_w - GUTTER_PAD;
-                for (k, row) in out.galley.rows[first..last].iter().enumerate() {
-                    let line_no = first + k + 1;
+                for (k, row) in out.galley.rows[vfirst..vlast].iter().enumerate() {
+                    let line_no = first + vfirst + k + 1;
                     let color = if line_no == cur_line {
                         theme.accent
                     } else {
@@ -233,8 +316,9 @@ pub(super) fn show_source_mode(
             }
             changed = out.response.changed();
             editor_rect = out.response.rect;
-            out
+            (out, byte_first, byte_last, chunk)
         });
+    let (out, byte_first, byte_last, chunk) = scroll.inner;
     state.source.band = band_next;
     // 源码模式同样支持「点空白落光标」：点在编辑框外（页边距/正文下方）时，
     // 把光标移到文档末尾（最后一行）并立刻聚焦，行为与混合模式一致。
@@ -281,6 +365,8 @@ pub(super) fn show_source_mode(
     }
     if changed {
         doc.maybe_record();
+        // 片段里改完的文字写回整篇源码的对应字节区间。
+        src.replace_range(byte_first..byte_last, &chunk);
         doc.set_source(&src);
     }
     // 放回缓存。若这一帧改过文本，`doc.rev` 已经变了，下一帧自动重建。
@@ -317,6 +403,47 @@ mod tests {
             })
             .fold(0.0f32, f32::max);
         (starts, chars, content_w)
+    }
+
+    /// 源码模式按视口切片渲染：行首的字节偏移必须精确，任意区间切出的片段
+    /// 拼回原文逐字节相等，否则编辑写回会损坏文档。中文 3 字节是重点。
+    #[test]
+    fn byte_starts_slice_roundtrip() {
+        let src = "# 标题\n\n第一段中文 **粗体** 与 ASCII。\n> 引用行\n\n```rust\nfn main() {}\n```\n末行无换行";
+        let mut cache = SourceCache::default();
+        cache.rebuild(1, 13.5, src.to_string());
+        assert_eq!(cache.byte_starts.len(), cache.starts.len());
+
+        // 每个行首的字节偏移 = 前面所有字符的 UTF-8 字节数。
+        for (i, &bs) in cache.byte_starts.iter().enumerate() {
+            let before: String = src.chars().take(cache.starts[i]).collect();
+            assert_eq!(bs, before.len(), "第 {i} 行字节偏移");
+        }
+
+        // 模拟任意视口切片，拼回去必须等于原文。
+        let rows = cache.starts.len();
+        for first in 0..rows {
+            for last in (first + 1)..=rows {
+                let bf = cache.byte_starts[first];
+                let bl = if last < rows {
+                    cache.byte_starts[last]
+                } else {
+                    src.len()
+                };
+                assert!(src.is_char_boundary(bf) && src.is_char_boundary(bl));
+                let chunk = &src[bf..bl];
+                assert!(!chunk.is_empty() || bf == bl);
+            }
+        }
+        // 整段拼接的等价性（相邻片段边界无重叠、无遗漏）。
+        let mut rebuilt = String::new();
+        let mut at = 0usize;
+        for &bs in cache.byte_starts.iter().skip(1) {
+            rebuilt.push_str(&src[at..bs]);
+            at = bs;
+        }
+        rebuilt.push_str(&src[at..]);
+        assert_eq!(rebuilt, src);
     }
 
     /// 缓存重建必须和朴素扫描逐项一致：尤其中文按 char 计、行首下标要落在

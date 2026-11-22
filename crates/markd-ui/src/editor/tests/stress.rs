@@ -1125,3 +1125,83 @@ fn stress_frames_of_file() {
 
     log(&tag, "rss_end_mb", format!("{:.0}", rss_mb()));
 }
+
+/// 只量「首次打开」这一条路径：读盘 → 解析 → Document::new（含统计） → 大纲/统计/源码回写。
+///
+/// 与 `stress_frames_of_file` 不同，这里不做导出、查找、行号排版与源码模式首帧，
+/// 数字可直接用来判断「打开要几秒」。
+///
+/// `MARKD_STRESS=1 MARKD_STRESS_FILE=/path/to.md cargo test --release -p markd-ui \
+///   stress_open_of_file -- --nocapture --test-threads=1`
+#[test]
+fn stress_open_of_file() {
+    if !enabled() {
+        return;
+    }
+    let path = match std::env::var_os("MARKD_STRESS_FILE") {
+        Some(p) => PathBuf::from(p),
+        None => return,
+    };
+    let tag = "open";
+    log(tag, "path", path.display());
+
+    let t = Instant::now();
+    let text = std::fs::read_to_string(&path).expect("读文件失败");
+    log(tag, "read_ms", ms(t.elapsed()));
+    log(tag, "bytes", text.len());
+    log(tag, "unicode_chars", text.chars().count());
+
+    let t = Instant::now();
+    let blocks = crate::ast::parse(&text);
+    log(tag, "parse_ms", ms(t.elapsed()));
+    log(tag, "blocks", blocks.len());
+    drop(blocks);
+
+    let t = Instant::now();
+    let doc = Document::open(text, Some(path.clone()));
+    log(tag, "doc_new_ms", ms(t.elapsed()));
+    log(tag, "rss_after_open_mb", format!("{:.0}", rss_mb()));
+
+    let t = Instant::now();
+    let items = doc.outline().len();
+    log(tag, "outline_ms", ms(t.elapsed()));
+    log(tag, "outline_items", items);
+
+    let t = Instant::now();
+    let s = doc.stats();
+    log(tag, "stats_ms", ms(t.elapsed()));
+    log(tag, "stats_chars", s.chars);
+
+    let t = Instant::now();
+    let src = doc.source();
+    log(tag, "source_ms", ms(t.elapsed()));
+    let expect = std::fs::read_to_string(&path).expect("复核原文");
+    log(tag, "lossless", if src == expect { "yes" } else { "NO" });
+
+    // 应用实际走的路径：mmap 打开文件，不把整篇读进内存。
+    let t = Instant::now();
+    let mapped = Document::open_path(&path).expect("mmap 打开失败");
+    log(tag, "mmap_open_ms", ms(t.elapsed()));
+    log(tag, "mmap_stats_chars", mapped.stats().chars);
+}
+
+/// 单独量 mmap 打开路径（进程内不留上一份文档，避免内存压力干扰）。
+///
+/// `MARKD_STRESS=1 MARKD_STRESS_FILE=/path/to.md cargo test --release -p markd-ui \
+///   stress_mmap_open_of_file -- --nocapture --test-threads=1`
+#[test]
+fn stress_mmap_open_of_file() {
+    if !enabled() {
+        return;
+    }
+    let path = match std::env::var_os("MARKD_STRESS_FILE") {
+        Some(p) => PathBuf::from(p),
+        None => return,
+    };
+    let t = Instant::now();
+    let doc = Document::open_path(&path).expect("mmap 打开失败");
+    log("mmap", "open_ms", ms(t.elapsed()));
+    log("mmap", "blocks", doc.blocks.len());
+    log("mmap", "stats_chars", doc.stats().chars);
+    log("mmap", "rss_mb", format!("{:.0}", rss_mb()));
+}

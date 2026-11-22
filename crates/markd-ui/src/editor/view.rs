@@ -265,6 +265,11 @@ pub fn show_editor(
                 ests.push(state.layout.height_of(idx));
                 line_nos.push(state.layout.lines_before(idx) + 1);
             }
+            // 快开文档的块共享原文、行内树为空：只给本帧真正可见的块补行内树，
+            // 代价与视口大小有关，与全文块数无关。
+            for &idx in order.iter() {
+                doc.ensure_inline(idx);
+            }
             let blocks = &doc.blocks;
             ui.horizontal_top(|ui| {
                 // 显示行号时行号栏从最左侧开始，正文紧随其后；关闭行号时保持版心居中。

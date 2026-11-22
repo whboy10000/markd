@@ -12,7 +12,7 @@ fn table_resizes_with_available_width() {
         head: vec![mk("名称"), mk("说明"), mk("状态")],
         rows: vec![vec![mk("a"), mk("b"), mk("c")]],
         align: vec![Align::Left, Align::Left, Align::Left],
-        source: String::new(),
+        source: String::new().into(),
     };
     egui::__run_test_ui(|ui| {
         ui.set_width(800.0);
@@ -65,7 +65,7 @@ fn clicking_link_requires_command_or_ctrl() {
         let ctx = egui::Context::default();
         let link = Block::Paragraph {
             content: crate::ast::parse_inline("[点我](https://e.com)"),
-            source: "[点我](https://e.com)".to_string(),
+            source: "[点我](https://e.com)".to_string().into(),
         };
         let mut images = ImageCache::new();
         let mut actions: Vec<Action> = Vec::new();
@@ -188,7 +188,7 @@ fn clicking_text_places_caret() {
     };
     let plain = Block::Paragraph {
         content: vec![Inline::Text("普通文字".to_string())],
-        source: "普通文字".to_string(),
+        source: "普通文字".to_string().into(),
     };
     let mut images = ImageCache::new();
     let mut actions: Vec<Action> = Vec::new();
@@ -270,7 +270,7 @@ fn clicking_row_blank_places_caret_at_line_end() {
     };
     let plain = Block::Paragraph {
         content: vec![Inline::Text("短文字".to_string())],
-        source: "短文字".to_string(),
+        source: "短文字".to_string().into(),
     };
     let mut images = ImageCache::new();
     let mut actions: Vec<Action> = Vec::new();

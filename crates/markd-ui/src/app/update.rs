@@ -349,7 +349,7 @@ impl eframe::App for MarkdApp {
                             quote,
                             ..
                         }) => {
-                            let fence = if source.contains("~~~") { "~~~" } else { "```" };
+                            let fence = if source.as_str().contains("~~~") { "~~~" } else { "```" };
                             if *quote == 0 {
                                 Some(format!("{}{}\n{}\n{}", fence, lang, code, fence))
                             } else {

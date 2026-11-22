@@ -251,7 +251,7 @@ fn insert_image_leaves_preview_rendered() {
     state.active = 0;
     insert_image(&mut doc, &mut state, "![a](imgs/a.png)");
     assert!(
-        matches!(&doc.blocks[1], Block::Paragraph { source, .. } if source == "![a](imgs/a.png)"),
+        matches!(&doc.blocks[1], Block::Paragraph { source, .. } if source.as_str() == "![a](imgs/a.png)"),
         "图片应插成独立段落：{:?}",
         doc.blocks.iter().map(|b| b.source()).collect::<Vec<_>>()
     );
