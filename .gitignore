@@ -39,6 +39,9 @@ test_docs/
 # Qoder 会话元数据
 .qwen/
 
+# Agent 会话与本地产物（内存日志等，不入库）
+.workbuddy/
+
 # Python 缓存（gen-stress-doc.py 的伴生产物）
 __pycache__/
 *.pyc
