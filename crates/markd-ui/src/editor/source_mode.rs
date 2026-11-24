@@ -318,7 +318,7 @@ pub(super) fn show_source_mode(
             editor_rect = out.response.rect;
             (out, byte_first, byte_last, chunk)
         });
-    let (out, byte_first, byte_last, chunk) = scroll.inner;
+    let (_out, byte_first, byte_last, chunk) = scroll.inner;
     state.source.band = band_next;
     // 源码模式同样支持「点空白落光标」：点在编辑框外（页边距/正文下方）时，
     // 把光标移到文档末尾（最后一行）并立刻聚焦，行为与混合模式一致。

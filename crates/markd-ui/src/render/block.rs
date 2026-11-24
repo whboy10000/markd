@@ -68,7 +68,7 @@ fn code_panel(
     let folded = env.folded.contains(&idx);
     // 折叠动画：1=完全展开、0=完全折叠，中间平滑过渡。
     let openness = env.ctx.animate_value_with_time(
-        egui::Id::new(("code_fold", idx)),
+        egui::Id::unique(("code_fold", idx)),
         if folded { 0.0 } else { 1.0 },
         0.18,
     );
@@ -211,7 +211,7 @@ fn code_panel(
         ),
         r.response.rect.right_bottom(),
     );
-    let content = ui.interact(zone, ui.id().with(("code_click", idx)), Sense::click());
+    let content = ui.interact(zone, ui.scope_id().with(("code_click", idx)), Sense::click());
     // 拖选与选区高亮精确到代码正文的字符：按下点落在代码区（功能栏以下）时，
     // 锚点/终点都取指针下的那个字符，而不是整块一起选中（用户反馈的
     // 「想选一两行代码，一下子就选中该代码块所有的代码」）。
@@ -459,7 +459,7 @@ pub fn render_block(
             Block::CodeGroup { items, .. } => {
                 let folded = env.folded.contains(&idx);
                 let openness = env.ctx.animate_value_with_time(
-                    egui::Id::new(("code_group_fold", idx)),
+                    egui::Id::unique(("code_group_fold", idx)),
                     if folded { 0.0 } else { 1.0 },
                     0.18,
                 );
@@ -605,7 +605,7 @@ pub fn render_block(
                 );
                 let content = ui.interact(
                     zone,
-                    ui.id().with(("code_group_click", idx)),
+                    ui.scope_id().with(("code_group_click", idx)),
                     Sense::click(),
                 );
                 content.union(r.response)
@@ -640,7 +640,7 @@ pub fn render_block(
                 let mut row_rects: Vec<Vec<egui::Rect>> = Vec::new();
                 let mut copied = false;
                 let mut op: Option<crate::editor::TableOp> = None;
-                let cell_key = egui::Id::new(("table_cell_ref", idx));
+                let cell_key = egui::Id::unique(("table_cell_ref", idx));
                 // 功能区背景：浅色主题用指定的 #F2F2F4，深色主题沿用 panel
                 let tb_fill = if theme.kind == crate::theme::ThemeKind::Light {
                     Color32::from_rgb(0xF2, 0xF2, 0xF4)
@@ -991,7 +991,7 @@ pub fn render_block(
                 let folded = env.folded.contains(&idx);
                 // 折叠动画：与代码块一致。
                 let openness = env.ctx.animate_value_with_time(
-                    egui::Id::new(("diagram_fold", idx)),
+                    egui::Id::unique(("diagram_fold", idx)),
                     if folded { 0.0 } else { 1.0 },
                     0.18,
                 );
@@ -1260,7 +1260,7 @@ pub(crate) const TABLE_SEL_KEY: &str = "markd_table_sel_frame";
 pub(crate) fn table_sel_id() -> egui::Id {
     #[allow(deprecated)]
     {
-        egui::Id::new(TABLE_SEL_KEY)
+        egui::Id::unique(TABLE_SEL_KEY)
     }
 }
 

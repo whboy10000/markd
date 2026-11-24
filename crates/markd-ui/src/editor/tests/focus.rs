@@ -45,7 +45,7 @@ fn blank_click_refocuses_first_line() {
         assert_eq!(state.active, 0, "第 {} 次点空白后应回到第一个块", i + 1);
         assert_eq!(
             ctx.memory(|m| m.focused()),
-            Some(egui::Id::new(("block_edit", 1, 0))),
+            Some(egui::Id::unique(("block_edit", 1, 0))),
             "第 {} 次点空白后第一行的 TextEdit 必须持有键盘焦点",
             i + 1
         );
@@ -122,7 +122,7 @@ fn blank_click_refocuses_in_app_like_layout() {
     }
     assert_eq!(
         ctx.memory(|m| m.focused()),
-        Some(egui::Id::new(("block_edit", 1, 0))),
+        Some(egui::Id::unique(("block_edit", 1, 0))),
         "真实面板结构下点空白也必须把焦点还给第一行"
     );
 }
@@ -162,7 +162,7 @@ fn blank_click_below_content_focuses_last_block_end() {
         assert_eq!(state.active, last, "点空白 {pos:?} 应回到最后一块");
         assert_eq!(
             ctx.memory(|m| m.focused()),
-            Some(egui::Id::new(("block_edit", 1, last))),
+            Some(egui::Id::unique(("block_edit", 1, last))),
             "点空白 {pos:?} 后最后一块的 TextEdit 必须持有键盘焦点"
         );
         assert_eq!(
@@ -234,7 +234,7 @@ fn source_mode_blank_click_focuses_document_end() {
     for _ in 0..2 {
         src_frame(vec![]);
     }
-    let id = egui::Id::new(("source_editor", 1));
+    let id = egui::Id::unique(("source_editor", 1));
     assert_eq!(
         ctx.memory(|m| m.focused()),
         Some(id),
@@ -350,7 +350,7 @@ fn click_row_blank_puts_caret_at_line_end_with_focus() {
             modifiers: Default::default(),
         }],
     );
-    let id = egui::Id::new(("block_edit", 1, 0));
+    let id = egui::Id::unique(("block_edit", 1, 0));
     let caret = egui::TextEdit::load_state(&ctx, id)
         .and_then(|ts| ts.cursor.char_range())
         .map(|r| r.primary.index.0);
@@ -381,7 +381,7 @@ fn click_row_blank_puts_caret_at_line_end_with_focus() {
     // 第三块（"第二段"）是渲染态。先模拟渲染态块点击行尾空白产生的
     // Caret 动作：app.rs 会设置 active / focus_req / pending_caret。
     // local 偏移故意给一个超出文字宽度的 x，编辑态必须钳到行末。
-    let id2 = egui::Id::new(("block_edit", 1, 2));
+    let id2 = egui::Id::unique(("block_edit", 1, 2));
     state.active = 2;
     state.focus_req = Some(2);
     state.pending_caret = Some(egui::vec2(400.0, 2.0));

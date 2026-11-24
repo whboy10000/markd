@@ -181,7 +181,7 @@ fn inline_job_keeps_raw_text() {
 /// 时会突然变色（强调色）且变细（wght 对静态字体不生效）。
 #[test]
 fn bold_looks_same_in_edit_and_render_modes() {
-    use crate::ast::{Inline, parse_inline};
+    use crate::ast::parse_inline;
     let theme = Theme::get(ThemeKind::Light);
     let bold_family = egui::FontFamily::Name("markd-bold".into());
 

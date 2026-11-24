@@ -79,9 +79,6 @@ pub struct Config {
     /// 编辑区上方的格式工具条；首次启动默认隐藏，可在偏好设置中打开。
     #[serde(default = "default_true")]
     pub show_toolbar: bool,
-    /// 编辑区上方的标签栏；可在偏好设置中关闭，让编辑区直接顶到工具条下面。
-    #[serde(default = "default_true")]
-    pub show_tabbar: bool,
     /// 编辑区是否显示行号（源码模式整栏行号 + 混合模式逐块行号）。
     #[serde(default = "default_show_line_numbers")]
     pub show_line_numbers: bool,
@@ -276,7 +273,6 @@ impl Default for Config {
             sidebar_width: 240.0,
             show_workspace_bar: false,
             show_toolbar: false,
-            show_tabbar: true,
             show_line_numbers: true,
             auto_pair: true,
             tab_size: 2,

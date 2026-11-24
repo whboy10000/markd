@@ -158,7 +158,7 @@ impl MarkdApp {
             } else {
                 "在文件管理器中显示"
             };
-            let area = egui::Area::new(egui::Id::new("file_ctx_menu"))
+            let area = egui::Area::new(egui::Id::unique("file_ctx_menu"))
                 .fixed_pos(pos)
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {

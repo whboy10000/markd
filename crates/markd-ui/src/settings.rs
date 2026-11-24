@@ -95,7 +95,6 @@ const SEARCH: &[(&str, &str, Page)] = &[
     ("显示侧栏标签栏", "侧栏 标签", Page::Personalize),
     ("显示工作区栏", "工作区 顶栏", Page::Personalize),
     ("显示格式工具条", "工具条 按钮", Page::Personalize),
-    ("显示标签栏", "页签 标签", Page::Personalize),
     ("字体大小（正文）", "字号 font 文字大小", Page::Editor),
     ("源码模式行距", "行高 行间距 leading", Page::Editor),
     ("Tab 宽度", "缩进 制表位", Page::Editor),
@@ -692,14 +691,6 @@ impl Settings {
                     "编辑区上方那排加粗 / 标题 / 列表按钮。",
                     focus,
                     &mut cfg.show_toolbar,
-                );
-                changed |= bool_row(
-                    ui,
-                    theme,
-                    "显示标签栏",
-                    "多文档页签；关掉后只能用命令面板切换文档。",
-                    focus,
-                    &mut cfg.show_tabbar,
                 );
             }
             Page::Editor => {
@@ -1416,7 +1407,7 @@ mod tests {
             let mut out = ctx.run_ui(input, |root| {
                 let ui = egui::Ui::new(
                     root.clone(),
-                    Id::new("settings_test_root"),
+                    Id::unique("settings_test_root"),
                     UiBuilder::new(),
                 );
                 let ctx = ui.ctx().clone();

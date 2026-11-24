@@ -59,15 +59,26 @@ impl eframe::App for MarkdApp {
 
         let ctx2 = ctx.clone();
         // 菜单栏固定在窗口最顶部（VS Code 风格的单行窄条），下方另起一条格式工具条。
+        // macOS 下这一行就是自定义标题栏：锁死约 1 cm 高，红绿灯由下面的 range 垂直居中。
         let menu_bg = self.theme.panel;
         let menubar = egui::Panel::top("menubar")
+            .exact_size(TITLEBAR_HEIGHT)
             .frame(egui::Frame::NONE.fill(menu_bg).inner_margin(4.0))
             .show(&mut *root_ui, |ui| self.menubar(ui, &ctx2));
         // 自定义标题栏：让系统红绿灯垂直居中于菜单栏这一行（非 macOS 为空操作）。
         let r = menubar.response.rect;
         frame.set_traffic_lights_position(&ctx, egui::Rangef::new(r.min.y, r.max.y), 12.0);
         if self.config.show_toolbar {
-            egui::Panel::top("toolbar").show(&mut *root_ui, |ui| self.toolbar(ui, &ctx2));
+            // 展开时 3.2 cm：上半 0.7 cm 选项卡，下半 2.5 cm 放按钮，中间横线在 toolbar() 里画；
+            // 折叠时只剩 0.7 cm 选项卡行（选项卡行最右侧的 chevron 切换）。
+            let toolbar_h = if self.toolbar_collapsed {
+                TOOLBAR_RESERVED_HEIGHT
+            } else {
+                TOOLBAR_HEIGHT
+            };
+            egui::Panel::top("toolbar")
+                .exact_size(toolbar_h)
+                .show(&mut *root_ui, |ui| self.toolbar(ui, &ctx2));
         }
         // bottom 必须先于 left 声明：bottom 只收窄父 Ui 的 y 轴，此时 x 仍是整窗宽度，
         // 状态栏才能横跨整个窗口；若放在 left 之后，x 起点会被推到侧栏右缘而只剩中央区域。
@@ -139,22 +150,8 @@ impl eframe::App for MarkdApp {
             }
         }
 
-        // 标签栏：紧贴编辑区上方，可在偏好设置里关闭以节省纵向空间。
-        // 声明在 left 之后，横向只占侧栏右侧的区域。
-        if self.config.show_tabbar {
-            egui::Panel::top("tabbar")
-                .frame(
-                    egui::Frame::NONE
-                        .fill(self.theme.panel)
-                        .inner_margin(egui::Margin {
-                            left: 0,
-                            right: 6,
-                            top: 3,
-                            bottom: 3,
-                        }),
-                )
-                .show(&mut *root_ui, |ui| self.tabbar(ui));
-        }
+        // 标签栏已整体移除：首页与新建按钮收进标题栏，页签切换走命令面板，
+        // 关闭当前文档走标题栏的 ×。编辑区因此直接顶到工具条下面。
 
         // 终端持有焦点时编辑区进入只读，避免它每帧把焦点抢回去。
         self.editor.read_only = self.terminal.has_focus();
@@ -242,7 +239,7 @@ impl eframe::App for MarkdApp {
                     // 记录最后命中的单元格：表格工具栏的行/列操作以此为基准。
                     ctx.memory_mut(|m| {
                         m.data
-                            .insert_temp(egui::Id::new(("table_cell_ref", bi)), (ri, ci));
+                            .insert_temp(egui::Id::unique(("table_cell_ref", bi)), (ri, ci));
                     });
                 }
                 Action::TableOp(i, op) => {

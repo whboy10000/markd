@@ -336,7 +336,7 @@ fn paint_layout(
                         egui::pos2(x, tab_rect.min.y),
                         egui::vec2(w, tab_h),
                     );
-                    let resp = ui.interact(r, ui.id().with(("term_tab", id)), Sense::click());
+                    let resp = ui.interact(r, ui.scope_id().with(("term_tab", id)), Sense::click());
                     let bg = if is_active {
                         colors.bg.lerp_to_gamma(Color32::WHITE, 0.10)
                     } else {
@@ -365,7 +365,7 @@ fn paint_layout(
                         egui::vec2(13.0, 13.0),
                     );
                     let xresp =
-                        ui.interact(xr, ui.id().with(("term_tab_close", id)), Sense::click());
+                        ui.interact(xr, ui.scope_id().with(("term_tab_close", id)), Sense::click());
                     ui.painter().text(
                         egui::pos2(xr.min.x + 2.0, xr.min.y - 1.0),
                         egui::Align2::LEFT_TOP,
@@ -385,8 +385,6 @@ fn paint_layout(
                     }
                     x += w + 1.0;
                 }
-                // 借用 tabs 结束前不碰 pane.active，交给调用方统一处理。
-                drop(tabs);
                 if let Some(id) = closed {
                     *action = PaneAction::Close(id);
                 } else if let Some(id) = clicked {
@@ -414,7 +412,7 @@ fn paint_layout(
             // （对称布局下 pane_count 组合会重复，不能拿来当 id）。
             let seq = *split_seq;
             *split_seq += 1;
-            let sep_id = ui.id().with(("term_sep", seq));
+            let sep_id = ui.scope_id().with(("term_sep", seq));
             let sep = ui.interact(handle, sep_id, Sense::drag() | Sense::hover());
             if sep.hovered() || sep.dragged() {
                 ctx.set_cursor_icon(match dir {

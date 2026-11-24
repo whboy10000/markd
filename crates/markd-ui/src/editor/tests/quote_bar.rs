@@ -37,7 +37,7 @@ impl Q {
         }
     }
 
-    fn frame(&mut self, events: Vec<egui::Event>, W: f32) -> Vec<egui::epaint::ClippedShape> {
+    fn frame(&mut self, events: Vec<egui::Event>, w: f32) -> Vec<egui::epaint::ClippedShape> {
         let Self {
             doc,
             state,
@@ -50,7 +50,7 @@ impl Q {
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    egui::vec2(W, 800.0),
+                    egui::vec2(w, 800.0),
                 )),
                 events,
                 ..Default::default()

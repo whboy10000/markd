@@ -152,6 +152,8 @@ impl MarkdApp {
             terminal,
             settings: Default::default(),
             home: start_home,
+            toolbar_tab: ToolbarTab::Start,
+            toolbar_collapsed: false,
             // 启动时带了文件就把该文件做成第一个标签，否则只显示首页、没有标签。
             tabs: start_file
                 .map(|p| Tab {

@@ -80,10 +80,15 @@ pub struct CodeGroupItem {
 /// `SharedText` 自身存活期间通过 `as_str()` 取出**，backing 与它同生共死，
 /// 因此不会悬垂。这样避免每次取块源码都重新做一遍整篇 UTF-8 校验。
 pub struct SharedText {
+    // SAFETY: 这个字段只负责让 Arc<String>/Arc<Mmap> 与 text 同生共死，
+    // 本身不会被读取；删掉会让上面的 &'static str 变成悬垂指针。
+    #[allow(dead_code)]
     backing: Backing,
     text: &'static str,
 }
 
+// 两个字段都只负责持有底层内存、延长 text 的生命周期，本身不会被读取。
+#[allow(dead_code)]
 enum Backing {
     String(std::sync::Arc<String>),
     Mapped(std::sync::Arc<memmap2::Mmap>),
@@ -1492,31 +1497,15 @@ fn parse_parallel_inner(src: &str, shared: Option<&std::sync::Arc<SharedText>>) 
         return parse_with_inner(src, threads, true, shared);
     }
 
-    let base = src.as_ptr() as usize;
-    let pieces: Vec<&str> = ranges
-        .iter()
-        .map(|&(s, e)| {
-            let from = lines[s].as_ptr() as usize - base;
-            // lines[e] 前面的那个 '\n' 是片间分隔符，不能带进本片，
-            // 否则 split('\n') 会多出一个尾部空行 → 多一个 Block::Blank。
-            let to = if e < lines.len() {
-                lines[e].as_ptr() as usize - base - 1
-            } else {
-                src.len()
-            };
-            &src[from..to]
-        })
-        .collect();
-
     let ranges_ref = &ranges;
     let lines_ref = &lines;
-    let mut chunks: Vec<Vec<Block>> = vec![Vec::new(); pieces.len()];
+    let mut chunks: Vec<Vec<Block>> = vec![Vec::new(); ranges.len()];
     std::thread::scope(|s| {
-        for (idx, (dst, piece)) in chunks.iter_mut().zip(&pieces).enumerate() {
+        for (idx, dst) in chunks.iter_mut().enumerate() {
             s.spawn(move || {
                 // front matter 只在整篇开头认一次，后续切片按普通行处理。
                 let (s0, e0) = ranges_ref[idx];
-                *dst = parse_with_lines(piece, &lines_ref[s0..e0], 1, idx == 0, shared);
+                *dst = parse_with_lines(&lines_ref[s0..e0], 1, idx == 0, shared);
             });
         }
     });
@@ -1566,12 +1555,11 @@ fn parse_with_inner(
     shared: Option<&std::sync::Arc<SharedText>>,
 ) -> Vec<Block> {
     let lines: Vec<&str> = src.split('\n').collect();
-    parse_with_lines(src, &lines, threads, allow_front_matter, shared)
+    parse_with_lines(&lines, threads, allow_front_matter, shared)
 }
 
 /// 与 `parse_with_inner` 等价，但复用调用方已经拆好的行表。
 fn parse_with_lines(
-    src: &str,
     lines: &[&str],
     threads: usize,
     allow_front_matter: bool,

@@ -106,6 +106,18 @@ graph LR
 [^1]: 脚注内容会显示在文末。
 "#;
 
+/// 自定义标题栏（macOS 上是菜单栏那一行，其它平台是窗口顶栏）的高度，
+/// 单位 egui 逻辑点。1 cm ≈ 37.8 pt（96 pt/inch），取 38 让红绿灯与文档名周围留白更舒展。
+const TITLEBAR_HEIGHT: f32 = 38.0;
+
+/// 格式工具条总高度 3.2 cm ≈ 121 pt；上 0.7 cm（≈26.5 pt）留白备用，
+/// 下 2.5 cm（≈94.5 pt）放现有按钮，中间一条横线分隔。
+const TOOLBAR_HEIGHT: f32 = 121.0;
+const TOOLBAR_RESERVED_HEIGHT: f32 = 26.5;
+/// 下半区每个功能按钮的独立盒子：1.5 cm × 1.7 cm。
+const TOOLBOX_WIDTH: f32 = 56.7;
+const TOOLBOX_HEIGHT: f32 = 64.3;
+
 #[derive(Clone, Copy, PartialEq)]
 enum MenuKind {
     File,
@@ -122,6 +134,19 @@ enum MenuKind {
 enum SideTab {
     Files,
     Outline,
+}
+
+/// 格式工具条上方的功能区选项卡。只有「开始 / 插入」会画出按钮，
+/// 其余先留白备用，等后续功能填进来。
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ToolbarTab {
+    Start,
+    Insert,
+    PageStyle,
+    Advanced,
+    View,
+    Tools,
+    AI,
 }
 
 /// 插入链接弹窗：先把选中文字和选区记下来，用户粘贴 URL 后再写回。
@@ -219,8 +244,12 @@ pub struct MarkdApp {
     menu_queue: crate::native_menu::CommandQueue,
     terminal: Terminal,
     settings: crate::settings::Settings,
-    /// 首页：显示欢迎页与最近打开的文件，点「首页」按钮或标签栏的首页页签切换。
+    /// 首页：显示欢迎页与最近打开的文件，点标题栏的「首页」按钮切换。
     home: bool,
+    /// 格式工具条当前选项卡；只有开始/插入/高级会画出按钮，其余留白备用。
+    toolbar_tab: ToolbarTab,
+    /// 工具区折叠：真时工具条只剩 0.7 cm 选项卡行，下半按钮区不画。
+    toolbar_collapsed: bool,
     /// 所有打开的标签页；为空时只显示首页。
     tabs: Vec<Tab>,
     /// 活动标签下标（tabs 非空时有效）。

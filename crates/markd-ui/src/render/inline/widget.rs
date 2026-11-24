@@ -288,7 +288,7 @@ pub(crate) fn text_response(
     let ext = ui
         .interact(
             row_rect,
-            egui::Id::new(("row_ext", idx)),
+            egui::Id::unique(("row_ext", idx)),
             Sense::click_and_drag(),
         )
         .on_hover_cursor(egui::CursorIcon::Text);

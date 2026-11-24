@@ -6,13 +6,17 @@ impl MarkdApp {
     /// 固定在窗口最顶部的单行菜单栏（VS Code 风格）。
     /// macOS 下这一行同时充当标题栏：系统红绿灯浮在左端，快捷按钮紧跟其右侧。
     pub(super) fn menubar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        use egui::{Align2, FontId};
         ui.style_mut().interaction.selectable_labels = false;
-        let mut chosen: Option<Command> = None;
-        ui.horizontal(|ui| {
+        let chosen: Option<Command> = None;
+        // 标题栏比默认高（约 1 cm）：用 horizontal_centered 让文档名、图标和拖动区
+        // 在整行里垂直居中，跟 macOS 红绿灯的中心对齐；普通 horizontal 只按内容高度排，
+        // 会把它们全部顶到上边缘。
+        ui.horizontal_centered(|ui| {
             // 给 macOS 系统红绿灯按钮留出空间；其它平台只用常规边距。
             ui.add_space(if cfg!(target_os = "macos") { 78.0 } else { 4.0 });
             // 设置入口已移到「Markd」菜单与 Cmd/Ctrl+,，标题栏左侧不再放齿轮按钮。
-            // 「首页」入口已移到编辑区上方的标签栏，标题栏这里不再重复放。
+            // 「首页」和「+ 新建」入口已收进这一行，编辑区上方不再重复放。
             // macOS 的菜单已移到屏幕左上角的系统菜单栏，窗口内不再重复显示。
             if !cfg!(target_os = "macos") {
                 for (label, kind) in [
@@ -37,13 +41,88 @@ impl MarkdApp {
                 }
                 ui.separator();
             }
-            // 左侧只放当前文档名（首页时显示「首页」）
+            // 左侧先放当前文档名（首页时显示应用名，避免和下面的「首页」按钮重复），
+            // 紧跟首页与新建标签两个高频入口——它们原先在编辑区上方的标签栏里。
             let title = if self.home {
-                "首页".to_string()
+                "Markd".to_string()
             } else {
                 self.doc.title()
             };
             ui.label(RichText::new(title).strong().color(self.theme.dim));
+            ui.add_space(8.0);
+            let home_txt = if self.home {
+                RichText::new("首页").strong().color(self.theme.accent)
+            } else {
+                RichText::new("首页").color(self.theme.dim)
+            };
+            if ui
+                .selectable_label(self.home, home_txt)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("欢迎页与最近打开")
+                .clicked()
+            {
+                self.home = true;
+            }
+            ui.add_space(4.0);
+            // 新建标签：沿用原标签栏「+」的视觉，点击后直接开空白文档。
+            let (plus_rect, plus_resp) =
+                ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+            let painter = ui.painter().clone();
+            if plus_resp.hovered() {
+                painter.rect_filled(plus_rect, 5.0, self.theme.border.gamma_multiply(0.35));
+            }
+            painter.text(
+                plus_rect.center(),
+                Align2::CENTER_CENTER,
+                "+",
+                FontId::proportional(15.0),
+                if plus_resp.hovered() {
+                    self.theme.text
+                } else {
+                    self.theme.dim
+                },
+            );
+            if plus_resp
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("新建 Markdown 文档 (Cmd/Ctrl+N)")
+                .clicked()
+            {
+                self.new_document();
+            }
+            ui.add_space(4.0);
+            // 关闭当前文档：标签栏整行移除后，这里是唯一的关闭入口。
+            // 首页或没有标签时置灰，点了也不会越界。
+            let closable = !self.home && !self.tabs.is_empty();
+            let (close_rect, close_resp) =
+                ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+            let close_hovered = close_resp.hovered() && closable;
+            let painter = ui.painter().clone();
+            if close_hovered {
+                painter.rect_filled(close_rect, 5.0, self.theme.border.gamma_multiply(0.35));
+            }
+            let close_color = if !closable {
+                self.theme.dim.gamma_multiply(0.4)
+            } else if close_hovered {
+                self.theme.text
+            } else {
+                self.theme.dim
+            };
+            painter.text(
+                close_rect.center(),
+                Align2::CENTER_CENTER,
+                "×",
+                FontId::proportional(15.0),
+                close_color,
+            );
+            if closable
+                && close_resp
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("关闭当前文档")
+                    .clicked()
+            {
+                let active = self.active;
+                self.close_tab(active);
+            }
 
             // 右侧：终端图标
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -93,400 +172,322 @@ impl MarkdApp {
         ui.style_mut().interaction.selectable_labels = false;
         let mut chosen: Option<Command> = None;
         let mut chosen_tpl: Option<&'static str> = None;
-        // 按钮较多（13 个）：窗口变窄时换行，而不是把最右边的「搜索」挤到看不见。
-        ui.horizontal_wrapped(|ui| {
-            ui.add_space(6.0);
-            // 「命令面板 / 快速打开」按钮已移除：命令面板的全部功能收进菜单栏「文件」，
-            // 打开面板仍走 Cmd/Ctrl+P（命令面板）与 Cmd/Ctrl+Shift+O（快速打开）。
-            // 撤销 / 重做放在「标题」左边：改错了能立刻回退一步。
-            if icon_button(ui, "撤销 (Cmd/Ctrl+Z)", painter_undo_icon) {
-                chosen = Some(Command::Undo);
-            }
-            if icon_button(ui, "重做 (Cmd/Ctrl+Shift+Z)", painter_redo_icon) {
-                chosen = Some(Command::Redo);
-            }
-            // 标题级别收进一个下拉：先点选目标段落让它成为活动块，再选 H1–H6，
-            // 整段会替换掉原有的 #/>/- 前缀变成对应标题（H1→H6 之间也能直接互转）。
-            ui.menu_button("标题", |ui| {
-                for (label, cmd) in [
-                    // 「段落」把已选中的标题/引用/列表还原成普通段落。
-                    ("段落 正文", Command::Paragraph),
-                    ("H1 一级标题", Command::H1),
-                    ("H2 二级标题", Command::H2),
-                    ("H3 三级标题", Command::H3),
-                    ("H4 四级标题", Command::H4),
-                    ("H5 五级标题", Command::H5),
-                    ("H6 六级标题", Command::H6),
+        let width = ui.available_width();
+        let top_y = ui.cursor().min.y;
+
+        // 上半 0.7 cm：功能区选项卡。选中的字加粗并在底部画一条强调线。
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, TOOLBAR_RESERVED_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.add_space(10.0);
+                // 撤销 / 重做只留符号，固定在选项卡行最左边（不再占下方盒子）。
+                let icons_start = 10.0;
+                let icon_size = 24.0;
+                let icon_gap = 4.0;
+                for (icon, hover, cmd) in [
+                    ("undo", "撤销 (Cmd/Ctrl+Z)", Command::Undo),
+                    ("redo", "重做 (Cmd/Ctrl+Shift+Z)", Command::Redo),
                 ] {
-                    if ui.button(label).clicked() {
+                    let (rect, resp) =
+                        ui.allocate_exact_size(egui::vec2(icon_size, icon_size), egui::Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(
+                            rect,
+                            egui::CornerRadius::same(5),
+                            self.theme.border.gamma_multiply(0.35),
+                        );
+                    }
+                    toolbar_icon(ui.painter(), rect, self.theme.text, icon);
+                    if resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(hover)
+                        .clicked()
+                    {
                         chosen = Some(cmd);
-                        ui.close();
                     }
                 }
-            });
-            if ui
-                .add(egui::Button::new(RichText::new("B").strong()))
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .on_hover_text("加粗：作用于选中文字；无选区时作用于整行")
-                .clicked()
-            {
-                chosen = Some(Command::Bold);
-            }
-            if ui
-                .add(egui::Button::new(RichText::new("U").underline()))
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .on_hover_text("下划线")
-                .clicked()
-            {
-                chosen = Some(Command::Underline);
-            }
-            if ui
-                .add(egui::Button::new(RichText::new("I").italics()))
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .on_hover_text("斜体 (Cmd/Ctrl+I)")
-                .clicked()
-            {
-                chosen = Some(Command::Italic);
-            }
-            // 删除线：图标直接画「ABC 中间一条横线」，比写「删除线」三个字更直观。
-            if ui
-                .add(egui::Button::new(RichText::new("ABC").strikethrough()))
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .on_hover_text("删除线 (Ctrl+Shift+`)")
-                .clicked()
-            {
-                chosen = Some(Command::Strike);
-            }
-            // 三种列表收进一个下拉，节省工具条空间。
-            ui.menu_button("列表", |ui| {
-                for (label, cmd) in [
-                    ("无序列表", Command::Bullet),
-                    ("有序列表", Command::Ordered),
-                    ("任务列表", Command::Task),
+                ui.add_space(6.0);
+                // 选项卡作为一组在剩余宽度里居中；左边留给撤销/重做。
+                let icons_width = icons_start + icon_size * 2.0 + icon_gap + 6.0;
+                let tabs_total = 7.0 * 52.0;
+                ui.add_space(((width - icons_width - tabs_total) * 0.5).max(0.0));
+                for (label, tab) in [
+                    ("开始", ToolbarTab::Start),
+                    ("插入", ToolbarTab::Insert),
+                    ("页面样式", ToolbarTab::PageStyle),
+                    ("高级", ToolbarTab::Advanced),
+                    ("视图", ToolbarTab::View),
+                    ("工具", ToolbarTab::Tools),
+                    ("AI", ToolbarTab::AI),
                 ] {
-                    if ui.button(label).clicked() {
-                        chosen = Some(cmd);
-                        ui.close();
+                    let active = self.toolbar_tab == tab;
+                    let (rect, resp) = ui.allocate_exact_size(
+                        egui::vec2(52.0, TOOLBAR_RESERVED_HEIGHT),
+                        egui::Sense::click(),
+                    );
+                    let color = if active {
+                        self.theme.accent
+                    } else {
+                        self.theme.dim
+                    };
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        label,
+                        egui::FontId::proportional(if active { 13.0 } else { 12.0 }),
+                        color,
+                    );
+                    if active {
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(rect.left() + 4.0, rect.bottom() - 2.0),
+                                egui::pos2(rect.right() - 4.0, rect.bottom() - 2.0),
+                            ],
+                            egui::Stroke::new(2.0, self.theme.accent),
+                        );
+                    }
+                    if resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        self.toolbar_tab = tab;
                     }
                 }
-            });
-            // 引用从「插入」下拉里提出来，高频使用，放在「插入」左侧。
-            // 引用是开关（再点一次取消），双击会让「加引用 → 取消」互相抵消，
-            // 看起来像第一次点击没生效；双击的第二击直接忽略。
-            let quote = ui
-                .button("引用")
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .on_hover_text("引用块 (Cmd/Ctrl+Option+Q)");
-            if quote.clicked() && !quote.double_clicked() {
-                chosen = Some(Command::Quote);
-            }
-            // 图片从「插入」下拉里提出来：高频使用，放在「插入」左侧。
-            // 点它从磁盘选图；Cmd/Ctrl+V 则直接插入剪贴板里的图片。
-            if ui
-                .button("图片")
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .on_hover_text("插入图片（也可 Cmd/Ctrl+V 粘贴剪贴板图片）")
-                .clicked()
-            {
-                chosen = Some(Command::Image);
-            }
-            // 超链接从「插入」下拉里提出来：高频使用，放在「插入」左侧。
-            if ui
-                .button("超链接")
-                .on_hover_cursor(egui::CursorIcon::Default)
-                .on_hover_text("插入超链接 (Cmd/Ctrl+K)")
-                .clicked()
-            {
-                chosen = Some(Command::Link);
-            }
-            // 三个公式入口收进一个「公式」下拉：同源动作（都是插入 TeX），
-            // 平铺三个按钮各占一格宽度，标签/菜单名还容易看漏。
-            ui.menu_button("公式", |ui| {
-                for (label, cmd) in [
-                    ("行内公式", Command::InlineMath),
-                    ("公式块", Command::Math),
-                    ("代码块公式", Command::MathCode),
-                ] {
-                    if ui.button(label).clicked() {
-                        chosen = Some(cmd);
-                        ui.close();
+
+                // 选项卡行最右侧的折叠按钮：收起 / 展开下半工具区。
+                let rest = ui.available_width();
+                if rest > 34.0 {
+                    ui.add_space(rest - 34.0);
+                    let (rect, resp) =
+                        ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(
+                            rect,
+                            egui::CornerRadius::same(5),
+                            self.theme.border.gamma_multiply(0.35),
+                        );
+                    }
+                    toolbar_icon(
+                        ui.painter(),
+                        rect,
+                        self.theme.text,
+                        if self.toolbar_collapsed {
+                            "chevron_down"
+                        } else {
+                            "chevron_up"
+                        },
+                    );
+                    if resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(if self.toolbar_collapsed {
+                            "展开工具区"
+                        } else {
+                            "折叠工具区"
+                        })
+                        .clicked()
+                    {
+                        self.toolbar_collapsed = !self.toolbar_collapsed;
                     }
                 }
-            })
-            .response
-            .on_hover_text(
-                "插入公式：行内 $…$ / 公式块 $$…$$（Cmd/Ctrl+Option+B）/ 代码块 ```…```",
-            );
-            // 代码类同样收一个下拉：行内代码 / 代码块 / 代码组。
-            // 这三项原来埋在「插入」里，而它们的使用频率远高于表格 / 脚注 / 目录。
-            ui.menu_button("代码", |ui| {
-                for (label, cmd) in [
-                    ("行内代码", Command::Code),
-                    ("代码块", Command::CodeBlock),
-                    ("代码组", Command::CodeGroup),
-                ] {
-                    if ui.button(label).clicked() {
-                        chosen = Some(cmd);
-                        ui.close();
-                    }
-                }
-            })
-            .response
-            .on_hover_text(
-                "插入代码：行内代码 `…` / 代码块（Cmd/Ctrl+Option+C）/ 代码组（多语言 Tab）",
-            );
-            // 插入类动作收进一个下拉：表格、分隔线、图表…
-            // 全塞在工具条上会挤成一排小按钮，下拉更好找。
-            ui.menu_button("插入", |ui| {
-                for (label, cmd) in [
-                    ("表格", Command::Table),
-                    ("分隔线", Command::Rule),
-                    ("图表", Command::Mermaid),
-                    ("流程图", Command::Flowchart),
-                    ("脚注", Command::Footnote),
-                    ("目录 [TOC]", Command::Toc),
-                    ("上传本地图片", Command::UploadImages),
-                ] {
-                    if ui.button(label).clicked() {
-                        chosen = Some(cmd);
-                        ui.close();
-                    }
-                }
-            });
-            // Mermaid 下拉：插入各类图表的标准模板，与「插入」按钮并排。
-            // 图类型较多（20+），放进可滚动列表，避免菜单超出窗口被截断。
-            ui.menu_button("Mermaid", |ui| {
-                egui::ScrollArea::vertical()
-                    .max_height(460.0)
+            },
+        );
+
+        // 选项卡与工具区之间的横线，横跨整条工具条。
+        let line_y = top_y + TOOLBAR_RESERVED_HEIGHT;
+        let line_rect = ui.clip_rect();
+        ui.painter().line_segment(
+            [
+                egui::pos2(line_rect.left(), line_y),
+                egui::pos2(line_rect.right(), line_y),
+            ],
+            egui::Stroke::new(1.0, self.theme.border),
+        );
+
+        // 折叠时只剩选项卡行与这条底部分隔线；撤销/重做在折叠态仍要点得动，
+        // 所以先执行上半区收集到的命令再返回，不画下半按钮区。
+        if self.toolbar_collapsed {
+            if let Some(c) = chosen {
+                self.execute(c, ctx);
+            }
+            return;
+        }
+
+        // 下半 2.5 cm：每个功能占一个 1.5 cm × 1.7 cm 的独立盒子，上图标下文字。
+        // 空白选项卡只占高度，不画按钮。
+        // 盒子较多时可能超过窗口宽度：25 个 1.5 cm 盒子在 1280 宽窗口放不下。
+        // 用横向滚动而不是换行——下半区 2.5 cm 只够放一行 1.7 cm 的盒子。
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, TOOLBAR_HEIGHT - TOOLBAR_RESERVED_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::LEFT).with_cross_justify(true),
+            |ui| {
+                egui::ScrollArea::horizontal()
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for (label, template) in MERMAID_TEMPLATES {
-                            if ui.button(*label).clicked() {
-                                chosen_tpl = Some(*template);
-                                ui.close();
-                            }
-                        }
+                        ui.with_layout(
+                            egui::Layout::left_to_right(egui::Align::LEFT)
+                                .with_cross_justify(true),
+                            |ui| {
+                                let start = self.toolbar_tab == ToolbarTab::Start;
+                                let insert = self.toolbar_tab == ToolbarTab::Insert;
+                                let advanced = self.toolbar_tab == ToolbarTab::Advanced;
+                                // 盒子作为一组居中：横向布局不会替我们做主轴整体居中，
+                                // 所以按当前页的盒子数量算好总宽，先在左侧补空；放不下时补空为 0。
+                                let count = if start { 21 } else if insert { 12 } else if advanced { 3 } else { 0 };
+                                if count > 0 {
+                                    let spacing = ui.spacing().item_spacing.x;
+                                    let total = count as f32 * TOOLBOX_WIDTH + (count as f32 - 1.0) * spacing;
+                                    ui.add_space(((width - total) * 0.5).max(0.0));
+                                }
+
+                                if start {
+                                    for (icon, label, hover, cmd) in [
+                                        ("paragraph", "正文段落", "正文段落 (Cmd/Ctrl+0)", Command::Paragraph),
+                                        ("h1", "一级标题", "一级标题 (Cmd/Ctrl+1)", Command::H1),
+                                        ("h2", "二级标题", "二级标题 (Cmd/Ctrl+2)", Command::H2),
+                                        ("h3", "三级标题", "三级标题 (Cmd/Ctrl+3)", Command::H3),
+                                        ("h4", "四级标题", "四级标题 (Cmd/Ctrl+4)", Command::H4),
+                                        ("h5", "五级标题", "五级标题 (Cmd/Ctrl+5)", Command::H5),
+                                        ("h6", "六级标题", "六级标题 (Cmd/Ctrl+6)", Command::H6),
+                                    ] {
+                                        let r = toolbar_box(ui, icon, label, hover);
+                                        if r.clicked() {
+                                            chosen = Some(cmd);
+                                        }
+                                    }
+
+                                    for (icon, label, hover, cmd) in [
+                                        ("bold", "加粗", "加粗：作用于选中文字；无选区时作用于整行", Command::Bold),
+                                        ("underline", "下划线", "下划线", Command::Underline),
+                                        ("italic", "斜体", "斜体 (Cmd/Ctrl+I)", Command::Italic),
+                                        ("strike", "删除线", "删除线 (Ctrl+Shift+`)", Command::Strike),
+                                    ] {
+                                        let r = toolbar_box(ui, icon, label, hover);
+                                        if r.clicked() {
+                                            chosen = Some(cmd);
+                                        }
+                                    }
+
+                                    for (icon, label, hover, cmd) in [
+                                        ("list", "无序列表", "无序列表 (Cmd/Ctrl+Option+U)", Command::Bullet),
+                                        ("ordered_list", "有序列表", "有序列表 (Cmd/Ctrl+Option+O)", Command::Ordered),
+                                        ("task_list", "任务列表", "任务列表 (Cmd/Ctrl+Option+X)", Command::Task),
+                                    ] {
+                                        let r = toolbar_box(ui, icon, label, hover);
+                                        if r.clicked() {
+                                            chosen = Some(cmd);
+                                        }
+                                    }
+
+                                    // 引用是开关：双击第二击会抵消，直接忽略。
+                                    let r = toolbar_box(ui, "quote", "引用", "引用块 (Cmd/Ctrl+Option+Q)");
+                                    if r.clicked() && !r.double_clicked() {
+                                        chosen = Some(Command::Quote);
+                                    }
+                                }
+
+                                if start || insert {
+                                    let r = toolbar_box(ui, "image", "图片", "插入图片（也可 Cmd/Ctrl+V 粘贴）");
+                                    if r.clicked() {
+                                        chosen = Some(Command::Image);
+                                    }
+                                    let r = toolbar_box(ui, "link", "超链接", "插入超链接 (Cmd/Ctrl+K)");
+                                    if r.clicked() {
+                                        chosen = Some(Command::Link);
+                                    }
+
+                                    let r = toolbar_box(ui, "formula", "公式", "行内 / 公式块 / 代码块公式");
+                                    egui::Popup::menu(&r).show(|ui| {
+                                        for (label, cmd) in [
+                                            ("行内公式", Command::InlineMath),
+                                            ("公式块", Command::Math),
+                                            ("代码块公式", Command::MathCode),
+                                        ] {
+                                            if ui.button(label).clicked() {
+                                                chosen = Some(cmd);
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+
+                                    let r = toolbar_box(ui, "code", "代码", "行内代码 / 代码块 / 代码组");
+                                    egui::Popup::menu(&r).show(|ui| {
+                                        for (label, cmd) in [
+                                            ("行内代码", Command::Code),
+                                            ("代码块", Command::CodeBlock),
+                                            ("代码组", Command::CodeGroup),
+                                        ] {
+                                            if ui.button(label).clicked() {
+                                                chosen = Some(cmd);
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+
+                                    let r = toolbar_box(ui, "mermaid", "Mermaid", "插入 Mermaid 图表模板");
+                                    egui::Popup::menu(&r).show(|ui| {
+                                        egui::ScrollArea::vertical()
+                                            .max_height(460.0)
+                                            .show(ui, |ui| {
+                                                for (label, template) in MERMAID_TEMPLATES {
+                                                    if ui.button(*label).clicked() {
+                                                        chosen_tpl = Some(*template);
+                                                        ui.close();
+                                                    }
+                                                }
+                                            });
+                                    });
+                                }
+
+                                // 原「插入」下拉里的七项全部展开，只放在「插入」选项卡里。
+                                if insert {
+                                    for (icon, label, hover, cmd) in [
+                                        ("table", "表格", "插入表格", Command::Table),
+                                        ("rule", "分隔线", "插入分隔线", Command::Rule),
+                                        ("chart", "图表", "插入 Mermaid 图表模板", Command::Mermaid),
+                                        ("flowchart", "流程图", "插入流程图模板", Command::Flowchart),
+                                        ("footnote", "脚注", "插入脚注", Command::Footnote),
+                                        ("toc", "目录", "插入目录 [TOC]", Command::Toc),
+                                        ("upload", "上传图片", "上传本地图片并插入", Command::UploadImages),
+                                    ] {
+                                        let r = toolbar_box(ui, icon, label, hover);
+                                        if r.clicked() {
+                                            chosen = Some(cmd);
+                                        }
+                                    }
+                                }
+
+                                // 「查找和替换」留在开始页；快照 / 关系图 / 统计迁到「高级」选项卡。
+                                if start {
+                                    let r = toolbar_box(ui, "search", "查找和替换", "查找和替换");
+                                    if r.clicked() {
+                                        chosen = Some(Command::Find);
+                                    }
+                                }
+
+                                // 原「开始」页里的快照 / 关系图 / 统计，只放在「高级」选项卡里。
+                                if advanced {
+                                    for (icon, label, cmd) in [
+                                        ("snapshot", "快照", Command::Snapshot),
+                                        ("graph", "关系图", Command::Graph),
+                                        ("stats", "统计", Command::Stats),
+                                    ] {
+                                        let r = toolbar_box(ui, icon, label, label);
+                                        if r.clicked() {
+                                            chosen = Some(cmd);
+                                        }
+                                    }
+                                }
+                            },
+                        );
                     });
-            });
-            ui.separator();
-            for (label, cmd) in [
-                ("快照", Command::Snapshot),
-                ("关系图", Command::Graph),
-                ("统计", Command::Stats),
-            ] {
-                if ui
-                    .button(label)
-                    .on_hover_cursor(egui::CursorIcon::Default)
-                    .clicked()
-                {
-                    chosen = Some(cmd.clone());
-                }
-            }
-            // 放大镜 = 文档内查找/替换（和 Cmd/Ctrl+F、Ctrl+H 同一个面板）。
-            // 工作区全文搜索仍在「视图」菜单与命令面板里（Command::Search）。
-            if icon_button(ui, "查找/替换 (Cmd/Ctrl+F、Ctrl+H)", painter_search_icon) {
-                self.find.open_for(false);
-            }
-        });
+            },
+        );
         if let Some(c) = chosen {
             self.execute(c, ctx);
         }
         if let Some(tpl) = chosen_tpl {
             editor::insert_template(&mut self.doc, &mut self.editor, tpl);
-        }
-    }
-
-    /// 编辑区顶部的标签栏：首页页签 + 每个打开的文件一个页签。
-    /// 点页签切换，页签末尾的 × 关闭；它声明在 left 面板之后，所以只占编辑区宽度。
-    pub(super) fn tabbar(&mut self, ui: &mut egui::Ui) {
-        use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke};
-        // 页签之间的分隔线：1px 低对比灰，上下内缩 5px，不顶到容器边缘。
-        fn divider(ui: &mut egui::Ui) {
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 14.0), egui::Sense::hover());
-            let x = rect.center().x;
-            let y = rect.center().y;
-            ui.painter().line_segment(
-                [Pos2::new(x, y - 7.0), Pos2::new(x, y + 7.0)],
-                Stroke::new(1.0, Color32::from_rgba_unmultiplied(128, 128, 128, 89)),
-            );
-        }
-        ui.style_mut().interaction.selectable_labels = false;
-        ui.style_mut().spacing.item_spacing.x = 4.0;
-        let mut switch: Option<usize> = None;
-        let mut close: Option<usize> = None;
-        ui.horizontal(|ui| {
-            // 左侧留 10pt：侧栏右缘的拖动条占着靠里 8pt，避免抢它的点击。
-            ui.add_space(10.0);
-            let home_txt = if self.home {
-                RichText::new("首页").strong().color(self.theme.accent)
-            } else {
-                RichText::new("首页").color(self.theme.dim)
-            };
-            if ui
-                .selectable_label(self.home, home_txt)
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("欢迎页与最近打开")
-                .clicked()
-            {
-                self.home = true;
-            }
-            // 首页之后直接排文件页签，每个页签前加一条细竖线。
-            for i in 0..self.tabs.len() {
-                divider(ui);
-                let active = !self.home && i == self.active;
-                let mut text = self.tab_label(i);
-                if self.tab_dirty(i) {
-                    text.push_str(" •");
-                }
-                let color = if active {
-                    self.theme.text
-                } else {
-                    self.theme.dim
-                };
-                let tip = self.tabs[i]
-                    .path
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "未保存的文档".to_string());
-                // 整个页签是一块可点击的「胶囊」：文字与关闭按钮共用同一个
-                // 背景和 hover 反馈，不再像并排的两个独立控件。
-                let font = FontId::proportional(12.5);
-                let galley = ui.fonts_mut(|f| f.layout(text.clone(), font, color, f32::INFINITY));
-                let pad_l = 10.0;
-                let pad_r = 5.0;
-                let close_w = 18.0;
-                let gap = 4.0;
-                let tab_w = pad_l + galley.size().x + gap + close_w + pad_r;
-                let (rect, resp) =
-                    ui.allocate_exact_size(egui::vec2(tab_w, 24.0), egui::Sense::click());
-                let painter = ui.painter().clone();
-                // 页签 hover 用指针位置判断：关闭按钮叠在页签内部，
-                // 两者不能互相抢 hover，否则 × 会一边淡入一边闪。
-                let pointer = ui.input(|i| i.pointer.hover_pos());
-                let hovered = pointer.is_some_and(|p| rect.contains(p));
-                if active {
-                    painter.rect_filled(rect, 5.0, self.theme.bg);
-                    painter.rect_stroke(
-                        rect,
-                        5.0,
-                        Stroke::new(1.0, self.theme.border),
-                        egui::StrokeKind::Inside,
-                    );
-                    // 底部一条主题色短线，强化「当前页签」。
-                    painter.line_segment(
-                        [
-                            Pos2::new(rect.left() + 6.0, rect.bottom() - 1.0),
-                            Pos2::new(rect.right() - 6.0, rect.bottom() - 1.0),
-                        ],
-                        Stroke::new(2.0, self.theme.accent),
-                    );
-                } else if hovered {
-                    painter.rect_filled(rect, 5.0, self.theme.border.gamma_multiply(0.35));
-                }
-                painter.galley(
-                    Pos2::new(rect.left() + pad_l, rect.center().y - galley.size().y / 2.0),
-                    galley,
-                    color,
-                );
-                // 关闭按钮默认完全隐藏，鼠标悬停页签时淡入；位置固定在文字右侧
-                // 4pt 处、与文字垂直居中，宽度始终占位，避免 hover 时页签跳动。
-                let close_alpha = ui.ctx().animate_bool_with_time(
-                    ui.scope_id().with(("tab_close_fade", i)),
-                    hovered,
-                    0.15,
-                );
-                let fade = |c: Color32, a: f32| {
-                    Color32::from_rgba_unmultiplied(
-                        c.r(),
-                        c.g(),
-                        c.b(),
-                        (a.clamp(0.0, 1.0) * 255.0).round() as u8,
-                    )
-                };
-                let close_rect = Rect::from_center_size(
-                    Pos2::new(rect.right() - pad_r - close_w / 2.0, rect.center().y),
-                    egui::vec2(close_w, 18.0),
-                );
-                let close_shown = close_alpha > 0.01;
-                if close_shown {
-                    let close_resp = ui.interact(
-                        close_rect,
-                        ui.scope_id().with(("tab_close", i)),
-                        egui::Sense::click(),
-                    );
-                    let close_hovered = close_resp.hovered();
-                    if close_hovered {
-                        painter.circle_filled(
-                            close_rect.center(),
-                            8.0,
-                            fade(self.theme.dim, 0.18 * close_alpha),
-                        );
-                    }
-                    painter.text(
-                        close_rect.center(),
-                        Align2::CENTER_CENTER,
-                        "×",
-                        FontId::proportional(14.0),
-                        fade(
-                            if close_hovered {
-                                self.theme.text
-                            } else {
-                                self.theme.dim
-                            },
-                            close_alpha,
-                        ),
-                    );
-                    if close_resp
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text("关闭标签")
-                        .clicked()
-                    {
-                        close = Some(i);
-                    }
-                }
-                // 指针落在已显示的 × 上时不要顺带切页签。
-                let on_close = close_shown && pointer.is_some_and(|p| close_rect.contains(p));
-                if resp.clicked() && !on_close {
-                    switch = Some(i);
-                }
-                if resp.middle_clicked() {
-                    close = Some(i);
-                }
-                resp.on_hover_text(tip);
-            }
-            // 最后一个页签与「+」之间同样加竖线；「+」右侧不再加。
-            divider(ui);
-            // 新建页签按钮紧跟在最后一个页签后面（浏览器风格），不固定到行尾。
-            // 尺寸、圆角和 hover 底色与页签保持一致。
-            let (plus_rect, plus_resp) =
-                ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
-            let painter = ui.painter().clone();
-            if plus_resp.hovered() {
-                painter.rect_filled(plus_rect, 5.0, self.theme.border.gamma_multiply(0.35));
-            }
-            painter.text(
-                plus_rect.center(),
-                Align2::CENTER_CENTER,
-                "+",
-                FontId::proportional(15.0),
-                if plus_resp.hovered() {
-                    self.theme.text
-                } else {
-                    self.theme.dim
-                },
-            );
-            if plus_resp
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("新建 Markdown 文档 (Cmd/Ctrl+N)")
-                .clicked()
-            {
-                self.new_document();
-            }
-        });
-        // 一帧内关闭优先：关掉标签后下标会变，不再处理切换。
-        if let Some(i) = close {
-            self.close_tab(i);
-        } else if let Some(i) = switch {
-            self.switch_tab(i);
         }
     }
 

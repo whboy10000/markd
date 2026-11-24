@@ -44,7 +44,7 @@ impl MarkdApp {
         let theme = self.theme.clone();
         let mut close = false;
 
-        let area = egui::Area::new(Id::new(("editor_context_menu", tab_key)))
+        let area = egui::Area::new(Id::unique(("editor_context_menu", tab_key)))
             .order(egui::Order::Foreground)
             .fixed_pos(pos)
             .constrain(true)

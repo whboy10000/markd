@@ -101,12 +101,8 @@ impl Session {
             error: None,
             focus_req: false,
             focused: false,
-            body_id: egui::Id::new(("markd_terminal_body", id)),
+            body_id: egui::Id::unique(("markd_terminal_body", id)),
         }
-    }
-
-    pub(super) fn body_id(&self) -> egui::Id {
-        self.body_id
     }
 
     /// shell 启动后自己维护工作目录，只在启动前接受外部 cwd。

@@ -306,7 +306,7 @@ pub fn image_preview(
         let grip_resp = ui
             .interact(
                 grip_rect,
-                egui::Id::new(("img_grip", grip.0, grip.1)),
+                egui::Id::unique(("img_grip", grip.0, grip.1)),
                 Sense::drag(),
             )
             .on_hover_cursor(egui::CursorIcon::ResizeNwSe);

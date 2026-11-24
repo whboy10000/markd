@@ -148,6 +148,7 @@ impl Layout {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn pane_count(&self) -> usize {
         match self {
             Self::Pane(p) => usize::from(!p.tabs.is_empty()),
