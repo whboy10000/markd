@@ -68,7 +68,8 @@ impl eframe::App for MarkdApp {
         // 自定义标题栏：让系统红绿灯垂直居中于菜单栏这一行（非 macOS 为空操作）。
         let r = menubar.response.rect;
         frame.set_traffic_lights_position(&ctx, egui::Rangef::new(r.min.y, r.max.y), 12.0);
-        if self.config.show_toolbar {
+        // 主界面只保留新建/打开、搜索和最近文档：工具条只在编辑态出现。
+        if self.config.show_toolbar && !self.home {
             // 展开时 3.2 cm：上半 0.7 cm 选项卡，下半 2.5 cm 放按钮，中间横线在 toolbar() 里画；
             // 折叠时只剩 0.7 cm 选项卡行（选项卡行最右侧的 chevron 切换）。
             let toolbar_h = if self.toolbar_collapsed {
@@ -199,7 +200,6 @@ impl eframe::App for MarkdApp {
             match a {
                 HomeAction::New => self.new_document(),
                 HomeAction::OpenFile => self.execute(Command::OpenFileDialog, &ctx),
-                HomeAction::OpenWorkspace => self.execute(Command::OpenWorkspace, &ctx),
                 HomeAction::Recent(p) => self.open_file(p),
             }
         }

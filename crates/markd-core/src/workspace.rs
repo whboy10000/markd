@@ -42,7 +42,7 @@ fn default_sidebar_width() -> f32 {
 }
 
 fn default_show_line_numbers() -> bool {
-    true
+    false
 }
 
 fn default_show_workspace_bar() -> bool {
@@ -273,7 +273,7 @@ impl Default for Config {
             sidebar_width: 240.0,
             show_workspace_bar: false,
             show_toolbar: false,
-            show_line_numbers: true,
+            show_line_numbers: false,
             auto_pair: true,
             tab_size: 2,
             highlight_code: true,
@@ -562,6 +562,12 @@ mod tests {
         assert!(c.show_toolbar);
         // 全新配置则默认隐藏工具条（首次启动只看编辑区）。
         assert!(!Config::default().show_toolbar);
+        // 行号栏默认关闭：全新配置与缺少该字段的旧配置都不显示，可在设置里再打开。
+        assert!(!c.show_line_numbers, "老配置缺行号字段时应默认关闭");
+        assert!(
+            !Config::default().show_line_numbers,
+            "全新配置默认隐藏行号栏"
+        );
         // 旧配置没有颜色覆盖字段，应安全地得到空覆盖（跟随主题默认色）。
         assert!(c.color_overrides.is_empty());
     }

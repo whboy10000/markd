@@ -109,6 +109,12 @@ graph LR
 /// 自定义标题栏（macOS 上是菜单栏那一行，其它平台是窗口顶栏）的高度，
 /// 单位 egui 逻辑点。1 cm ≈ 37.8 pt（96 pt/inch），取 38 让红绿灯与文档名周围留白更舒展。
 const TITLEBAR_HEIGHT: f32 = 38.0;
+/// 标题栏「首页」按钮宽度 3 cm ≈ 113 pt（同一换算口径：1 cm ≈ 37.8 pt）。
+const HOME_BUTTON_WIDTH: f32 = 113.4;
+/// 标题栏「+ 新建」按钮宽度：标签条末尾的小方块，约 40 pt。
+const NEW_TAB_BUTTON_WIDTH: f32 = 40.0;
+/// 标题栏标签宽度：所有标签同宽的圆角胶囊。
+const TAB_CHIP_WIDTH: f32 = 136.0;
 
 /// 格式工具条总高度 3.2 cm ≈ 121 pt；上 0.7 cm（≈26.5 pt）留白备用，
 /// 下 2.5 cm（≈94.5 pt）放现有按钮，中间一条横线分隔。
@@ -204,6 +210,10 @@ pub struct MarkdApp {
     outline_folded: HashSet<usize>,
     menu: Option<MenuKind>,
     workspace_input: String,
+    /// 首页搜索框内容。
+    home_search: String,
+    /// 首页「最近文档」排序：0 按打开时间、1 按名称、2 按大小。
+    home_sort: u8,
     palette: Palette,
     search: SearchPanel,
     /// 文档内查找/替换弹窗（Cmd/Ctrl+F、Ctrl+H）。
@@ -275,7 +285,6 @@ pub struct MarkdApp {
 enum HomeAction {
     New,
     OpenFile,
-    OpenWorkspace,
     Recent(PathBuf),
 }
 

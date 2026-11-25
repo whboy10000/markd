@@ -86,6 +86,19 @@ impl MarkdApp {
         }
     }
 
+    /// 标题栏标签的显示名：未命名文档统一叫「新标签页」，已保存的沿用文件名。
+    pub(super) fn tab_display_label(&self, i: usize) -> String {
+        let Some(t) = self.tabs.get(i) else {
+            return String::new();
+        };
+        let named = t.path.is_some() || t.state.as_ref().is_some_and(|s| s.doc.path.is_some());
+        if named {
+            self.tab_label(i)
+        } else {
+            "新标签页".to_string()
+        }
+    }
+
     /// 标签是否有未保存的修改（活动标签的状态在 self.doc 里）。
     pub(super) fn tab_dirty(&self, i: usize) -> bool {
         if i == self.active && i < self.tabs.len() {

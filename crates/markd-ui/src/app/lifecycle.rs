@@ -122,6 +122,8 @@ impl MarkdApp {
             outline_folded: HashSet::new(),
             menu: None,
             workspace_input,
+            home_search: String::new(),
+            home_sort: 0,
             palette: Palette::default(),
             search: SearchPanel::default(),
             find: FindPanel::default(),

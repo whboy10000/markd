@@ -344,6 +344,8 @@ fn test_app() -> MarkdApp {
         outline_folded: HashSet::new(),
         menu: None,
         workspace_input: String::new(),
+        home_search: String::new(),
+        home_sort: 0,
         palette: Palette::default(),
         search: SearchPanel::default(),
         find: FindPanel::default(),
@@ -3992,7 +3994,7 @@ fn line_height_setting_changes_source_mode_row_height() {
     );
 }
 
-/// 标题栏锁定约 1 cm 高，且文档名/图标要在这一行里垂直居中——
+/// 标题栏锁定约 1 cm 高，且主界面按钮要在这一行里垂直居中——
 /// 不能因为加高就把内容顶到上缘，跟 macOS 红绿灯错开。
 #[test]
 fn titlebar_is_one_centimeter_tall_and_centered() {
@@ -4009,39 +4011,102 @@ fn titlebar_is_one_centimeter_tall_and_centered() {
     let title = shapes
         .iter()
         .find_map(|cs| match &cs.shape {
-            egui::Shape::Text(t) if t.galley.text() == "首页" => Some(t),
+            egui::Shape::Text(t) if t.galley.text() == "主界面" => Some(t),
             _ => None,
         })
-        .expect("标题栏上的文档名");
+        .expect("标题栏上的主界面按钮");
     let title_mid = title.pos.y + title.galley.rect.height() / 2.0;
     assert!(
         (title_mid - TITLEBAR_HEIGHT / 2.0).abs() < 2.0,
-        "标题文字应在标题栏垂直居中，实际文字中点 {title_mid}"
+        "主界面按钮文字应在标题栏垂直居中，实际文字中点 {title_mid}"
     );
 }
 
-/// 标签栏整行移除后，标题栏上的「首页 / + / ×」必须真的能切换、新建、关闭文档。
+/// 标题栏只剩「主界面」入口：点它回首页，但不关闭已有文档。
 #[test]
-fn titlebar_buttons_switch_new_and_close_documents() {
+fn titlebar_main_view_button_returns_home() {
     fn button_pos(shapes: &[egui::epaint::ClippedShape], text: &str) -> egui::Pos2 {
         shapes
             .iter()
             .find_map(|cs| match &cs.shape {
-                egui::Shape::Text(t)
-                    if t.galley.text() == text && t.pos.y < TITLEBAR_HEIGHT =>
-                {
+                egui::Shape::Text(t) if t.galley.text() == text && t.pos.y < TITLEBAR_HEIGHT => {
                     Some(t.pos + t.galley.rect.center().to_vec2())
                 }
                 _ => None,
             })
             .unwrap_or_else(|| panic!("标题栏上应有「{text}」按钮"))
     }
-    fn click_button(
-        ctx: &egui::Context,
-        app: &mut MarkdApp,
-        frame: &mut eframe::Frame,
-        p: egui::Pos2,
-    ) {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+
+    app.new_document();
+    assert!(!app.home && app.tabs.len() == 1);
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let p = button_pos(&shapes, "主界面");
+    for ev in [
+        vec![egui::Event::PointerMoved(p)],
+        vec![pointer_button(p, true)],
+        vec![pointer_button(p, false)],
+    ] {
+        run_real_frame(&ctx, &mut app, &mut frame, ev);
+    }
+    for _ in 0..2 {
+        run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+    }
+    assert!(app.home, "点标题栏「主界面」应进入首页");
+    assert_eq!(app.tabs.len(), 1, "回首页不应关掉已有标签");
+}
+
+/// 主界面按钮仍是 3 cm 定宽，标签条末尾的 + 是 40 pt 小方块；文档名不占标题栏。
+#[test]
+fn titlebar_main_view_width_and_plus_button() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    assert!(
+        !shapes.iter().any(|cs| matches!(
+            &cs.shape,
+            egui::Shape::Text(t) if t.galley.text() == "Markd" && t.pos.y < TITLEBAR_HEIGHT
+        )),
+        "文档名不应占据「主界面」左侧"
+    );
+    let center = |text: &str| -> Option<egui::Pos2> {
+        shapes.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == text && t.pos.y < TITLEBAR_HEIGHT => {
+                Some(t.pos + t.galley.rect.center().to_vec2())
+            }
+            _ => None,
+        })
+    };
+    let home = center("主界面").expect("标题栏应有「主界面」按钮");
+    let plus = center("+").expect("标题栏应有「+ 新建」按钮");
+    let spacing = ctx.style_of(egui::Theme::Dark).spacing.item_spacing.x;
+    let expected = HOME_BUTTON_WIDTH / 2.0 + 4.0 + spacing + NEW_TAB_BUTTON_WIDTH / 2.0;
+    assert!(
+        (plus.x - home.x - expected).abs() < 2.0,
+        "主界面/新建按钮宽度不符：文字中心间距 {}，按 3 cm / 40 pt 应为 {expected}",
+        plus.x - home.x
+    );
+}
+
+/// 恢复的标签条：+ 新建 → 出现「新标签页」标签；点标签切换、点 × 关闭。
+#[test]
+fn titlebar_tab_strip_creates_switches_and_closes() {
+    fn center(shapes: &[egui::epaint::ClippedShape], text: &str, nth: usize) -> egui::Pos2 {
+        shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Text(t) if t.galley.text() == text && t.pos.y < TITLEBAR_HEIGHT => {
+                    Some(t.pos + t.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            })
+            .nth(nth)
+            .unwrap_or_else(|| panic!("标题栏上应有第 {nth} 个「{text}」"))
+    }
+    fn click_at(ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame, p: egui::Pos2) {
         for ev in [
             vec![egui::Event::PointerMoved(p)],
             vec![pointer_button(p, true)],
@@ -4057,32 +4122,29 @@ fn titlebar_buttons_switch_new_and_close_documents() {
     let mut app = test_app();
     let mut frame = eframe::Frame::_new_kittest();
 
-    // 首页 → 新建：应开出一个标签并离开首页。
-    assert!(app.home && app.tabs.is_empty());
+    // 首页态点 +：新建标签并离开首页。
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
-    let plus = button_pos(&shapes, "+");
-    click_button(&ctx, &mut app, &mut frame, plus);
-    assert!(!app.home, "点标题栏 + 应离开首页");
-    assert_eq!(app.tabs.len(), 1, "点标题栏 + 应新建标签");
+    let plus = center(&shapes, "+", 0);
+    click_at(&ctx, &mut app, &mut frame, plus);
+    assert!(!app.home && app.tabs.len() == 1, "+ 应新建标签并离开首页");
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let _ = center(&shapes, "新标签页", 0);
+    let _ = center(&shapes, "×", 0);
 
-    // 新建 → 关闭：最后一个标签关掉后回首页。
+    // 再建一个，点回第一个标签切换。
+    app.new_document();
+    assert_eq!(app.active, 1);
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
-    let close = button_pos(&shapes, "×");
-    click_button(&ctx, &mut app, &mut frame, close);
-    assert!(
-        app.home && app.tabs.is_empty(),
-        "点 × 关掉最后一个标签应回首页"
-    );
+    let first = center(&shapes, "新标签页", 0);
+    click_at(&ctx, &mut app, &mut frame, first);
+    assert_eq!(app.active, 0, "点第一个标签应切回第一个文档");
 
-    // 再新建 → 首页按钮：只回首页，标签仍留着。
+    // 激活标签上的 × 只关当前标签。
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
-    let plus = button_pos(&shapes, "+");
-    click_button(&ctx, &mut app, &mut frame, plus);
-    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
-    let home = button_pos(&shapes, "首页");
-    click_button(&ctx, &mut app, &mut frame, home);
-    assert!(app.home, "点标题栏「首页」应进入首页");
-    assert_eq!(app.tabs.len(), 1, "回首页不应关掉已有标签");
+    let close = center(&shapes, "×", 0);
+    click_at(&ctx, &mut app, &mut frame, close);
+    assert_eq!(app.tabs.len(), 1, "× 应只关闭激活标签");
+    assert_eq!(app.active, 0);
 }
 
 /// 格式工具条总高 3.2 cm，上 0.7 cm 留白、下 2.5 cm 放按钮，中间一条横线。
@@ -4090,6 +4152,7 @@ fn titlebar_buttons_switch_new_and_close_documents() {
 fn toolbar_is_split_by_a_divider_after_reserved_space() {
     let ctx = egui::Context::default();
     let mut app = test_app();
+    app.home = false; // 工具条只在编辑态显示
     let mut frame = eframe::Frame::_new_kittest();
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
 
@@ -4149,6 +4212,7 @@ fn toolbar_is_split_by_a_divider_after_reserved_space() {
 fn toolbar_buttons_are_independent_icon_text_boxes() {
     let ctx = egui::Context::default();
     let mut app = test_app();
+    app.home = false; // 工具条只在编辑态显示
     let mut frame = eframe::Frame::_new_kittest();
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
     let boxes: Vec<egui::Rect> = shapes
@@ -4232,6 +4296,7 @@ fn toolbar_list_commands_are_three_separate_boxes() {
 
     let ctx = egui::Context::default();
     let mut app = test_app();
+    app.home = false; // 工具条只在编辑态显示
     let mut frame = eframe::Frame::_new_kittest();
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
 
@@ -4311,6 +4376,7 @@ fn toolbar_heading_commands_are_seven_separate_boxes() {
 
     let ctx = egui::Context::default();
     let mut app = test_app();
+    app.home = false; // 工具条只在编辑态显示
     let mut frame = eframe::Frame::_new_kittest();
     let shapes = paint(&ctx, &mut app, &mut frame, vec![]);
 
@@ -4392,6 +4458,7 @@ fn toolbar_insert_items_are_separate_boxes() {
     // 开始页不该出现这些展开项，也不该再有汇总的「插入」下拉。
     let ctx = egui::Context::default();
     let mut app = test_app();
+    app.home = false; // 工具条只在编辑态显示
     let mut frame = eframe::Frame::_new_kittest();
     let (shapes, _) = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
     for label in labels {
@@ -4490,6 +4557,7 @@ fn toolbar_tabs_switch_between_button_areas_and_blank_placeholders() {
     let tab_range = (TITLEBAR_HEIGHT + 1.0, TITLEBAR_HEIGHT + TOOLBAR_RESERVED_HEIGHT);
     let ctx = egui::Context::default();
     let mut app = test_app();
+    app.home = false; // 工具条只在编辑态显示
     let mut frame = eframe::Frame::_new_kittest();
 
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
@@ -4636,6 +4704,7 @@ fn toolbar_collapse_button_folds_tool_area() {
 
     let ctx = egui::Context::default();
     let mut app = test_app();
+    app.home = false; // 工具条只在编辑态显示
     let mut frame = eframe::Frame::_new_kittest();
 
     // 初始展开：工具条 3.2 cm，下半区画出工具按钮。
@@ -4719,6 +4788,7 @@ fn toolbar_button_boxes_are_centered() {
     // 放不下时从左侧铺到右侧（横向滚动），放得下时整组居中。
     let ctx = egui::Context::default();
     let mut app = test_app();
+    app.home = false; // 工具条只在编辑态显示
     let mut frame = eframe::Frame::_new_kittest();
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
     let rects = box_rects(&shapes);
@@ -4741,6 +4811,7 @@ fn toolbar_button_boxes_are_centered() {
     // 1800 宽：全部盒子放得下，整组应在窗口里居中。
     let ctx_wide = egui::Context::default();
     let mut app_wide = test_app();
+    app_wide.home = false; // 工具条只在编辑态显示
     let mut frame_wide = eframe::Frame::_new_kittest();
     let (shapes, _) =
         run_real_frame_ext_with_width(&ctx_wide, &mut app_wide, &mut frame_wide, vec![], 1800.0);
@@ -4823,6 +4894,7 @@ fn toolbar_advanced_tab_holds_snapshot_graph_and_stats() {
     // 开始页：三个迁移按钮都不再出现，「查找和替换」仍在。
     let ctx = egui::Context::default();
     let mut app = test_app();
+    app.home = false; // 工具条只在编辑态显示
     let mut frame = eframe::Frame::_new_kittest();
     let shapes = paint(&ctx, &mut app, &mut frame, vec![]);
     for label in moved {
@@ -4854,4 +4926,48 @@ fn toolbar_advanced_tab_holds_snapshot_graph_and_stats() {
     let p = label_pos(&shapes, "统计").unwrap_or_else(|| panic!("未找到「统计」"));
     click(&ctx, &mut app, &mut frame, p);
     assert!(app.stats.open, "点高级页「统计」应打开写作统计面板");
+}
+
+/// 主界面只留新建/打开、搜索和最近文档；工具条、导航项与模板区都不渲染。
+#[test]
+fn home_view_only_has_actions_search_and_recent_table() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    app.config.recent = vec![format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"))];
+    let mut frame = eframe::Frame::_new_kittest();
+    let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
+    let has = |text: &str| {
+        shapes.iter().any(|cs| {
+            matches!(
+                &cs.shape,
+                egui::Shape::Text(t)
+                    if t.galley.text() == text && t.pos.y > TITLEBAR_HEIGHT
+            )
+        })
+    };
+    for text in [
+        "＋   新建",
+        "打开",
+        "搜索文件、模板…",
+        "最近文档",
+        "来源",
+        "打开时间排序",
+        "文件大小",
+        "本地文件",
+        "Cargo.toml",
+    ] {
+        assert!(has(text), "主界面应渲染「{text}」");
+    }
+    for text in [
+        "开始",
+        "工作台",
+        "云文件",
+        "选项",
+        "个人中心",
+        "推荐",
+        "空白文档",
+        "插入",
+    ] {
+        assert!(!has(text), "主界面不应渲染「{text}」");
+    }
 }
