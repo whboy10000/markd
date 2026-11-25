@@ -3637,6 +3637,7 @@ fn backspace_at_first_char_of_code_block_keeps_it_code() {
 
 /// 工具条上「行内公式 / 公式块 / 代码块公式」三个平铺按钮收成一个「公式」下拉：
 /// 未展开时工具条上没有那三个标签，展开后底下正好三项，点哪一项就执行哪个插入。
+/// 仅在「插入」选项卡可见（开始页已移除）。
 #[test]
 fn toolbar_formula_dropdown_holds_three_items() {
     let labels = ["行内公式", "公式块", "代码块公式"];
@@ -3645,6 +3646,7 @@ fn toolbar_formula_dropdown_holds_three_items() {
     let mut frame = eframe::Frame::_new_kittest();
     app.doc = Document::new("正文一段", None);
     app.home = false;
+    app.toolbar_tab = ToolbarTab::Insert; // 仅插入页可见
     for _ in 0..3 {
         run_real_frame(&ctx, &mut app, &mut frame, vec![]);
     }
@@ -3808,6 +3810,7 @@ fn quote_bar_geometry_is_identical_in_both_states() {
 
 /// 工具条「代码」下拉：行内代码 / 代码块 / 代码组 三项收在一起，
 /// 工具条下半区不平铺这三项；原「插入」下拉已展开成独立盒子。
+/// 仅在「插入」选项卡可见（开始页已移除）。
 #[test]
 fn toolbar_code_dropdown_holds_three_items() {
     let labels = ["行内代码", "代码块", "代码组"];
@@ -3816,6 +3819,7 @@ fn toolbar_code_dropdown_holds_three_items() {
     let mut frame = eframe::Frame::_new_kittest();
     app.doc = Document::new("正文一段", None);
     app.home = false;
+    app.toolbar_tab = ToolbarTab::Insert; // 仅插入页可见
     for _ in 0..3 {
         run_real_frame(&ctx, &mut app, &mut frame, vec![]);
     }
@@ -4227,7 +4231,7 @@ fn toolbar_buttons_are_independent_icon_text_boxes() {
             _ => None,
         })
         .collect();
-    assert!(boxes.len() >= 20, "每个功能应占一个独立盒子，实际 {}", boxes.len());
+    assert!(boxes.len() >= 16, "每个功能应占一个独立盒子，实际 {}", boxes.len());
     // 撤销/重做已改成选项卡行左侧的纯图标，不该再出现在下方盒子里。
     assert!(
         !shapes.iter().any(|cs| matches!(&cs.shape, egui::Shape::Text(t)
@@ -4792,7 +4796,7 @@ fn toolbar_button_boxes_are_centered() {
     let mut frame = eframe::Frame::_new_kittest();
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
     let rects = box_rects(&shapes);
-    assert!(rects.len() <= 21, "开始页最多 21 个盒子，实际 {}", rects.len());
+    assert!(rects.len() <= 16, "开始页最多 16 个盒子，实际 {}", rects.len());
     let left = rects.iter().map(|r| r.left()).fold(f32::INFINITY, f32::min);
     let right = rects.iter().map(|r| r.right()).fold(f32::NEG_INFINITY, f32::max);
     if left < 20.0 {
@@ -4816,7 +4820,7 @@ fn toolbar_button_boxes_are_centered() {
     let (shapes, _) =
         run_real_frame_ext_with_width(&ctx_wide, &mut app_wide, &mut frame_wide, vec![], 1800.0);
     let rects = box_rects(&shapes);
-    assert_eq!(rects.len(), 21, "宽窗口应画出开始页全部 21 个盒子，实际 {}", rects.len());
+    assert_eq!(rects.len(), 16, "宽窗口应画出开始页全部 16 个盒子，实际 {}", rects.len());
     let start_center = center(&rects);
     assert!(
         (start_center - 900.0).abs() < 3.0,
