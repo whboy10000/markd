@@ -406,7 +406,7 @@ impl MarkdApp {
                                 let advanced = self.toolbar_tab == ToolbarTab::Advanced;
                                 // 盒子作为一组居中：横向布局不会替我们做主轴整体居中，
                                 // 所以按当前页的盒子数量算好总宽，先在左侧补空；放不下时补空为 0。
-                                let count = if start { 21 } else if insert { 12 } else if advanced { 3 } else { 0 };
+                                let count = if start { 16 } else if insert { 12 } else if advanced { 3 } else { 0 };
                                 if count > 0 {
                                     let spacing = ui.spacing().item_spacing.x;
                                     let total = count as f32 * TOOLBOX_WIDTH + (count as f32 - 1.0) * spacing;
@@ -459,7 +459,7 @@ impl MarkdApp {
                                     }
                                 }
 
-                                if start || insert {
+                                if insert {
                                     let r = toolbar_box(ui, "image", "图片", "插入图片（也可 Cmd/Ctrl+V 粘贴）");
                                     if r.clicked() {
                                         chosen = Some(Command::Image);
