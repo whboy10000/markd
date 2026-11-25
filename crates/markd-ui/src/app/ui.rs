@@ -41,22 +41,17 @@ impl MarkdApp {
                 }
                 ui.separator();
             }
-            // 左侧先放当前文档名（首页时显示应用名，避免和下面的「首页」按钮重复），
-            // 紧跟首页与新建标签两个高频入口——它们原先在编辑区上方的标签栏里。
-            let title = if self.home {
-                "Markd".to_string()
-            } else {
-                self.doc.title()
-            };
-            ui.label(RichText::new(title).strong().color(self.theme.dim));
-            ui.add_space(8.0);
+            // 标题栏只留一个入口：点它回到主界面（欢迎页 + 最近打开）。
             let home_txt = if self.home {
-                RichText::new("首页").strong().color(self.theme.accent)
+                RichText::new("主界面").strong().color(self.theme.accent)
             } else {
-                RichText::new("首页").color(self.theme.dim)
+                RichText::new("主界面").color(self.theme.dim)
             };
             if ui
-                .selectable_label(self.home, home_txt)
+                .add_sized(
+                    egui::vec2(HOME_BUTTON_WIDTH, 24.0),
+                    egui::Button::selectable(self.home, home_txt),
+                )
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text("欢迎页与最近打开")
                 .clicked()
@@ -64,13 +59,125 @@ impl MarkdApp {
                 self.home = true;
             }
             ui.add_space(4.0);
-            // 新建标签：沿用原标签栏「+」的视觉，点击后直接开空白文档。
-            let (plus_rect, plus_resp) =
-                ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
-            let painter = ui.painter().clone();
-            if plus_resp.hovered() {
-                painter.rect_filled(plus_rect, 5.0, self.theme.border.gamma_multiply(0.35));
+            // 已打开的文档排成一行圆角标签：小圆点 + 名字，激活标签右侧带 ×。
+            if !self.tabs.is_empty() {
+                ui.add_space(6.0);
+                let mut to_switch: Option<usize> = None;
+                let mut to_close: Option<usize> = None;
+                // 给右侧的「+ 新建」和终端图标留够位置，放不下的标签用省略号收口。
+                let budget = (ui.available_width() - NEW_TAB_BUTTON_WIDTH - 60.0).max(0.0);
+                let mut used = 0.0;
+                for i in 0..self.tabs.len() {
+                    let active = !self.home && i == self.active;
+                    let label = self.tab_display_label(i);
+                    let w = TAB_CHIP_WIDTH;
+                    if used + w > budget {
+                        let (r, _) =
+                            ui.allocate_exact_size(egui::vec2(28.0, 24.0), egui::Sense::hover());
+                        ui.painter().text(
+                            r.center(),
+                            Align2::CENTER_CENTER,
+                            "…",
+                            FontId::proportional(14.0),
+                            self.theme.dim,
+                        );
+                        break;
+                    }
+                    used += w + 6.0;
+                    let (rect, resp) =
+                        ui.allocate_exact_size(egui::vec2(w, 24.0), egui::Sense::click());
+                    ui.painter().rect_filled(
+                        rect,
+                        egui::CornerRadius::same(6),
+                        if active {
+                            self.theme.border.gamma_multiply(0.55)
+                        } else {
+                            self.theme.border.gamma_multiply(0.25)
+                        },
+                    );
+                    ui.painter().circle_filled(
+                        egui::pos2(rect.left() + 10.0, rect.center().y),
+                        3.0,
+                        if active {
+                            self.theme.accent
+                        } else {
+                            self.theme.dim
+                        },
+                    );
+                    let text_color = if active {
+                        self.theme.text
+                    } else {
+                        self.theme.dim
+                    };
+                    let text_w = w - if active { 38.0 } else { 22.0 };
+                    let mut shown: String = label.chars().take((text_w / 7.0) as usize).collect();
+                    if shown.chars().count() < label.chars().count() {
+                        shown.pop();
+                        shown.push('…');
+                    }
+                    ui.painter().text(
+                        egui::pos2(rect.left() + 18.0, rect.center().y),
+                        Align2::LEFT_CENTER,
+                        shown,
+                        FontId::proportional(12.0),
+                        text_color,
+                    );
+                    if active {
+                        let xr = egui::Rect::from_min_size(
+                            egui::pos2(rect.right() - 18.0, rect.center().y - 7.0),
+                            egui::vec2(14.0, 14.0),
+                        );
+                        let id = ui.scope_id().with(("tab_close", self.tabs[i].uid));
+                        let xresp = ui.interact(xr, id, egui::Sense::click());
+                        if xresp.hovered() {
+                            ui.painter().rect_filled(
+                                xr,
+                                egui::CornerRadius::same(4),
+                                self.theme.border.gamma_multiply(0.5),
+                            );
+                        }
+                        ui.painter().text(
+                            xr.center(),
+                            Align2::CENTER_CENTER,
+                            "×",
+                            FontId::proportional(13.0),
+                            if xresp.hovered() {
+                                self.theme.text
+                            } else {
+                                self.theme.dim
+                            },
+                        );
+                        if xresp.clicked() {
+                            to_close = Some(i);
+                        }
+                    }
+                    if resp.clicked() && to_close.is_none() {
+                        to_switch = Some(i);
+                    }
+                    let hover = self.tab_label(i);
+                    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(hover);
+                }
+                if let Some(i) = to_close {
+                    self.close_tab(i);
+                } else if let Some(i) = to_switch {
+                    self.switch_tab(i);
+                }
+                ui.add_space(6.0);
             }
+            // 新建标签：标签条末尾的小方块，点击后直接开空白文档。
+            let (plus_rect, plus_resp) = ui
+                .allocate_exact_size(egui::vec2(NEW_TAB_BUTTON_WIDTH, 24.0), egui::Sense::click());
+            let painter = ui.painter().clone();
+            painter.rect_filled(
+                plus_rect,
+                egui::CornerRadius::same(6),
+                if plus_resp.hovered() {
+                    self.theme.border.gamma_multiply(0.45)
+                } else {
+                    self.theme.border.gamma_multiply(0.22)
+                },
+            );
             painter.text(
                 plus_rect.center(),
                 Align2::CENTER_CENTER,
@@ -88,40 +195,6 @@ impl MarkdApp {
                 .clicked()
             {
                 self.new_document();
-            }
-            ui.add_space(4.0);
-            // 关闭当前文档：标签栏整行移除后，这里是唯一的关闭入口。
-            // 首页或没有标签时置灰，点了也不会越界。
-            let closable = !self.home && !self.tabs.is_empty();
-            let (close_rect, close_resp) =
-                ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
-            let close_hovered = close_resp.hovered() && closable;
-            let painter = ui.painter().clone();
-            if close_hovered {
-                painter.rect_filled(close_rect, 5.0, self.theme.border.gamma_multiply(0.35));
-            }
-            let close_color = if !closable {
-                self.theme.dim.gamma_multiply(0.4)
-            } else if close_hovered {
-                self.theme.text
-            } else {
-                self.theme.dim
-            };
-            painter.text(
-                close_rect.center(),
-                Align2::CENTER_CENTER,
-                "×",
-                FontId::proportional(15.0),
-                close_color,
-            );
-            if closable
-                && close_resp
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text("关闭当前文档")
-                    .clicked()
-            {
-                let active = self.active;
-                self.close_tab(active);
             }
 
             // 右侧：终端图标

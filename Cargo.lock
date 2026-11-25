@@ -2067,6 +2067,7 @@ version = "2026.11.24"
 dependencies = [
  "ab_glyph",
  "arboard",
+ "chrono",
  "eframe",
  "egui",
  "image",
