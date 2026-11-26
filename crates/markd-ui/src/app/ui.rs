@@ -262,8 +262,10 @@ impl MarkdApp {
                     ("undo", "撤销 (Cmd/Ctrl+Z)", Command::Undo),
                     ("redo", "重做 (Cmd/Ctrl+Shift+Z)", Command::Redo),
                 ] {
-                    let (rect, resp) =
-                        ui.allocate_exact_size(egui::vec2(icon_size, icon_size), egui::Sense::click());
+                    let (rect, resp) = ui.allocate_exact_size(
+                        egui::vec2(icon_size, icon_size),
+                        egui::Sense::click(),
+                    );
                     if resp.hovered() {
                         ui.painter().rect_filled(
                             rect,
@@ -398,24 +400,37 @@ impl MarkdApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.with_layout(
-                            egui::Layout::left_to_right(egui::Align::LEFT)
-                                .with_cross_justify(true),
+                            egui::Layout::left_to_right(egui::Align::LEFT).with_cross_justify(true),
                             |ui| {
                                 let start = self.toolbar_tab == ToolbarTab::Start;
                                 let insert = self.toolbar_tab == ToolbarTab::Insert;
                                 let advanced = self.toolbar_tab == ToolbarTab::Advanced;
                                 // 盒子作为一组居中：横向布局不会替我们做主轴整体居中，
                                 // 所以按当前页的盒子数量算好总宽，先在左侧补空；放不下时补空为 0。
-                                let count = if start { 16 } else if insert { 12 } else if advanced { 3 } else { 0 };
+                                let count = if start {
+                                    16
+                                } else if insert {
+                                    13
+                                } else if advanced {
+                                    3
+                                } else {
+                                    0
+                                };
                                 if count > 0 {
                                     let spacing = ui.spacing().item_spacing.x;
-                                    let total = count as f32 * TOOLBOX_WIDTH + (count as f32 - 1.0) * spacing;
+                                    let total = count as f32 * TOOLBOX_WIDTH
+                                        + (count as f32 - 1.0) * spacing;
                                     ui.add_space(((width - total) * 0.5).max(0.0));
                                 }
 
                                 if start {
                                     for (icon, label, hover, cmd) in [
-                                        ("paragraph", "正文段落", "正文段落 (Cmd/Ctrl+0)", Command::Paragraph),
+                                        (
+                                            "paragraph",
+                                            "正文段落",
+                                            "正文段落 (Cmd/Ctrl+0)",
+                                            Command::Paragraph,
+                                        ),
                                         ("h1", "一级标题", "一级标题 (Cmd/Ctrl+1)", Command::H1),
                                         ("h2", "二级标题", "二级标题 (Cmd/Ctrl+2)", Command::H2),
                                         ("h3", "三级标题", "三级标题 (Cmd/Ctrl+3)", Command::H3),
@@ -430,10 +445,20 @@ impl MarkdApp {
                                     }
 
                                     for (icon, label, hover, cmd) in [
-                                        ("bold", "加粗", "加粗：作用于选中文字；无选区时作用于整行", Command::Bold),
+                                        (
+                                            "bold",
+                                            "加粗",
+                                            "加粗：作用于选中文字；无选区时作用于整行",
+                                            Command::Bold,
+                                        ),
                                         ("underline", "下划线", "下划线", Command::Underline),
                                         ("italic", "斜体", "斜体 (Cmd/Ctrl+I)", Command::Italic),
-                                        ("strike", "删除线", "删除线 (Ctrl+Shift+`)", Command::Strike),
+                                        (
+                                            "strike",
+                                            "删除线",
+                                            "删除线 (Ctrl+Shift+`)",
+                                            Command::Strike,
+                                        ),
                                     ] {
                                         let r = toolbar_box(ui, icon, label, hover);
                                         if r.clicked() {
@@ -442,9 +467,24 @@ impl MarkdApp {
                                     }
 
                                     for (icon, label, hover, cmd) in [
-                                        ("list", "无序列表", "无序列表 (Cmd/Ctrl+Option+U)", Command::Bullet),
-                                        ("ordered_list", "有序列表", "有序列表 (Cmd/Ctrl+Option+O)", Command::Ordered),
-                                        ("task_list", "任务列表", "任务列表 (Cmd/Ctrl+Option+X)", Command::Task),
+                                        (
+                                            "list",
+                                            "无序列表",
+                                            "无序列表 (Cmd/Ctrl+Option+U)",
+                                            Command::Bullet,
+                                        ),
+                                        (
+                                            "ordered_list",
+                                            "有序列表",
+                                            "有序列表 (Cmd/Ctrl+Option+O)",
+                                            Command::Ordered,
+                                        ),
+                                        (
+                                            "task_list",
+                                            "任务列表",
+                                            "任务列表 (Cmd/Ctrl+Option+X)",
+                                            Command::Task,
+                                        ),
                                     ] {
                                         let r = toolbar_box(ui, icon, label, hover);
                                         if r.clicked() {
@@ -453,23 +493,52 @@ impl MarkdApp {
                                     }
 
                                     // 引用是开关：双击第二击会抵消，直接忽略。
-                                    let r = toolbar_box(ui, "quote", "引用", "引用块 (Cmd/Ctrl+Option+Q)");
+                                    let r = toolbar_box(
+                                        ui,
+                                        "quote",
+                                        "引用",
+                                        "引用块 (Cmd/Ctrl+Option+Q)",
+                                    );
                                     if r.clicked() && !r.double_clicked() {
                                         chosen = Some(Command::Quote);
                                     }
                                 }
 
                                 if insert {
-                                    let r = toolbar_box(ui, "image", "图片", "插入图片（也可 Cmd/Ctrl+V 粘贴）");
+                                    let r = toolbar_box(
+                                        ui,
+                                        "image",
+                                        "图片",
+                                        "插入图片（也可 Cmd/Ctrl+V 粘贴）",
+                                    );
                                     if r.clicked() {
                                         chosen = Some(Command::Image);
                                     }
-                                    let r = toolbar_box(ui, "link", "超链接", "插入超链接 (Cmd/Ctrl+K)");
+                                    let r = toolbar_box(
+                                        ui,
+                                        "link",
+                                        "超链接",
+                                        "插入超链接 (Cmd/Ctrl+K)",
+                                    );
                                     if r.clicked() {
                                         chosen = Some(Command::Link);
                                     }
+                                    let r = toolbar_box(
+                                        ui,
+                                        "video",
+                                        "视频",
+                                        "插入 B 站视频：预览是播放器卡片，导出 HTML 后可直接播放",
+                                    );
+                                    if r.clicked() {
+                                        chosen = Some(Command::Video);
+                                    }
 
-                                    let r = toolbar_box(ui, "formula", "公式", "行内 / 公式块 / 代码块公式");
+                                    let r = toolbar_box(
+                                        ui,
+                                        "formula",
+                                        "公式",
+                                        "行内 / 公式块 / 代码块公式",
+                                    );
                                     egui::Popup::menu(&r).show(|ui| {
                                         for (label, cmd) in [
                                             ("行内公式", Command::InlineMath),
@@ -483,7 +552,12 @@ impl MarkdApp {
                                         }
                                     });
 
-                                    let r = toolbar_box(ui, "code", "代码", "行内代码 / 代码块 / 代码组");
+                                    let r = toolbar_box(
+                                        ui,
+                                        "code",
+                                        "代码",
+                                        "行内代码 / 代码块 / 代码组",
+                                    );
                                     egui::Popup::menu(&r).show(|ui| {
                                         for (label, cmd) in [
                                             ("行内代码", Command::Code),
@@ -497,18 +571,24 @@ impl MarkdApp {
                                         }
                                     });
 
-                                    let r = toolbar_box(ui, "mermaid", "Mermaid", "插入 Mermaid 图表模板");
+                                    let r = toolbar_box(
+                                        ui,
+                                        "mermaid",
+                                        "Mermaid",
+                                        "插入 Mermaid 图表模板",
+                                    );
                                     egui::Popup::menu(&r).show(|ui| {
-                                        egui::ScrollArea::vertical()
-                                            .max_height(460.0)
-                                            .show(ui, |ui| {
+                                        egui::ScrollArea::vertical().max_height(460.0).show(
+                                            ui,
+                                            |ui| {
                                                 for (label, template) in MERMAID_TEMPLATES {
                                                     if ui.button(*label).clicked() {
                                                         chosen_tpl = Some(*template);
                                                         ui.close();
                                                     }
                                                 }
-                                            });
+                                            },
+                                        );
                                     });
                                 }
 
@@ -517,11 +597,26 @@ impl MarkdApp {
                                     for (icon, label, hover, cmd) in [
                                         ("table", "表格", "插入表格", Command::Table),
                                         ("rule", "分隔线", "插入分隔线", Command::Rule),
-                                        ("chart", "图表", "插入 Mermaid 图表模板", Command::Mermaid),
-                                        ("flowchart", "流程图", "插入流程图模板", Command::Flowchart),
+                                        (
+                                            "chart",
+                                            "图表",
+                                            "插入 Mermaid 图表模板",
+                                            Command::Mermaid,
+                                        ),
+                                        (
+                                            "flowchart",
+                                            "流程图",
+                                            "插入流程图模板",
+                                            Command::Flowchart,
+                                        ),
                                         ("footnote", "脚注", "插入脚注", Command::Footnote),
                                         ("toc", "目录", "插入目录 [TOC]", Command::Toc),
-                                        ("upload", "上传图片", "上传本地图片并插入", Command::UploadImages),
+                                        (
+                                            "upload",
+                                            "上传图片",
+                                            "上传本地图片并插入",
+                                            Command::UploadImages,
+                                        ),
                                     ] {
                                         let r = toolbar_box(ui, icon, label, hover);
                                         if r.clicked() {

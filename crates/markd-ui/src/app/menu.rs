@@ -480,6 +480,7 @@ pub(super) fn menu_commands(k: MenuKind) -> Vec<Command> {
             Command::Flowchart,
             Command::Toc,
             Command::Footnote,
+            Command::Video,
             Command::FrontMatter,
         ],
         MenuKind::Format => vec![

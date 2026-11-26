@@ -109,6 +109,7 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
     let m_flowchart = mk(&mut map, "flowchart", "插入流程图", Command::Flowchart);
     let m_toc = mk(&mut map, "toc", "插入目录 [TOC]", Command::Toc);
     let m_footnote = mk(&mut map, "footnote", "插入脚注", Command::Footnote);
+    let m_video = mk(&mut map, "video", "插入视频（哔哩哔哩）", Command::Video);
     let m_frontmatter = mk(
         &mut map,
         "frontmatter",
@@ -140,6 +141,7 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
             &m_flowchart,
             &m_toc,
             &m_footnote,
+            &m_video,
             &m_frontmatter,
         ],
     )

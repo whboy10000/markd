@@ -361,6 +361,7 @@ fn test_app() -> MarkdApp {
         table_rows: 3,
         table_cols: 3,
         link_dialog: Default::default(),
+        video_dialog: Default::default(),
         link_docs: HashMap::new(),
         link_rx: None,
         last_autosave: now_secs(),
@@ -2092,7 +2093,10 @@ fn code_group_language_combo_changes_active_tab() {
     }
     match &app.doc.blocks[1] {
         crate::ast::Block::CodeGroup { items, .. } => {
-            assert_eq!(items[0].lang, "flutter", "java 标签应改成 flutter：{items:?}");
+            assert_eq!(
+                items[0].lang, "flutter",
+                "java 标签应改成 flutter：{items:?}"
+            );
             assert_eq!(items[1].lang, "python", "其它标签不受影响：{items:?}");
         }
         other => panic!("代码组应保留：{other:?}"),
@@ -2414,7 +2418,9 @@ fn editor_galley<'a>(
 /// galley 里 `key` 首字符的下标。
 fn char_index_of(g: &egui::Galley, key: &str) -> usize {
     let text = g.text();
-    let byte = text.find(key).unwrap_or_else(|| panic!("galley 里没有「{key}」"));
+    let byte = text
+        .find(key)
+        .unwrap_or_else(|| panic!("galley 里没有「{key}」"));
     text[..byte].chars().count()
 }
 
@@ -2426,7 +2432,12 @@ fn point_at(shapes: &[egui::epaint::ClippedShape], key: &str, min_y: f32, ch: us
 }
 
 /// 按 `key` 首字符偏移 k 个字符处的插入点（用来把指针精确落在某个词上）。
-fn point_of_key(shapes: &[egui::epaint::ClippedShape], key: &str, min_y: f32, k: usize) -> egui::Pos2 {
+fn point_of_key(
+    shapes: &[egui::epaint::ClippedShape],
+    key: &str,
+    min_y: f32,
+    k: usize,
+) -> egui::Pos2 {
     let (origin, g) = editor_galley(shapes, key, min_y);
     let idx = char_index_of(g, key) + k;
     let r = g.pos_from_cursor(egui::text::CCursor::new(idx.min(g.text().chars().count())));
@@ -2480,7 +2491,10 @@ fn drag_inside_active_paragraph_with_inline_code_selects_exact() {
     let start = point_at(&shapes, "code_block", EDITOR_TOP, 0);
     let end = point_at(&shapes, "code_block", EDITOR_TOP, n);
     drag_select_fine(&ctx, &mut app, &mut frame, start, end);
-    let sel = app.editor.cross_sel.expect("活动块内含行内代码应能拖选出选区");
+    let sel = app
+        .editor
+        .cross_sel
+        .expect("活动块内含行内代码应能拖选出选区");
     let got = crate::editor::cross_sel_text(&app.doc, Some(sel)).unwrap_or_default();
     let want = app.doc.blocks[0].plain();
     assert_eq!(
@@ -2528,7 +2542,10 @@ fn drag_started_on_inline_code_chip_selects_next_block() {
     let ctx = egui::Context::default();
     let mut app = test_app();
     let mut frame = eframe::Frame::_new_kittest();
-    app.doc = Document::new("第一段带 `some_code` 的文字内容\n\n第二段普通文字内容", None);
+    app.doc = Document::new(
+        "第一段带 `some_code` 的文字内容\n\n第二段普通文字内容",
+        None,
+    );
     app.home = false;
     app.editor.active = 2;
     for _ in 0..3 {
@@ -2538,7 +2555,12 @@ fn drag_started_on_inline_code_chip_selects_next_block() {
     let start = point_of_key(&shapes, "some_code", EDITOR_TOP, 3);
     let end = {
         let (_, g) = editor_galley(&shapes, "第二段普通文字", EDITOR_TOP);
-        point_at(&shapes, "第二段普通文字", EDITOR_TOP, g.text().chars().count())
+        point_at(
+            &shapes,
+            "第二段普通文字",
+            EDITOR_TOP,
+            g.text().chars().count(),
+        )
     };
     drag_select_fine(&ctx, &mut app, &mut frame, start, end);
     let sel = app.editor.cross_sel.expect("从行内代码片上起拖应建立选区");
@@ -2559,7 +2581,10 @@ fn drag_ending_on_inline_code_maps_to_visible_index() {
     let ctx = egui::Context::default();
     let mut app = test_app();
     let mut frame = eframe::Frame::_new_kittest();
-    app.doc = Document::new("第一段普通文字内容\n\n第二段带 `some_code` 的文字内容", None);
+    app.doc = Document::new(
+        "第一段普通文字内容\n\n第二段带 `some_code` 的文字内容",
+        None,
+    );
     app.home = false;
     app.editor.active = 0;
     for _ in 0..3 {
@@ -2571,10 +2596,17 @@ fn drag_ending_on_inline_code_maps_to_visible_index() {
     let end = point_of_key(&shapes, "some_code", EDITOR_TOP, 4);
     drag_select_fine(&ctx, &mut app, &mut frame, start, end);
     let sel = app.editor.cross_sel.expect("拖到行内代码处应建立选区");
-    assert_eq!(sel.0.max(sel.2), 2, "终点块应是含行内代码的段落，实际 {sel:?}");
+    assert_eq!(
+        sel.0.max(sel.2),
+        2,
+        "终点块应是含行内代码的段落，实际 {sel:?}"
+    );
     let plain2 = app.doc.blocks[2].plain();
     let ec = if sel.2 == 2 { sel.3 } else { sel.1 };
-    let upto: String = plain2.chars().take(ec.min(plain2.chars().count())).collect();
+    let upto: String = plain2
+        .chars()
+        .take(ec.min(plain2.chars().count()))
+        .collect();
     assert!(
         upto.contains("第二段带") && upto.contains("some"),
         "终点应落在代码片内部（可见文本口径），实际 ec={ec} 前缀 {upto:?}"
@@ -2585,10 +2617,10 @@ fn drag_ending_on_inline_code_maps_to_visible_index() {
 /// 拖选路径形态。
 #[derive(Copy, Clone, Debug)]
 enum PathStyle {
-    Fine,   // 每 8px 一步
-    Coarse, // 按下 → 中点 → 终点（旧三点式）
-    Fast,   // 两大跳（真实快速甩鼠标）
-    LShaped, // 先竖直再水平（用户斜着拖出块外）
+    Fine,       // 每 8px 一步
+    Coarse,     // 按下 → 中点 → 终点（旧三点式）
+    Fast,       // 两大跳（真实快速甩鼠标）
+    LShaped,    // 先竖直再水平（用户斜着拖出块外）
     LeftMargin, // 走左侧留白（x 比文字左缘更偏左）
     RightBlank, // 终点落在文字右侧空白
 }
@@ -2602,14 +2634,16 @@ fn drag_with_style(
     end: egui::Pos2,
     style: PathStyle,
 ) {
-    let move_to = |ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame, p: egui::Pos2| {
-        run_real_frame(ctx, app, frame, vec![egui::Event::PointerMoved(p)]);
-    };
+    let move_to =
+        |ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame, p: egui::Pos2| {
+            run_real_frame(ctx, app, frame, vec![egui::Event::PointerMoved(p)]);
+        };
     run_real_frame(ctx, app, frame, vec![egui::Event::PointerMoved(start)]);
     run_real_frame(ctx, app, frame, vec![pointer_button(start, true)]);
-    let put = |ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame, p: egui::Pos2| {
-        move_to(ctx, app, frame, p);
-    };
+    let put =
+        |ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame, p: egui::Pos2| {
+            move_to(ctx, app, frame, p);
+        };
     match style {
         PathStyle::Fine => {
             let dx = end.x - start.x;
@@ -2617,15 +2651,30 @@ fn drag_with_style(
             let steps = ((dx.hypot(dy) / 8.0).ceil() as usize).max(1);
             for k in 1..=steps {
                 let t = k as f32 / steps as f32;
-                put(ctx, app, frame, egui::pos2(start.x + dx * t, start.y + dy * t));
+                put(
+                    ctx,
+                    app,
+                    frame,
+                    egui::pos2(start.x + dx * t, start.y + dy * t),
+                );
             }
         }
         PathStyle::Coarse => {
-            put(ctx, app, frame, egui::pos2(start.x, (start.y + end.y) / 2.0));
+            put(
+                ctx,
+                app,
+                frame,
+                egui::pos2(start.x, (start.y + end.y) / 2.0),
+            );
             put(ctx, app, frame, end);
         }
         PathStyle::Fast => {
-            put(ctx, app, frame, egui::pos2(start.x + (end.x - start.x) * 0.6, start.y));
+            put(
+                ctx,
+                app,
+                frame,
+                egui::pos2(start.x + (end.x - start.x) * 0.6, start.y),
+            );
             put(ctx, app, frame, end);
         }
         PathStyle::LShaped => {
@@ -2657,13 +2706,34 @@ fn drag_with_style(
 #[test]
 fn drag_path_sweep_finds_no_stuck_selections() {
     let docs = [
-        ("纯段落+标题", "# 标题文字在这里\n\n下面是一段普通文字，用来做拖拽的终点区域。\n\n第三段文字内容。"),
-        ("行内代码段落", "第一段带 `some_code` 的文字内容在这里\n\n第二段带 `other_code` 的文字内容也在这里\n\n第三段收尾"),
-        ("加粗与链接", "**粗体文字** 与 [链接文字](https://e.com) 的段落内容\n\n后面一段普通文字内容用来当终点"),
-        ("标题+列表", "# 列表之上的标题\n\n- 列表项一内容\n- 列表项二内容\n\n列表之后的段落。"),
-        ("引用与代码块", "> 引用文字内容在这里。\n\n```rust\nfn main() {}\n```\n\n代码块之后的段落文字。"),
-        ("行内公式", "前 $x^2 + y^2$ 后的段落文字内容\n\n第二段普通文字内容在这里。"),
-        ("表格与任务", "| 甲列 | 乙列 |\n|:--|--:|\n| 一 | 二 |\n\n- [ ] 任务项内容\n- [x] 已完成项\n\n表格之后的段落。"),
+        (
+            "纯段落+标题",
+            "# 标题文字在这里\n\n下面是一段普通文字，用来做拖拽的终点区域。\n\n第三段文字内容。",
+        ),
+        (
+            "行内代码段落",
+            "第一段带 `some_code` 的文字内容在这里\n\n第二段带 `other_code` 的文字内容也在这里\n\n第三段收尾",
+        ),
+        (
+            "加粗与链接",
+            "**粗体文字** 与 [链接文字](https://e.com) 的段落内容\n\n后面一段普通文字内容用来当终点",
+        ),
+        (
+            "标题+列表",
+            "# 列表之上的标题\n\n- 列表项一内容\n- 列表项二内容\n\n列表之后的段落。",
+        ),
+        (
+            "引用与代码块",
+            "> 引用文字内容在这里。\n\n```rust\nfn main() {}\n```\n\n代码块之后的段落文字。",
+        ),
+        (
+            "行内公式",
+            "前 $x^2 + y^2$ 后的段落文字内容\n\n第二段普通文字内容在这里。",
+        ),
+        (
+            "表格与任务",
+            "| 甲列 | 乙列 |\n|:--|--:|\n| 一 | 二 |\n\n- [ ] 任务项内容\n- [x] 已完成项\n\n表格之后的段落。",
+        ),
     ];
     let styles = [
         PathStyle::Fine,
@@ -2688,12 +2758,30 @@ fn drag_path_sweep_finds_no_stuck_selections() {
                 }
                 let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
                 // 起点取第一个有文字的块首字，终点取最后一个有文字的块末字之后。
-                let firsts = ["标题文字在这里", "第一段带", "粗体文字", "列表之上的标题", "引用文字内容", "前 ", "甲列"];
-                let lasts = ["第三段文字内容", "第三段收尾", "后面一段普通文字", "列表之后的段落", "代码块之后的段落", "第二段普通文字", "表格之后的段落"];
+                let firsts = [
+                    "标题文字在这里",
+                    "第一段带",
+                    "粗体文字",
+                    "列表之上的标题",
+                    "引用文字内容",
+                    "前 ",
+                    "甲列",
+                ];
+                let lasts = [
+                    "第三段文字内容",
+                    "第三段收尾",
+                    "后面一段普通文字",
+                    "列表之后的段落",
+                    "代码块之后的段落",
+                    "第二段普通文字",
+                    "表格之后的段落",
+                ];
                 let key0 = firsts.iter().copied().find(|k| shapes.iter().any(|cs| matches!(&cs.shape, egui::Shape::Text(t) if t.galley.text().contains(k) && t.pos.y > EDITOR_TOP)));
                 let key1 = lasts.iter().copied().find(|k| shapes.iter().any(|cs| matches!(&cs.shape, egui::Shape::Text(t) if t.galley.text().contains(k) && t.pos.y > EDITOR_TOP)));
                 let (Some(k0), Some(k1)) = (key0, key1) else {
-                    bad.push(format!("{name}｜{style:?}｜active={active}：起点/终点文字没渲染出来"));
+                    bad.push(format!(
+                        "{name}｜{style:?}｜active={active}：起点/终点文字没渲染出来"
+                    ));
                     continue;
                 };
                 let start = point_at(&shapes, k0, EDITOR_TOP, 0);
@@ -2705,8 +2793,11 @@ fn drag_path_sweep_finds_no_stuck_selections() {
                     continue;
                 };
                 let got = crate::editor::cross_sel_text(&app.doc, Some(sel)).unwrap_or_default();
-                let want = crate::editor::cross_sel_text(&app.doc, Some((0, 0, app.doc.blocks.len() - 1, usize::MAX)))
-                    .unwrap_or_default();
+                let want = crate::editor::cross_sel_text(
+                    &app.doc,
+                    Some((0, 0, app.doc.blocks.len() - 1, usize::MAX)),
+                )
+                .unwrap_or_default();
                 let sg: String = got.chars().filter(|c| !c.is_whitespace()).collect();
                 let sw: String = want.chars().filter(|c| !c.is_whitespace()).collect();
                 if sg != sw {
@@ -2755,22 +2846,59 @@ fn diag_table_lshaped_anchor() {
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
     let start = point_at(&shapes, "甲列", EDITOR_TOP, 0);
     let (_, g) = editor_galley(&shapes, "表格之后的段落", EDITOR_TOP);
-    let end = point_at(&shapes, "表格之后的段落", EDITOR_TOP, g.text().chars().count());
-    println!("诊断 start={start:?} end={end:?} 块数={}", app.doc.blocks.len());
+    let end = point_at(
+        &shapes,
+        "表格之后的段落",
+        EDITOR_TOP,
+        g.text().chars().count(),
+    );
+    println!(
+        "诊断 start={start:?} end={end:?} 块数={}",
+        app.doc.blocks.len()
+    );
     for i in 0..app.doc.blocks.len() {
         println!("  块 {i}: plain={:?}", app.doc.blocks[i].plain());
     }
-    run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(start)]);
-    run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(start, true)]);
-    println!("  按下后 cross_sel={:?} press_caret={:?}", app.editor.cross_sel, app.editor.press_caret);
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![egui::Event::PointerMoved(start)],
+    );
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![pointer_button(start, true)],
+    );
+    println!(
+        "  按下后 cross_sel={:?} press_caret={:?}",
+        app.editor.cross_sel, app.editor.press_caret
+    );
     let mid = egui::pos2(start.x, end.y);
-    run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(mid)]);
-    println!("  竖直到 {mid:?} 后 cross_sel={:?} press_caret={:?}", app.editor.cross_sel, app.editor.press_caret);
-    run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(end)]);
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![egui::Event::PointerMoved(mid)],
+    );
+    println!(
+        "  竖直到 {mid:?} 后 cross_sel={:?} press_caret={:?}",
+        app.editor.cross_sel, app.editor.press_caret
+    );
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![egui::Event::PointerMoved(end)],
+    );
     println!("  水平到终点后 cross_sel={:?}", app.editor.cross_sel);
     run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(end, false)]);
     println!("  松开后 cross_sel={:?}", app.editor.cross_sel);
-    println!("  文本 {:?}", crate::editor::cross_sel_text(&app.doc, app.editor.cross_sel));
+    println!(
+        "  文本 {:?}",
+        crate::editor::cross_sel_text(&app.doc, app.editor.cross_sel)
+    );
 }
 
 /// 拖到「块内第 k 个字符」与「下一块首字」这类精确落点，选中文字必须逐字相等。
@@ -2813,7 +2941,9 @@ fn drag_sweep_multiline_and_marked_text_is_exact() {
             }
             let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
             let Some((_, g)) = shapes.iter().find_map(|cs| match &cs.shape {
-                egui::Shape::Text(t) if t.galley.text().contains("some_code") && t.pos.y > EDITOR_TOP => {
+                egui::Shape::Text(t)
+                    if t.galley.text().contains("some_code") && t.pos.y > EDITOR_TOP =>
+                {
                     Some((t.pos, &*t.galley))
                 }
                 _ => None,
@@ -2822,7 +2952,10 @@ fn drag_sweep_multiline_and_marked_text_is_exact() {
                 continue;
             };
             let rows = g.rows.len();
-            assert!(rows >= 2, "混排段落应换行，实际 {rows} 行（用例前提不成立）");
+            assert!(
+                rows >= 2,
+                "混排段落应换行，实际 {rows} 行（用例前提不成立）"
+            );
             // 目标：从本段首字拖到「结束段」的最后一个字之后。
             let end_key = "结束段。";
             let (_, ge) = editor_galley(&shapes, end_key, EDITOR_TOP);
@@ -2855,11 +2988,7 @@ fn drag_sweep_multiline_and_marked_text_is_exact() {
             }
         }
     }
-    assert!(
-        bad.is_empty(),
-        "混排长文拖选未通过：\n{}",
-        bad.join("\n")
-    );
+    assert!(bad.is_empty(), "混排长文拖选未通过：\n{}", bad.join("\n"));
 }
 
 /// 长文档（内容高于视口）：拖到视口之外要能自动滚动并一路选到底部块。
@@ -2867,7 +2996,9 @@ fn drag_sweep_multiline_and_marked_text_is_exact() {
 fn drag_beyond_viewport_autoscrolls_to_bottom_block() {
     let mut src = String::new();
     for i in 0..40 {
-        src.push_str(&format!("第 {i} 段文字内容，带 `code_{i}` 的行内代码也一并排进去。\n\n"));
+        src.push_str(&format!(
+            "第 {i} 段文字内容，带 `code_{i}` 的行内代码也一并排进去。\n\n"
+        ));
     }
     let ctx = egui::Context::default();
     let mut app = test_app();
@@ -2882,17 +3013,40 @@ fn drag_beyond_viewport_autoscrolls_to_bottom_block() {
     let start = point_of_key(&shapes, "code_0", EDITOR_TOP, 0);
     // 终点在视口外：按下后先滚一帧再落到视口底缘之外，靠越界自动滚动延伸。
     let below = egui::pos2(start.x + 40.0, 1400.0);
-    run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(start)]);
-    run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(start, true)]);
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![egui::Event::PointerMoved(start)],
+    );
+    run_real_frame(
+        &ctx,
+        &mut app,
+        &mut frame,
+        vec![pointer_button(start, true)],
+    );
     for k in 1..=20 {
-        let p = egui::pos2(start.x + 40.0, start.y + (below.y - start.y) * k as f32 / 20.0);
-        run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(p)]);
+        let p = egui::pos2(
+            start.x + 40.0,
+            start.y + (below.y - start.y) * k as f32 / 20.0,
+        );
+        run_real_frame(
+            &ctx,
+            &mut app,
+            &mut frame,
+            vec![egui::Event::PointerMoved(p)],
+        );
     }
     // 停在视口之外持续滚动，直到内容不再移动（最多 120 帧）
     let mut last_sel_end = app.editor.cross_sel.map_or(0, |s| s.2);
     let mut still = 0;
     for _ in 0..120 {
-        run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(below)]);
+        run_real_frame(
+            &ctx,
+            &mut app,
+            &mut frame,
+            vec![egui::Event::PointerMoved(below)],
+        );
         let end = app.editor.cross_sel.map_or(0, |s| s.2.max(s.0));
         if end == last_sel_end {
             still += 1;
@@ -3028,7 +3182,11 @@ fn grid_sweep(src: &str) {
             "可见块太少，网格前提不成立：{}",
             rects.len()
         );
-        let lo = rects.iter().map(|(_, r)| r.top()).fold(f32::INFINITY, f32::min) - 4.0;
+        let lo = rects
+            .iter()
+            .map(|(_, r)| r.top())
+            .fold(f32::INFINITY, f32::min)
+            - 4.0;
         let hi = rects.iter().map(|(_, r)| r.bottom()).fold(0.0f32, f32::max) + 4.0;
         let mut y = lo;
         while y <= hi {
@@ -3054,7 +3212,12 @@ fn grid_sweep(src: &str) {
                         .map(|(i, _)| *i)
                         .unwrap_or(0)
                 });
-            run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(anchor)]);
+            run_real_frame(
+                &ctx,
+                &mut app,
+                &mut frame,
+                vec![egui::Event::PointerMoved(anchor)],
+            );
             run_real_frame(
                 &ctx,
                 &mut app,
@@ -3063,12 +3226,22 @@ fn grid_sweep(src: &str) {
             );
             // 先横着走 40px 保证被判定成拖动，再走向目标落点。
             let warm = egui::pos2(anchor.x + 40.0, anchor.y);
-            run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(warm)]);
+            run_real_frame(
+                &ctx,
+                &mut app,
+                &mut frame,
+                vec![egui::Event::PointerMoved(warm)],
+            );
             let mut cur = warm;
             for k in 1..=8 {
                 let t = k as f32 / 8.0;
                 cur = egui::pos2(warm.x + (px - warm.x) * t, warm.y + (y - warm.y) * t);
-                run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(cur)]);
+                run_real_frame(
+                    &ctx,
+                    &mut app,
+                    &mut frame,
+                    vec![egui::Event::PointerMoved(cur)],
+                );
             }
             run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(cur, false)]);
             let Some(sel) = app.editor.cross_sel else {
@@ -3082,7 +3255,9 @@ fn grid_sweep(src: &str) {
             let end_block = sel.0.max(sel.2);
             let start_block = sel.0.min(sel.2);
             if start_block != 0 {
-                bad.push(format!("dx={dx:>6.0} y={y:>6.1}：锚点块 {start_block} 应为 0（{sel:?}）"));
+                bad.push(format!(
+                    "dx={dx:>6.0} y={y:>6.1}：锚点块 {start_block} 应为 0（{sel:?}）"
+                ));
             }
             if end_block != expect {
                 bad.push(format!(
@@ -3096,7 +3271,9 @@ fn grid_sweep(src: &str) {
                 .filter(|c| !c.is_whitespace())
                 .collect();
             for i in (start_block + 1)..end_block {
-                let Some(b) = app.doc.blocks.get(i) else { continue };
+                let Some(b) = app.doc.blocks.get(i) else {
+                    continue;
+                };
                 if matches!(b, crate::ast::Block::Blank { .. }) {
                     continue;
                 }
@@ -3116,7 +3293,11 @@ fn grid_sweep(src: &str) {
             y += 12.0;
         }
     }
-    println!("网格扫查（{} 字文档）共采样 {samples} 个落点，失败 {} 个", src.chars().count(), bad.len());
+    println!(
+        "网格扫查（{} 字文档）共采样 {samples} 个落点，失败 {} 个",
+        src.chars().count(),
+        bad.len()
+    );
     assert!(
         bad.is_empty(),
         "网格扫查失败 {} 个落点（前 24 个）：\n{}",
@@ -3134,7 +3315,10 @@ fn drag_endpoint_char_matches_pointer_over_marked_text() {
     let src = "先看 `alpha_code` 与 **粗体文字** 再加 [一个链接](https://example.com) 后面的中文内容，\
                段落要足够长才会折行，第二行同样夹着 `beta_code` 与 **另一段粗体**，用来逐点验证终点字符。\n\n\
                收尾段落。";
-    for (tag, active) in [("活动块（编辑态）", 0usize), ("渲染态（活动块在别处）", 2usize)] {
+    for (tag, active) in [
+        ("活动块（编辑态）", 0usize),
+        ("渲染态（活动块在别处）", 2usize),
+    ] {
         let ctx = egui::Context::default();
         let mut app = test_app();
         let mut frame = eframe::Frame::_new_kittest();
@@ -3155,16 +3339,39 @@ fn drag_endpoint_char_matches_pointer_over_marked_text() {
         let mut ch = 2usize;
         while ch < n {
             let target = point_at(&shapes, key, EDITOR_TOP, ch);
-            run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(anchor)]);
-            run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(anchor, true)]);
+            run_real_frame(
+                &ctx,
+                &mut app,
+                &mut frame,
+                vec![egui::Event::PointerMoved(anchor)],
+            );
+            run_real_frame(
+                &ctx,
+                &mut app,
+                &mut frame,
+                vec![pointer_button(anchor, true)],
+            );
             let warm = egui::pos2(anchor.x + 30.0, anchor.y);
-            run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(warm)]);
+            run_real_frame(
+                &ctx,
+                &mut app,
+                &mut frame,
+                vec![egui::Event::PointerMoved(warm)],
+            );
             let mut cur = warm;
             let steps = (((target - warm).length() / 10.0).ceil() as usize).max(1);
             for k in 1..=steps {
                 let t = k as f32 / steps as f32;
-                cur = egui::pos2(warm.x + (target.x - warm.x) * t, warm.y + (target.y - warm.y) * t);
-                run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(cur)]);
+                cur = egui::pos2(
+                    warm.x + (target.x - warm.x) * t,
+                    warm.y + (target.y - warm.y) * t,
+                );
+                run_real_frame(
+                    &ctx,
+                    &mut app,
+                    &mut frame,
+                    vec![egui::Event::PointerMoved(cur)],
+                );
             }
             run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(cur, false)]);
             let Some(sel) = app.editor.cross_sel else {
@@ -3239,7 +3446,12 @@ fn every_block_type_can_start_a_drag() {
     }
     // 工具条加高后视口里可见的块会随焦点变化：块进入编辑态后高度会变，
     // 所以每一轮都要重新量矩形和文字位置，不能用一开始缓存的那一套。
-    let indices: Vec<usize> = app.editor.last_block_rects.iter().map(|(i, _)| *i).collect();
+    let indices: Vec<usize> = app
+        .editor
+        .last_block_rects
+        .iter()
+        .map(|(i, _)| *i)
+        .collect();
     let mut bad: Vec<String> = Vec::new();
     for i in indices {
         let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
@@ -3270,22 +3482,45 @@ fn every_block_type_can_start_a_drag() {
             .chars()
             .take(8)
             .collect();
-        let press = match (key.is_empty(), shapes.iter().find_map(|cs| match &cs.shape {
-            egui::Shape::Text(t) if t.galley.text().contains(&key) && t.pos.y > EDITOR_TOP => Some(t.pos),
-            _ => None,
-        })) {
+        let press = match (
+            key.is_empty(),
+            shapes.iter().find_map(|cs| match &cs.shape {
+                egui::Shape::Text(t) if t.galley.text().contains(&key) && t.pos.y > EDITOR_TOP => {
+                    Some(t.pos)
+                }
+                _ => None,
+            }),
+        ) {
             (false, Some(p)) => egui::pos2(p.x + 4.0, p.y + 7.0),
             _ => r.center(),
         };
         let end = egui::pos2(last_rect.center().x, last_rect.bottom() - 3.0);
         app.editor.cross_sel = None;
-        run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(press)]);
-        run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(press, true)]);
+        run_real_frame(
+            &ctx,
+            &mut app,
+            &mut frame,
+            vec![egui::Event::PointerMoved(press)],
+        );
+        run_real_frame(
+            &ctx,
+            &mut app,
+            &mut frame,
+            vec![pointer_button(press, true)],
+        );
         let mut cur = press;
         for k in 1..=8 {
             let t = k as f32 / 8.0;
-            cur = egui::pos2(press.x + (end.x - press.x) * t, press.y + (end.y - press.y) * t);
-            run_real_frame(&ctx, &mut app, &mut frame, vec![egui::Event::PointerMoved(cur)]);
+            cur = egui::pos2(
+                press.x + (end.x - press.x) * t,
+                press.y + (end.y - press.y) * t,
+            );
+            run_real_frame(
+                &ctx,
+                &mut app,
+                &mut frame,
+                vec![egui::Event::PointerMoved(cur)],
+            );
         }
         run_real_frame(&ctx, &mut app, &mut frame, vec![pointer_button(cur, false)]);
         let Some(sel) = app.editor.cross_sel else {
@@ -3338,7 +3573,9 @@ fn modal_dialogs_open_at_viewport_center() {
         let mut box_rect = egui::Rect::NOTHING;
         let mut found: Vec<String> = Vec::new();
         for cs in shapes.iter().rev() {
-            let egui::Shape::Text(t) = &cs.shape else { continue };
+            let egui::Shape::Text(t) = &cs.shape else {
+                continue;
+            };
             let text = t.galley.text().to_string();
             let in_body = t.pos.y >= EDITOR_TOP;
             let take = if text == title {
@@ -3349,10 +3586,18 @@ fn modal_dialogs_open_at_viewport_center() {
             };
             if take {
                 box_rect = box_rect.union(t.galley.rect.translate(t.pos.to_vec2()));
-                found.push(if text == title { "标题".to_string() } else { text });
+                found.push(if text == title {
+                    "标题".to_string()
+                } else {
+                    text
+                });
             }
         }
-        assert_eq!(found.len(), 3, "{title} 应渲染出标题与两个按钮，实际 {found:?}");
+        assert_eq!(
+            found.len(),
+            3,
+            "{title} 应渲染出标题与两个按钮，实际 {found:?}"
+        );
         let area = ctx.content_rect();
         let off = box_rect.center().to_vec2() - area.center().to_vec2();
         assert!(
@@ -4175,8 +4420,7 @@ fn toolbar_is_split_by_a_divider_after_reserved_space() {
         .iter()
         .find_map(|cs| match &cs.shape {
             egui::Shape::LineSegment { points, .. }
-                if (points[0].y - divider_y).abs() < 3.0
-                    && points[1].x - points[0].x > 1000.0 =>
+                if (points[0].y - divider_y).abs() < 3.0 && points[1].x - points[0].x > 1000.0 =>
             {
                 Some(points)
             }
@@ -4231,7 +4475,11 @@ fn toolbar_buttons_are_independent_icon_text_boxes() {
             _ => None,
         })
         .collect();
-    assert!(boxes.len() >= 16, "每个功能应占一个独立盒子，实际 {}", boxes.len());
+    assert!(
+        boxes.len() >= 16,
+        "每个功能应占一个独立盒子，实际 {}",
+        boxes.len()
+    );
     // 撤销/重做已改成选项卡行左侧的纯图标，不该再出现在下方盒子里。
     assert!(
         !shapes.iter().any(|cs| matches!(&cs.shape, egui::Shape::Text(t)
@@ -4385,7 +4633,13 @@ fn toolbar_heading_commands_are_seven_separate_boxes() {
     let shapes = paint(&ctx, &mut app, &mut frame, vec![]);
 
     for label in [
-        "正文段落", "一级标题", "二级标题", "三级标题", "四级标题", "五级标题", "六级标题",
+        "正文段落",
+        "一级标题",
+        "二级标题",
+        "三级标题",
+        "四级标题",
+        "五级标题",
+        "六级标题",
     ] {
         assert!(
             label_pos(&shapes, label).is_some(),
@@ -4457,7 +4711,15 @@ fn toolbar_insert_items_are_separate_boxes() {
         }
     }
 
-    let labels = ["表格", "分隔线", "图表", "流程图", "脚注", "目录", "上传图片"];
+    let labels = [
+        "表格",
+        "分隔线",
+        "图表",
+        "流程图",
+        "脚注",
+        "目录",
+        "上传图片",
+    ];
 
     // 开始页不该出现这些展开项，也不该再有汇总的「插入」下拉。
     let ctx = egui::Context::default();
@@ -4529,7 +4791,12 @@ fn toolbar_tabs_switch_between_button_areas_and_blank_placeholders() {
             _ => false,
         })
     }
-    fn text_center(shapes: &[egui::epaint::ClippedShape], label: &str, min_y: f32, max_y: f32) -> egui::Pos2 {
+    fn text_center(
+        shapes: &[egui::epaint::ClippedShape],
+        label: &str,
+        min_y: f32,
+        max_y: f32,
+    ) -> egui::Pos2 {
         shapes
             .iter()
             .find_map(|cs| match &cs.shape {
@@ -4541,12 +4808,7 @@ fn toolbar_tabs_switch_between_button_areas_and_blank_placeholders() {
             })
             .unwrap_or_else(|| panic!("未找到「{label}」"))
     }
-    fn click(
-        ctx: &egui::Context,
-        app: &mut MarkdApp,
-        frame: &mut eframe::Frame,
-        p: egui::Pos2,
-    ) {
+    fn click(ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame, p: egui::Pos2) {
         for ev in [
             vec![egui::Event::PointerMoved(p)],
             vec![pointer_button(p, true)],
@@ -4558,7 +4820,10 @@ fn toolbar_tabs_switch_between_button_areas_and_blank_placeholders() {
             run_real_frame(ctx, app, frame, vec![]);
         }
     }
-    let tab_range = (TITLEBAR_HEIGHT + 1.0, TITLEBAR_HEIGHT + TOOLBAR_RESERVED_HEIGHT);
+    let tab_range = (
+        TITLEBAR_HEIGHT + 1.0,
+        TITLEBAR_HEIGHT + TOOLBAR_RESERVED_HEIGHT,
+    );
     let ctx = egui::Context::default();
     let mut app = test_app();
     app.home = false; // 工具条只在编辑态显示
@@ -4573,7 +4838,9 @@ fn toolbar_tabs_switch_between_button_areas_and_blank_placeholders() {
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
     assert_eq!(app.toolbar_tab, ToolbarTab::PageStyle);
     assert!(
-        !shapes.iter().any(|cs| matches!(&cs.shape, egui::Shape::Rect(r)
+        !shapes
+            .iter()
+            .any(|cs| matches!(&cs.shape, egui::Shape::Rect(r)
             if (r.rect.width() - TOOLBOX_WIDTH).abs() < 0.5
                 && (r.rect.height() - TOOLBOX_HEIGHT).abs() < 0.5)),
         "留白选项卡不该画工具盒子"
@@ -4586,7 +4853,9 @@ fn toolbar_tabs_switch_between_button_areas_and_blank_placeholders() {
     assert!(text_center(&shapes, "图片", TOOLBOX_AREA_TOP, TOP_BARS_HEIGHT).x > 0.0);
     // 「加粗」只属于开始选项卡。
     assert!(
-        !shapes.iter().any(|cs| matches!(&cs.shape, egui::Shape::Text(t)
+        !shapes
+            .iter()
+            .any(|cs| matches!(&cs.shape, egui::Shape::Text(t)
             if t.galley.text() == "加粗" && t.pos.y > TOOLBOX_AREA_TOP)),
         "插入选项卡不该出现开始选项卡的加粗"
     );
@@ -4656,9 +4925,15 @@ fn toolbar_undo_redo_icons_in_tab_row_work() {
     }
     // 选项卡行最左边：10pt 留白 + 24pt 图标，两个图标相隔 4pt。
     click_icon(&ctx, &mut app, &mut frame, egui::pos2(22.0, y));
-    assert!(!app.doc.source().contains('甲'), "点最左侧撤销图标应回退输入");
+    assert!(
+        !app.doc.source().contains('甲'),
+        "点最左侧撤销图标应回退输入"
+    );
     click_icon(&ctx, &mut app, &mut frame, egui::pos2(50.0, y));
-    assert!(app.doc.source().contains('甲'), "点第二个重做图标应恢复输入");
+    assert!(
+        app.doc.source().contains('甲'),
+        "点第二个重做图标应恢复输入"
+    );
 }
 
 /// 选项卡行最右侧的折叠按钮：点一下收起下半工具区（工具条只剩 0.7 cm），再点展开。
@@ -4740,12 +5015,16 @@ fn toolbar_collapse_button_folds_tool_area() {
         toolbar.clip_rect.height()
     );
     assert!(
-        !shapes.iter().any(|cs| matches!(&cs.shape, egui::Shape::Text(t)
+        !shapes
+            .iter()
+            .any(|cs| matches!(&cs.shape, egui::Shape::Text(t)
             if t.galley.text() == "加粗" && t.pos.y > TITLEBAR_HEIGHT)),
         "折叠后不该再画工具按钮"
     );
     assert!(
-        !shapes.iter().any(|cs| matches!(&cs.shape, egui::Shape::Rect(r)
+        !shapes
+            .iter()
+            .any(|cs| matches!(&cs.shape, egui::Shape::Rect(r)
             if (r.rect.width() - TOOLBOX_WIDTH).abs() < 0.5
                 && (r.rect.height() - TOOLBOX_HEIGHT).abs() < 0.5)),
         "折叠后不该有工具盒子"
@@ -4757,7 +5036,9 @@ fn toolbar_collapse_button_folds_tool_area() {
     assert!(!app.toolbar_collapsed, "再点 chevron 应展开工具区");
     let (shapes, _) = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
     assert!(
-        shapes.iter().any(|cs| matches!(&cs.shape, egui::Shape::Text(t)
+        shapes
+            .iter()
+            .any(|cs| matches!(&cs.shape, egui::Shape::Text(t)
             if t.galley.text() == "加粗" && t.pos.y > TITLEBAR_HEIGHT)),
         "展开后应恢复工具按钮"
     );
@@ -4784,7 +5065,10 @@ fn toolbar_button_boxes_are_centered() {
     }
     fn center(rects: &[egui::Rect]) -> f32 {
         let left = rects.iter().map(|r| r.left()).fold(f32::INFINITY, f32::min);
-        let right = rects.iter().map(|r| r.right()).fold(f32::NEG_INFINITY, f32::max);
+        let right = rects
+            .iter()
+            .map(|r| r.right())
+            .fold(f32::NEG_INFINITY, f32::max);
         (left + right) * 0.5
     }
 
@@ -4796,11 +5080,21 @@ fn toolbar_button_boxes_are_centered() {
     let mut frame = eframe::Frame::_new_kittest();
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
     let rects = box_rects(&shapes);
-    assert!(rects.len() <= 16, "开始页最多 16 个盒子，实际 {}", rects.len());
+    assert!(
+        rects.len() <= 16,
+        "开始页最多 16 个盒子，实际 {}",
+        rects.len()
+    );
     let left = rects.iter().map(|r| r.left()).fold(f32::INFINITY, f32::min);
-    let right = rects.iter().map(|r| r.right()).fold(f32::NEG_INFINITY, f32::max);
+    let right = rects
+        .iter()
+        .map(|r| r.right())
+        .fold(f32::NEG_INFINITY, f32::max);
     if left < 20.0 {
-        assert!(right > 1250.0, "溢出时可见盒子应横向铺满视口，实际 {left}..{right}");
+        assert!(
+            right > 1250.0,
+            "溢出时可见盒子应横向铺满视口，实际 {left}..{right}"
+        );
     } else {
         assert!(
             ((left + right) * 0.5 - 640.0).abs() < 3.0,
@@ -4820,18 +5114,28 @@ fn toolbar_button_boxes_are_centered() {
     let (shapes, _) =
         run_real_frame_ext_with_width(&ctx_wide, &mut app_wide, &mut frame_wide, vec![], 1800.0);
     let rects = box_rects(&shapes);
-    assert_eq!(rects.len(), 16, "宽窗口应画出开始页全部 16 个盒子，实际 {}", rects.len());
+    assert_eq!(
+        rects.len(),
+        16,
+        "宽窗口应画出开始页全部 16 个盒子，实际 {}",
+        rects.len()
+    );
     let start_center = center(&rects);
     assert!(
         (start_center - 900.0).abs() < 3.0,
         "宽窗口里开始页盒子组应居中，实际中心 {start_center}"
     );
 
-    // 插入页展开后有 12 个盒子，1280 宽下仍应居中。
+    // 插入页展开后有 13 个盒子，1280 宽下仍应居中。
     app.toolbar_tab = ToolbarTab::Insert;
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
     let insert_rects = box_rects(&shapes);
-    assert_eq!(insert_rects.len(), 12, "插入页应有 12 个盒子，实际 {}", insert_rects.len());
+    assert_eq!(
+        insert_rects.len(),
+        13,
+        "插入页应有 13 个盒子，实际 {}",
+        insert_rects.len()
+    );
     let insert_center = center(&insert_rects);
     assert!(
         (insert_center - 640.0).abs() < 3.0,
@@ -4974,4 +5278,123 @@ fn home_view_only_has_actions_search_and_recent_table() {
     ] {
         assert!(!has(text), "主界面不应渲染「{text}」");
     }
+}
+
+/// 插入选项卡的「视频」盒子：点开弹窗，粘贴 B 站链接后插入 ```video 围栏；
+/// 认不出的链接不动文档。
+#[test]
+fn toolbar_video_box_opens_dialog_and_inserts_fence() {
+    fn label_pos(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Pos2> {
+        shapes.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                let p = t.pos + t.galley.rect.center().to_vec2();
+                (p.y > TOOLBOX_AREA_TOP && p.y < TOP_BARS_HEIGHT).then_some(p)
+            }
+            _ => None,
+        })
+    }
+
+    let click =
+        |ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame, p: egui::Pos2| {
+            for ev in [
+                vec![egui::Event::PointerMoved(p)],
+                vec![pointer_button(p, true)],
+                vec![pointer_button(p, false)],
+            ] {
+                run_real_frame_stable_ext(ctx, app, frame, ev);
+            }
+            for _ in 0..2 {
+                run_real_frame_stable_ext(ctx, app, frame, vec![]);
+            }
+        };
+
+    // 「视频」只在插入页出现。
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    app.home = false;
+    let mut frame = eframe::Frame::_new_kittest();
+    let (shapes, _) = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
+    assert!(
+        label_pos(&shapes, "视频").is_none(),
+        "「视频」应只放在插入选项卡里"
+    );
+    app.toolbar_tab = ToolbarTab::Insert;
+    let (shapes, _) = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
+    let p = label_pos(&shapes, "视频").expect("插入页应有「视频」盒子");
+
+    // 真实点击：打开弹窗而不是直接插模板（链接要先认得出是 B 站）。
+    click(&ctx, &mut app, &mut frame, p);
+    assert!(app.video_dialog.open, "点「视频」应打开插入视频弹窗");
+    assert!(
+        !app.doc.source().contains("```video"),
+        "没填链接前不该改文档：{:?}",
+        app.doc.source()
+    );
+
+    // 粘贴 B 站链接后确认：插入围栏、弹窗关闭、状态栏给出视频标识。
+    app.new_document();
+    app.video_dialog.url = "https://www.bilibili.com/bangumi/play/ep406221".to_string();
+    app.confirm_video_dialog();
+    let src = app.doc.source();
+    assert!(
+        src.contains("```video\nhttps://www.bilibili.com/bangumi/play/ep406221"),
+        "{src:?}"
+    );
+    assert!(!app.video_dialog.open, "插入后弹窗应关闭");
+    assert!(
+        app.status.contains("ep406221"),
+        "状态栏应报视频标识：{}",
+        app.status
+    );
+    // 围栏块不进编辑态：卡片直接以渲染态显示（与插图一致）。
+    let video_idx = crate::ast::parse(&src)
+        .iter()
+        .position(|b| matches!(b, crate::ast::Block::Code { lang, .. } if lang == "video"))
+        .expect("应有 video 围栏块");
+    assert!(
+        app.editor.active > video_idx,
+        "活动块应落在视频块之后，让卡片可见：active={}, video_idx={video_idx}",
+        app.editor.active
+    );
+
+    // 认不出的链接：文档不动，状态栏说明原因。
+    app.new_document();
+    let before = app.doc.source();
+    app.video_dialog.url = "https://example.com/not-a-bilibili-video".to_string();
+    app.video_dialog.open = true;
+    app.confirm_video_dialog();
+    assert_eq!(app.doc.source(), before, "无效链接不该改文档");
+    assert!(
+        app.status.contains("认不出"),
+        "状态栏应提示识别失败：{}",
+        app.status
+    );
+    assert!(
+        app.video_dialog.open,
+        "识别失败时弹窗保持打开，可改链接重试"
+    );
+
+    // 空链接同样不动文档。
+    app.video_dialog.url = "   ".to_string();
+    app.confirm_video_dialog();
+    assert_eq!(app.doc.source(), before);
+    assert!(app.status.contains("请先粘贴"), "{}", app.status);
+}
+
+/// 「段落」菜单（Windows / Linux 的窗口内菜单栏）也要挂上插入视频，
+/// 位置和 macOS 原生菜单栏一致：脚注之后、Front Matter 之前。
+#[test]
+fn paragraph_menu_exposes_video_command() {
+    let items = menu_commands(MenuKind::Paragraph);
+    let at = items
+        .iter()
+        .position(|c| *c == Command::Video)
+        .expect("段落菜单应含插入视频");
+    assert_eq!(items[at - 1], Command::Footnote, "视频应紧跟脚注");
+    assert_eq!(
+        items[at + 1],
+        Command::FrontMatter,
+        "视频应在 Front Matter 之前"
+    );
+    assert_eq!(Command::Video.label(), "插入视频（哔哩哔哩）");
 }

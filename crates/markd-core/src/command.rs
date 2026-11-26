@@ -50,6 +50,8 @@ pub enum Command {
     CodeGroup,
     Link,
     Image,
+    /// 插入哔哩哔哩视频（```video 围栏）。
+    Video,
     /// 把当前文档里的本地图片批量上传到图床，并把链接换成公网 URL。
     UploadImages,
     /// 清除当前块的 Markdown 标记，变回普通段落（工具条橡皮擦同一动作）。
@@ -125,6 +127,7 @@ impl Command {
             Command::CodeGroup => "代码组（多语言 Tab）",
             Command::Link => "插入链接",
             Command::Image => "插入图片",
+            Command::Video => "插入视频（哔哩哔哩）",
             Command::UploadImages => "上传本地图片到图床",
             Command::ClearFormat => "清除格式",
             Command::Quote => "引用",

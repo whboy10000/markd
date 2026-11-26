@@ -26,7 +26,7 @@ impl MarkdApp {
         match crate::image_insert::from_file(src, self.doc.path.as_deref(), copy, &assets, relative)
         {
             Ok(img) => {
-                editor::insert_image(&mut self.doc, &mut self.editor, &img.markdown);
+                editor::insert_rendered_block(&mut self.doc, &mut self.editor, &img.markdown);
                 self.on_changed();
                 self.status = format!("已插入图片：{}", src.display());
                 self.maybe_upload_image(&img, ctx);
@@ -49,7 +49,7 @@ impl MarkdApp {
             relative,
         ) {
             Ok(img) => {
-                editor::insert_image(&mut self.doc, &mut self.editor, &img.markdown);
+                editor::insert_rendered_block(&mut self.doc, &mut self.editor, &img.markdown);
                 self.on_changed();
                 self.status = "已插入剪贴板图片".to_string();
                 self.maybe_upload_image(&img, ctx);

@@ -5,7 +5,7 @@
 //! 非活动块走这里；活动块由 editor 用 TextEdit 显示源码，形成 Hybrid View。
 //!
 //! 子模块：`inline` 行内排版，`block` 块级分派，`syntax` 代码着色，
-//! `diagram` 各类 Mermaid 图表，`media` 图片，`language` 语言下拉，`frames` 外框样式。
+//! `diagram` 各类 Mermaid 图表，`media` 图片，`video` 视频卡片，`language` 语言下拉，`frames` 外框样式。
 
 use crate::ast::*;
 use crate::document::OutlineItem;
@@ -29,9 +29,10 @@ mod media;
 mod syntax;
 #[cfg(test)]
 mod tests;
+mod video;
 
 pub use self::{block::*, inline::*, language::*, lists::*, math::*, media::*, syntax::*};
-pub(crate) use self::{diagram::*, frames::*};
+pub(crate) use self::{diagram::*, frames::*, video::*};
 
 #[derive(Clone, Debug)]
 pub enum Action {

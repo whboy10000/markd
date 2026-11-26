@@ -253,6 +253,7 @@ impl MarkdApp {
                                     ("公式块", "⌥⌘B", Command::Math),
                                     ("代码块公式", "", Command::MathCode),
                                     ("表格", "⌥⌘T", Command::Table),
+                                    ("B 站视频", "", Command::Video),
                                 ] {
                                     if menu_button_row(ui, label, Some(key), false, &theme) {
                                         self.execute(cmd, ctx);

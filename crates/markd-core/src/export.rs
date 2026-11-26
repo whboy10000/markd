@@ -28,9 +28,7 @@ fn slug(s: &str) -> String {
 /// 单个行内元素对应的「所见文本」字符数（与 `ast::inline_plain` 一致）。
 fn inline_plain_len(i: &Inline) -> usize {
     match i {
-        Inline::Text(t) | Inline::Code(t) | Inline::Math(t) | Inline::Wiki(t) => {
-            t.chars().count()
-        }
+        Inline::Text(t) | Inline::Code(t) | Inline::Math(t) | Inline::Wiki(t) => t.chars().count(),
         Inline::Strong(v)
         | Inline::Emph(v)
         | Inline::Strike(v)
@@ -46,11 +44,7 @@ fn inline_plain_len(i: &Inline) -> usize {
 fn slice_chars(s: &str, a: usize, b: usize) -> &str {
     let cs: Vec<(usize, char)> = s.char_indices().collect();
     let start = cs.get(a).map(|(i, _)| *i).unwrap_or(s.len());
-    let end = if b >= cs.len() {
-        s.len()
-    } else {
-        cs[b].0
-    };
+    let end = if b >= cs.len() { s.len() } else { cs[b].0 };
     if start >= end { "" } else { &s[start..end] }
 }
 
@@ -73,9 +67,10 @@ fn inline_html_range(v: &[Inline], start: usize, end: usize) -> String {
         let local_hi = (end - ipos).min(len);
         match i {
             Inline::Text(t) => out.push_str(&esc(slice_chars(t, local_lo, local_hi))),
-            Inline::Code(t) => {
-                out.push_str(&format!("<code>{}</code>", esc(slice_chars(t, local_lo, local_hi))))
-            }
+            Inline::Code(t) => out.push_str(&format!(
+                "<code>{}</code>",
+                esc(slice_chars(t, local_lo, local_hi))
+            )),
             Inline::Strong(ch) => out.push_str(&format!(
                 "<strong>{}</strong>",
                 inline_html_range(ch, local_lo, local_hi)
@@ -118,9 +113,7 @@ fn inline_html_range(v: &[Inline], start: usize, end: usize) -> String {
                     esc(alt)
                 ));
             }
-            Inline::Footnote(id) => {
-                out.push_str(&format!("<sup class=\"fn\">[{}]</sup>", esc(id)))
-            }
+            Inline::Footnote(id) => out.push_str(&format!("<sup class=\"fn\">[{}]</sup>", esc(id))),
             Inline::Break => out.push_str("<br/>"),
         }
     }
@@ -182,6 +175,22 @@ fn inline_html(v: &[Inline]) -> String {
         }
     }
     s
+}
+
+/// 视频围栏（```video / ```bilibili）导出成 B 站的嵌入式外链播放器：
+/// 浏览器打开导出文件就能播。语言标记不对、或链接认不出时返回 None，
+/// 由调用方退回普通代码块。
+fn video_html(lang: &str, code: &str) -> Option<String> {
+    if !crate::video::is_video_lang(lang) {
+        return None;
+    }
+    let src = crate::video::url_from_fence(code)?;
+    // player_url 里的标识已在解析阶段校验过字符集，仍然按属性值转义一次。
+    Some(format!(
+        "<div class=\"video-embed\"><iframe src=\"{}\" title=\"bilibili 视频\" scrolling=\"no\" frameBorder=\"0\" allowfullscreen=\"allowfullscreen\" allow=\"autoplay; video-fullscreen; fullscreen\"></iframe><noscript><a href=\"{}\">在 B 站观看此视频</a></noscript></div>",
+        esc(&src.player_url()),
+        esc(&src.page_url())
+    ))
 }
 
 fn align_attr(a: Align) -> &'static str {
@@ -255,11 +264,16 @@ pub fn to_html(title: &str, source: &str, dark: bool) -> String {
                 ));
             }
             Block::Code { lang, code, .. } => {
-                out.push_str(&format!(
-                    "<pre><code class=\"language-{}\">{}</code></pre>\n",
-                    esc(lang),
-                    esc(code)
-                ));
+                if let Some(html) = video_html(lang, code) {
+                    out.push_str(&html);
+                    out.push('\n');
+                } else {
+                    out.push_str(&format!(
+                        "<pre><code class=\"language-{}\">{}</code></pre>\n",
+                        esc(lang),
+                        esc(code)
+                    ));
+                }
             }
             Block::CodeGroup { items, .. } => {
                 // 代码组：HTML 里保留 Tab 切换（与编辑器一致）。
@@ -386,6 +400,8 @@ table{{border-collapse:collapse;width:100%;margin:1em 0}}
 th,td{{border:1px solid #ddd;padding:8px 12px}} th{{font-weight:600}}
 hr{{border:none;border-top:1px solid #ddd;margin:2em 0}}
 img{{max-width:100%}} .wiki{{color:#8957e5}}
+.video-embed{{position:relative;width:100%;padding-top:56.25%;margin:1em 0;background:#000;border-radius:8px;overflow:hidden}}
+.video-embed iframe{{position:absolute;left:0;top:0;width:100%;height:100%;border:0}}
 .math-block{{text-align:center;font-family:Georgia,serif;font-size:1.15em;margin:1.2em 0}}
 .front-matter{{font-size:.85em;opacity:.8}}
 .toc{{border:1px solid #ddd;border-radius:8px;padding:12px 20px;margin:1em 0}}
@@ -418,7 +434,10 @@ fn block_html(b: &Block, blocks: &[Block]) -> String {
             out.push_str(&format!("<p>{}</p>", inline_html(content)));
         }
         Block::Quote { content, .. } => {
-            out.push_str(&format!("<blockquote>{}</blockquote>", inline_html(content)));
+            out.push_str(&format!(
+                "<blockquote>{}</blockquote>",
+                inline_html(content)
+            ));
         }
         Block::ListItem { item, .. } => {
             let cb = match item.checked {
@@ -434,11 +453,15 @@ fn block_html(b: &Block, blocks: &[Block]) -> String {
             ));
         }
         Block::Code { lang, code, .. } => {
-            out.push_str(&format!(
-                "<pre><code class=\"language-{}\">{}</code></pre>",
-                esc(lang),
-                esc(code)
-            ));
+            if let Some(html) = video_html(lang, code) {
+                out.push_str(&html);
+            } else {
+                out.push_str(&format!(
+                    "<pre><code class=\"language-{}\">{}</code></pre>",
+                    esc(lang),
+                    esc(code)
+                ));
+            }
         }
         Block::CodeGroup { items, .. } => {
             out.push_str("<div class=\"code-group\">\n<div class=\"code-group-tabs\">\n");
@@ -467,7 +490,9 @@ fn block_html(b: &Block, blocks: &[Block]) -> String {
             }
             out.push_str("</div>\n");
         }
-        Block::Table { head, rows, align, .. } => {
+        Block::Table {
+            head, rows, align, ..
+        } => {
             out.push_str("<table><thead><tr>");
             for (i, c) in head.iter().enumerate() {
                 let a = align.get(i).copied().unwrap_or(Align::Left);
@@ -504,7 +529,10 @@ fn block_html(b: &Block, blocks: &[Block]) -> String {
             out.push_str(&format!("<pre class=\"{}\">{}</pre>", cls, esc(code)));
         }
         Block::FrontMatter { yaml, .. } => {
-            out.push_str(&format!("<pre class=\"front-matter\">---\n{}\n---</pre>", esc(yaml)));
+            out.push_str(&format!(
+                "<pre class=\"front-matter\">---\n{}\n---</pre>",
+                esc(yaml)
+            ));
         }
         Block::Footnote { id, content, .. } => {
             out.push_str(&format!(
@@ -541,7 +569,9 @@ pub fn cross_sel_html(blocks: &[Block], sel: (usize, usize, usize, usize)) -> St
     };
     let mut out = String::new();
     for idx in a..=b {
-        let Some(block) = blocks.get(idx) else { continue };
+        let Some(block) = blocks.get(idx) else {
+            continue;
+        };
         match block {
             Block::Heading { level, content, .. } => {
                 let lo = if idx == a { ac } else { 0 };
@@ -616,7 +646,10 @@ pub fn selected_text_html(block: &Block, text: &str) -> String {
             inline_markdown_html(text)
         ),
         Block::Footnote { .. } => {
-            format!("<div class=\"footnote\">{}</div>", inline_markdown_html(text))
+            format!(
+                "<div class=\"footnote\">{}</div>",
+                inline_markdown_html(text)
+            )
         }
         // 表格/代码组是结构化块，单独取一段源码无法反映结构；用普通段落承载
         // 选中文本，至少保留行内格式与转义。
@@ -627,11 +660,9 @@ pub fn selected_text_html(block: &Block, text: &str) -> String {
 /// 单块内所选字符区间的 HTML 片段（所见文本坐标）。
 pub fn block_range_html(block: &Block, a: usize, z: usize) -> String {
     match block {
-        Block::Heading { level, content, .. } => format!(
-            "<h{0}>{1}</h{0}>",
-            level,
-            inline_html_range(content, a, z)
-        ),
+        Block::Heading { level, content, .. } => {
+            format!("<h{0}>{1}</h{0}>", level, inline_html_range(content, a, z))
+        }
         Block::Paragraph { content, .. } => {
             format!("<p>{}</p>", inline_html_range(content, a, z))
         }
@@ -735,5 +766,43 @@ a = 1
             "默认第一个面板可见：{h}"
         );
         assert!(h.contains("int a = 1;") && h.contains("a = 1"), "{h}");
+    }
+
+    /// 视频围栏导出成 B 站嵌入式播放器 iframe，16:9 容器由 CSS 保证。
+    #[test]
+    fn video_fence_exports_embed_player() {
+        let src = "```video\nhttps://www.bilibili.com/bangumi/play/ep406221\n```";
+        let h = to_html("T", src, false);
+        assert!(h.contains("<div class=\"video-embed\">"), "{h}");
+        assert!(h.contains("<iframe src="), "{h}");
+        assert!(h.contains("player.bilibili.com/player.html"), "{h}");
+        assert!(h.contains("ep_id=406221"), "{h}");
+        // 属性值里的 & 必须转义，否则 HTML 无效
+        assert!(h.contains("isOutside=true&amp;"), "{h}");
+        assert!(!h.contains("<pre>"), "视频不该导出成代码块：{h}");
+        assert!(h.contains("padding-top:56.25%"), "缺少 16:9 容器样式：{h}");
+    }
+
+    /// 只有 video/bilibili 标记的围栏才转 iframe：其它语言、认不出的链接都保持代码块。
+    #[test]
+    fn video_export_falls_back_to_code() {
+        // 代码注释里贴 B 站链接是常事，绝不能被当成视频。
+        let other = to_html(
+            "T",
+            "```rust\n// https://www.bilibili.com/video/BV1GJ411x7h7\nfn main(){}\n```",
+            false,
+        );
+        assert!(other.contains("language-rust"), "{other}");
+        assert!(!other.contains("<div class=\"video-embed\""), "{other}");
+        assert!(!other.contains("<iframe"), "{other}");
+        assert!(other.contains("BV1GJ411x7h7"), "{other}");
+        let bad = to_html(
+            "T",
+            "```video\nhttps://example.com/not-bilibili\n```",
+            false,
+        );
+        assert!(bad.contains("language-video"), "{bad}");
+        assert!(bad.contains("example.com"), "{bad}");
+        assert!(!bad.contains("<iframe"), "{bad}");
     }
 }
