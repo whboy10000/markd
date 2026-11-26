@@ -428,8 +428,17 @@ fn now_parts() -> DateTimeParts {
     }
 }
 
+/// 时钟位与进程内序号如何合成一个 24 位散列值（`random_suffix` 的全部算术，拆出来才测得到）。
+/// 只能相加，不能异或：序号 +1 恰好顶掉时钟进位的同一格时，异或会把两次变化互相抵消，
+/// 后缀一模一样（CI 实测三连发报出过 `b9f5ee b9f5ee b9f5ed`）。
+/// 相加则「时钟增量 + 序号增量」严格为正，24 位回绕一圈要 2^24 格 × 2^17ns ≈ 36 分钟，
+/// 同一轮上传里不可能撞上。
+fn suffix_mix(nanos: u64, seq: u64) -> u64 {
+    nanos.rotate_right(17).wrapping_add(seq)
+}
+
 /// 随机后缀：纳秒时间戳与进程内自增序号混合后取 6 位十六进制。
-/// 必须先把时间戳的高位转到低位再异或序号：直接 `nanos ^ (seq << 32)` 的话，
+/// 必须先把时间戳的高位转到低位再混合：直接 `nanos + seq` 的话，
 /// 掩码会把序号整个丢掉，两次调用只要相隔 16.7ms 的整数倍就撞出同一个后缀。
 fn random_suffix() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -438,8 +447,7 @@ fn random_suffix() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0);
-    let mix = nanos.rotate_right(17) ^ SEQ.fetch_add(1, Ordering::Relaxed);
-    hex_suffix(mix)
+    hex_suffix(suffix_mix(nanos, SEQ.fetch_add(1, Ordering::Relaxed)))
 }
 
 /// 取低 24 位写成 6 位小写十六进制：宽度固定，模板拼出来的路径才对得齐。
@@ -2710,15 +2718,37 @@ mod tests {
         assert_eq!(hex_suffix(0), "000000");
         assert_eq!(hex_suffix(1), "000001");
         assert_eq!(hex_suffix(u64::MAX), "ffffff", "超过 24 位的高位要掩掉");
-        let a = random_suffix();
-        let b = random_suffix();
-        let c = random_suffix();
-        assert_eq!(a.len(), 6, "{a}");
-        assert!(a != b && b != c && a != c, "{a} {b} {c}");
+        // 连发 200 次去重：只看三次会漏掉「序号与时钟同时进一格」这一类碰撞。
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let s = random_suffix();
+            assert_eq!(s.len(), 6, "{s}");
+            assert!(s.bytes().all(|b| b.is_ascii_hexdigit()), "{s}");
+            assert!(seen.insert(s.clone()), "连发出现重样后缀：{s}");
+        }
         let t1 = now_parts().random;
         let t2 = now_parts().random;
         assert_eq!(t1.len(), 6, "{t1}");
         assert_ne!(t1, t2, "{t1} == {t2}");
+    }
+
+    /// 时钟进一格（2^17ns）的同时序号 +1：这两次变化不得互相抵消。
+    /// CI 上 `random_suffix_is_six_hex_and_distinct` 的偶发失败就是这一组。
+    #[test]
+    fn suffix_mix_does_not_cancel_the_counter_with_the_clock() {
+        // 低 24 位取 0x000002 与 0x000003，正是相邻两格时钟。
+        let base = 2u64 << 17;
+        let a = hex_suffix(suffix_mix(base, 0));
+        let b = hex_suffix(suffix_mix(base + (1 << 17), 1));
+        assert_ne!(a, b, "时钟 +1 格、序号 +1 不得撞名：{a} == {b}");
+        // 时钟纹丝不动时，序号本身也要能撑开 4096 个不同后缀。
+        let mut seen = std::collections::HashSet::new();
+        for seq in 0..4096u64 {
+            assert!(
+                seen.insert(hex_suffix(suffix_mix(base, seq))),
+                "序号 {seq} 与前一次重样"
+            );
+        }
     }
 
     /// 覆盖写必须带旧 SHA，新建不能带（实测缺 SHA 时 GitHub 回 422）。
