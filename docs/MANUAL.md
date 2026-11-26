@@ -1,6 +1,6 @@
 # Markd 用户手册
 
-适用于 **Markd 2026.11.25.1**（macOS / Windows / Linux）。
+适用于 **Markd 2026.11.26.1**（macOS / Windows / Linux）。
 文中 `Cmd` 指 macOS 的 ⌘，在 Windows / Linux 上对应 `Ctrl`；标注「macOS」的绑定只在 macOS 生效。
 每条功能都可在应用内验证：`F1` 打开快捷键一览，`Cmd/Ctrl + P` 打开命令面板搜索命令名。
 
