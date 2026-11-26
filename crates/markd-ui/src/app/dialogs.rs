@@ -600,6 +600,55 @@ impl MarkdApp {
             }
         }
 
+        if self.video_dialog.open {
+            let mut open = true;
+            let mut insert = false;
+            let mut cancel = false;
+            egui::Window::new("插入视频")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label("B 站视频链接");
+                    let url_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.video_dialog.url)
+                            .hint_text("https://www.bilibili.com/bangumi/play/ep406221")
+                            .desired_width(420.0),
+                    );
+                    if self.video_dialog.focus_url {
+                        url_resp.request_focus();
+                        self.video_dialog.focus_url = false;
+                    }
+                    if url_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        insert = true;
+                    }
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "支持投稿视频（BV/av）、番剧（ep/ss）、播放器地址，也支持只粘贴 BV 号",
+                        )
+                        .size(12.0)
+                        .color(self.theme.dim),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("插入").clicked() {
+                            insert = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if insert {
+                self.confirm_video_dialog();
+            }
+            if cancel || !open {
+                self.video_dialog.open = false;
+            }
+        }
+
         if self.table_dialog {
             let mut open = true;
             let mut confirm = false;

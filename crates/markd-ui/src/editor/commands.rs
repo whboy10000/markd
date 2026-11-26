@@ -14,9 +14,10 @@ pub fn insert_template(doc: &mut Document, state: &mut EditorState, template: &s
     state.last_cursor = template.chars().count();
 }
 
-/// 插入一张图片：图片块本身不留在编辑态（否则预览里显示的是 `![](...)` 源码），
-/// 而是在图片后面补一个空段落并把光标移过去——图片立刻以渲染态显示。
-pub fn insert_image(doc: &mut Document, state: &mut EditorState, markdown: &str) {
+/// 插入一段「立刻以渲染态显示」的块（图片、视频）：新块本身不留在编辑态
+/// （否则预览里显示的是 `![](...)` 或围栏源码），而是在它后面补一个空段落
+/// 并把光标移过去。
+pub fn insert_rendered_block(doc: &mut Document, state: &mut EditorState, markdown: &str) {
     doc.record();
     let idx = state.active;
     let n = crate::ast::parse(markdown).len().max(1);

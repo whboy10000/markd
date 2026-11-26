@@ -249,7 +249,7 @@ fn insert_image_leaves_preview_rendered() {
     let mut doc = Document::new("段落", None);
     let mut state = EditorState::default();
     state.active = 0;
-    insert_image(&mut doc, &mut state, "![a](imgs/a.png)");
+    insert_rendered_block(&mut doc, &mut state, "![a](imgs/a.png)");
     assert!(
         matches!(&doc.blocks[1], Block::Paragraph { source, .. } if source.as_str() == "![a](imgs/a.png)"),
         "图片应插成独立段落：{:?}",

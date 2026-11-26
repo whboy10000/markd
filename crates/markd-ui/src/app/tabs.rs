@@ -375,6 +375,38 @@ impl MarkdApp {
         }
     }
 
+    /// 打开「插入视频」弹窗：链接要能解析成 B 站视频才插，所以先让用户粘贴。
+    pub(super) fn open_video_dialog(&mut self) {
+        self.video_dialog = VideoDialog {
+            open: true,
+            url: String::new(),
+            focus_url: true,
+        };
+    }
+
+    /// 视频弹窗点「插入」：解析链接 → 插 ```video 围栏 → 卡片立刻以渲染态显示。
+    pub(super) fn confirm_video_dialog(&mut self) {
+        let raw = self.video_dialog.url.trim().to_string();
+        if raw.is_empty() {
+            self.status = "请先粘贴 B 站视频链接".to_string();
+            self.video_dialog.focus_url = true;
+            return;
+        }
+        let Some(src) = crate::video::parse_video(&raw) else {
+            // 认不出就不动文档：插一个坏围栏只会得到一张永远取不到封面的卡片。
+            self.status = "认不出 B 站视频链接（支持 BV/av/ep/ss 号或完整分享链接）".to_string();
+            return;
+        };
+        editor::insert_rendered_block(
+            &mut self.doc,
+            &mut self.editor,
+            &crate::video::video_block(&src),
+        );
+        self.on_changed();
+        self.status = format!("已插入视频 {}（导出 HTML 后可在页面内播放）", src.id());
+        self.video_dialog.open = false;
+    }
+
     pub(super) fn open_link(&mut self, url: &str) {
         if url.starts_with("http://") || url.starts_with("https://") {
             #[cfg(target_os = "macos")]

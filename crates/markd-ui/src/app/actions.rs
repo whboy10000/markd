@@ -132,6 +132,8 @@ impl MarkdApp {
                     self.insert_image_path(&p, ctx);
                 }
             }
+            // 视频链接要先认得出是 B 站才插，所以走弹窗而不是直接插模板。
+            Command::Video => self.open_video_dialog(),
             Command::UploadImages => self.upload_local_images(ctx),
             Command::ClearFormat => {
                 // 与工具条橡皮擦同一动作：当前块去掉块级/行内标记变回普通段落。

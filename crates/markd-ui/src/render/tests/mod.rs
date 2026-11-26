@@ -15,3 +15,4 @@ mod matrix_inline;
 mod media;
 mod syntax;
 mod timeline_block;
+mod video;

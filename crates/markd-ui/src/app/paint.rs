@@ -75,8 +75,10 @@ pub(super) fn toolbar_box(
     label: &str,
     hover: &str,
 ) -> egui::Response {
-    let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(TOOLBOX_WIDTH, TOOLBOX_HEIGHT), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(TOOLBOX_WIDTH, TOOLBOX_HEIGHT),
+        egui::Sense::click(),
+    );
     if ui.is_rect_visible(rect) {
         let visuals = ui.style().interact(&resp);
         let bg = if resp.hovered() {
@@ -183,10 +185,8 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
         "task_list" => {
             for i in 0..3 {
                 let y = c.y - 9.0 + i as f32 * 9.0;
-                let box_rect = egui::Rect::from_center_size(
-                    egui::pos2(c.x - 10.0, y),
-                    egui::vec2(8.0, 8.0),
-                );
+                let box_rect =
+                    egui::Rect::from_center_size(egui::pos2(c.x - 10.0, y), egui::vec2(8.0, 8.0));
                 painter.rect_stroke(
                     box_rect,
                     egui::CornerRadius::same(1),
@@ -199,7 +199,10 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
                         stroke,
                     );
                     painter.line_segment(
-                        [egui::pos2(c.x - 10.0, y + 2.5), egui::pos2(c.x - 6.0, y - 3.0)],
+                        [
+                            egui::pos2(c.x - 10.0, y + 2.5),
+                            egui::pos2(c.x - 6.0, y - 3.0),
+                        ],
                         stroke,
                     );
                 }
@@ -212,10 +215,18 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
         "quote" => text("\"", 30.0, c),
         "image" => {
             let r = egui::Rect::from_center_size(c, egui::vec2(24.0, 18.0));
-            painter.rect_stroke(r, egui::CornerRadius::same(2), stroke, egui::StrokeKind::Outside);
+            painter.rect_stroke(
+                r,
+                egui::CornerRadius::same(2),
+                stroke,
+                egui::StrokeKind::Outside,
+            );
             painter.circle_filled(c + egui::vec2(-6.0, -4.0), 2.0, fg);
             painter.line_segment(
-                [r.left_bottom() + egui::vec2(2.0, -1.0), r.right_bottom() - egui::vec2(2.0, 2.0)],
+                [
+                    r.left_bottom() + egui::vec2(2.0, -1.0),
+                    r.right_bottom() - egui::vec2(2.0, 2.0),
+                ],
                 stroke,
             );
         }
@@ -234,6 +245,24 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
                 stroke,
                 egui::StrokeKind::Outside,
             );
+        }
+        "video" => {
+            // 播放器外形：圆角屏幕 + 中间一个线性播放三角。
+            let r = egui::Rect::from_center_size(c, egui::vec2(24.0, 17.0));
+            painter.rect_stroke(
+                r,
+                egui::CornerRadius::same(3),
+                stroke,
+                egui::StrokeKind::Outside,
+            );
+            let tri = [
+                egui::pos2(c.x - 2.5, c.y - 4.0),
+                egui::pos2(c.x - 2.5, c.y + 4.0),
+                egui::pos2(c.x + 4.5, c.y),
+            ];
+            painter.line_segment([tri[0], tri[1]], stroke);
+            painter.line_segment([tri[1], tri[2]], stroke);
+            painter.line_segment([tri[2], tri[0]], stroke);
         }
         "formula" => text("f(x)", 15.0, c),
         "code" => text("</>", 14.0, c),
@@ -256,10 +285,7 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
         }
         "rule" => {
             for (dy, len) in [(-5.0_f32, 8.0), (0.0, 12.0), (5.0, 8.0)] {
-                painter.line_segment(
-                    [c + egui::vec2(-len, dy), c + egui::vec2(len, dy)],
-                    stroke,
-                );
+                painter.line_segment([c + egui::vec2(-len, dy), c + egui::vec2(len, dy)], stroke);
             }
         }
         "chart" => {
@@ -302,7 +328,10 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
             painter.line_segment([egui::pos2(a.right(), mid.y), mid], stroke);
             painter.line_segment([mid, egui::pos2(mid.x, b.center().y)], stroke);
             painter.line_segment(
-                [egui::pos2(mid.x, b.center().y), egui::pos2(b.left(), b.center().y)],
+                [
+                    egui::pos2(mid.x, b.center().y),
+                    egui::pos2(b.left(), b.center().y),
+                ],
                 stroke,
             );
         }
@@ -326,7 +355,11 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
             painter.line_segment([c, c + egui::vec2(5.0, 3.0)], stroke);
         }
         "graph" => {
-            let p = [c + egui::vec2(-10.0, 6.0), c + egui::vec2(9.0, -7.0), c + egui::vec2(10.0, 8.0)];
+            let p = [
+                c + egui::vec2(-10.0, 6.0),
+                c + egui::vec2(9.0, -7.0),
+                c + egui::vec2(10.0, 8.0),
+            ];
             painter.line_segment([p[0], p[1]], stroke);
             painter.line_segment([p[0], p[2]], stroke);
             for q in p {

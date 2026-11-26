@@ -211,7 +211,11 @@ fn code_panel(
         ),
         r.response.rect.right_bottom(),
     );
-    let content = ui.interact(zone, ui.scope_id().with(("code_click", idx)), Sense::click());
+    let content = ui.interact(
+        zone,
+        ui.scope_id().with(("code_click", idx)),
+        Sense::click(),
+    );
     // 拖选与选区高亮精确到代码正文的字符：按下点落在代码区（功能栏以下）时，
     // 锚点/终点都取指针下的那个字符，而不是整块一起选中（用户反馈的
     // 「想选一两行代码，一下子就选中该代码块所有的代码」）。
@@ -455,7 +459,15 @@ pub fn render_block(
             }
             Block::Code {
                 lang, code, quote, ..
-            } => code_panel(ui, theme, env, idx, lang, code, *quote, true, false),
+            } => match if *quote == 0 {
+                video_source_of(lang, code)
+            } else {
+                None
+            } {
+                // ```video 围栏画成播放器卡片（引用内的仍按代码块走，卡片要整幅宽度）。
+                Some(src) => video_panel(ui, theme, env, idx, &src, code.trim()),
+                None => code_panel(ui, theme, env, idx, lang, code, *quote, true, false),
+            },
             Block::CodeGroup { items, .. } => {
                 let folded = env.folded.contains(&idx);
                 let openness = env.ctx.animate_value_with_time(

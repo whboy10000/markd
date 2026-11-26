@@ -4,6 +4,7 @@
 //! 这样文档里写图床 URL 时无需本地文件也能直接阅读。
 
 use super::*;
+use crate::video::{VideoInfo, VideoSource};
 use std::sync::mpsc::{Receiver, Sender};
 
 /// 后台下载完成的远程图片：URL + 解码后的像素（None 表示失败）。
@@ -114,11 +115,18 @@ pub struct ImageCache {
     pending: HashSet<String>,
     rx: Receiver<RemoteImage>,
     tx: Sender<RemoteImage>,
+    /// B 站视频元数据缓存：键为视频标识，None 表示已失败（不再重试，避免每帧发请求）。
+    videos: HashMap<String, Option<VideoInfo>>,
+    /// 正在取元数据的视频标识。
+    video_pending: HashSet<String>,
+    vrx: Receiver<(String, Option<VideoInfo>)>,
+    vtx: Sender<(String, Option<VideoInfo>)>,
 }
 
 impl ImageCache {
     pub fn new() -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
+        let (vtx, vrx) = std::sync::mpsc::channel();
         Self {
             local: HashMap::new(),
             remote: HashMap::new(),
@@ -127,6 +135,10 @@ impl ImageCache {
             pending: HashSet::new(),
             rx,
             tx,
+            videos: HashMap::new(),
+            video_pending: HashSet::new(),
+            vrx,
+            vtx,
         }
     }
 
@@ -242,6 +254,44 @@ impl ImageCache {
     /// 该远程图片是否仍在下载中（用于显示「正在加载」占位框）。
     pub fn remote_loading(&self, url: &str) -> bool {
         self.pending.contains(url)
+    }
+
+    /// B 站视频元数据（标题/封面/时长）：命中缓存直接返回；
+    /// 未命中时起后台线程调接口——渲染每帧都跑，网络请求只做一次。
+    pub fn video_info(&mut self, ctx: &egui::Context, src: &VideoSource) -> Option<&VideoInfo> {
+        while let Ok((id, info)) = self.vrx.try_recv() {
+            self.video_pending.remove(&id);
+            self.videos.insert(id, info);
+        }
+        let key = src.id();
+        if let Some(v) = self.videos.get(&key) {
+            return v.as_ref();
+        }
+        if !self.video_pending.contains(&key) {
+            self.video_pending.insert(key.clone());
+            let tx = self.vtx.clone();
+            let ctx = ctx.clone();
+            let src = src.clone();
+            std::thread::spawn(move || {
+                let info = crate::video::fetch_video_info(&src);
+                let _ = tx.send((src.id(), info));
+                ctx.request_repaint();
+            });
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+        None
+    }
+
+    /// 该视频是否仍在取元数据（卡片据此显示「正在获取…」而不是「取不到」）。
+    pub fn video_loading(&self, src: &VideoSource) -> bool {
+        self.video_pending.contains(&src.id())
+    }
+
+    /// 测试专用：预置元数据，免得单测真去访问 B 站接口。
+    #[cfg(test)]
+    pub fn prime_video(&mut self, src: &VideoSource, info: Option<VideoInfo>) {
+        self.videos.insert(src.id(), info);
     }
 }
 

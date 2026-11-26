@@ -170,6 +170,15 @@ struct LinkDialog {
     focus_url: bool,
 }
 
+/// 插入视频弹窗：粘贴 B 站分享链接，确认后插入 ```video 围栏。
+#[derive(Default)]
+struct VideoDialog {
+    open: bool,
+    /// 粘贴板里的链接原文，解析成功后才落到文档。
+    url: String,
+    focus_url: bool,
+}
+
 /// 一个标签页的完整文档状态。除活动标签外，其余标签的状态都暂存在这里，
 /// 切换时与 MarkdApp 上的 doc/editor/outline/stats 字段整体换出换入。
 struct TabState {
@@ -230,6 +239,8 @@ pub struct MarkdApp {
     table_cols: usize,
     /// 插入链接弹窗。
     link_dialog: LinkDialog,
+    /// 插入视频弹窗。
+    video_dialog: VideoDialog,
     link_docs: HashMap<String, Vec<String>>,
     /// 后台线程算好的链接图，算完通过它回传。
     link_rx: Option<std::sync::mpsc::Receiver<HashMap<String, Vec<String>>>>,
