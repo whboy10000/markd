@@ -30,6 +30,9 @@ pub(crate) fn collect_link_ranges(
             Inline::Math(t) => *pos += math_pretty(t).chars().count(),
             Inline::Wiki(name) => *pos += format!("[[{}]]", name).chars().count(),
             Inline::Footnote(id) => *pos += format!("[{}]", id).chars().count(),
+            // 内嵌 HTML：append_inline 只画正文、不画标签，这里必须同样只数正文，
+            // 否则 span 之后的链接命中区间会整体错位。
+            Inline::Span { content, .. } => collect_link_ranges(content, out, pos),
             Inline::Break => *pos += 1,
         }
     }

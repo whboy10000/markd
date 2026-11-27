@@ -363,6 +363,7 @@ fn test_app() -> MarkdApp {
         link_dialog: Default::default(),
         video_dialog: Default::default(),
         attachment_dialog: Default::default(),
+        html_dialog: Default::default(),
         file_downloads: Vec::new(),
         link_docs: HashMap::new(),
         link_rx: None,
@@ -504,6 +505,30 @@ fn run_real_frame_stable_ext_with_width(
         })
         .unwrap_or_default();
     (out.shapes, copied)
+}
+
+/// 只跑弹窗层（`MarkdApp::windows`）的一帧，root 用固定 Id 让控件 Id 稳定。
+/// `run_real_frame_*` 只画 `app.ui`（工具条 + 正文），弹窗按钮不在里面，
+/// 所以要碰弹窗里的预设 / 插入 / 取消必须走这个帧。
+fn run_frame_with_windows(
+    ctx: &egui::Context,
+    app: &mut MarkdApp,
+    events: Vec<egui::Event>,
+) -> Vec<egui::epaint::ClippedShape> {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |root| {
+        let ctx = root.ctx().clone();
+        app.windows(&ctx);
+    });
+    out.textures_delta.clear();
+    out.shapes
 }
 
 fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
@@ -5074,7 +5099,7 @@ fn toolbar_button_boxes_are_centered() {
         (left + right) * 0.5
     }
 
-    // 1280 宽：开始页 21 个盒子可能仍超出宽度；无论如何都只占一行，
+    // 1280 宽：开始页 17 个盒子（含「换行」）可能仍超出宽度；无论如何都只占一行，
     // 放不下时从左侧铺到右侧（横向滚动），放得下时整组居中。
     let ctx = egui::Context::default();
     let mut app = test_app();
@@ -5083,8 +5108,8 @@ fn toolbar_button_boxes_are_centered() {
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
     let rects = box_rects(&shapes);
     assert!(
-        rects.len() <= 16,
-        "开始页最多 16 个盒子，实际 {}",
+        rects.len() <= 17,
+        "开始页最多 17 个盒子，实际 {}",
         rects.len()
     );
     let left = rects.iter().map(|r| r.left()).fold(f32::INFINITY, f32::min);
@@ -5118,8 +5143,8 @@ fn toolbar_button_boxes_are_centered() {
     let rects = box_rects(&shapes);
     assert_eq!(
         rects.len(),
-        16,
-        "宽窗口应画出开始页全部 16 个盒子，实际 {}",
+        17,
+        "宽窗口应画出开始页全部 17 个盒子，实际 {}",
         rects.len()
     );
     let start_center = center(&rects);
@@ -5128,14 +5153,14 @@ fn toolbar_button_boxes_are_centered() {
         "宽窗口里开始页盒子组应居中，实际中心 {start_center}"
     );
 
-    // 插入页展开后有 14 个盒子（含「文件」附件），1280 宽下仍应居中。
+    // 插入页展开后有 15 个盒子（含「文件」附件与「HTML 内嵌」），1280 宽下仍应居中。
     app.toolbar_tab = ToolbarTab::Insert;
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
     let insert_rects = box_rects(&shapes);
     assert_eq!(
         insert_rects.len(),
-        14,
-        "插入页应有 14 个盒子，实际 {}",
+        15,
+        "插入页应有 15 个盒子，实际 {}",
         insert_rects.len()
     );
     let insert_center = center(&insert_rects);
@@ -5511,4 +5536,393 @@ fn paragraph_menu_exposes_video_command() {
     );
     assert_eq!(Command::Video.label(), "插入视频（哔哩哔哩）");
     assert_eq!(Command::Attachment.label(), "插入文件（PDF/Word/Excel…）");
+}
+
+/// 正文区（工具条下方）里某段文字的中心点，用来当点击坐标。
+fn body_text_center(shapes: &[egui::epaint::ClippedShape], want: &str) -> Option<egui::Pos2> {
+    shapes.iter().find_map(|cs| match &cs.shape {
+        egui::Shape::Text(t) if t.galley.text() == want => {
+            let p = t.pos + t.galley.rect.center().to_vec2();
+            (p.y > TOP_BARS_HEIGHT).then_some(p)
+        }
+        _ => None,
+    })
+}
+
+/// 开始选项卡的「换行」盒子：真实点击在段落光标处插 `<br>`，撤销可回退；
+/// 表格里点进单元格后再按，标签要写进那一格的源码。
+/// 命令面板与标签口径（label / all）也在这里一起验，防止只加了按钮没登记命令。
+#[test]
+fn toolbar_line_break_box_inserts_tag() {
+    fn label_pos(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Pos2> {
+        shapes.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                let p = t.pos + t.galley.rect.center().to_vec2();
+                (p.y > TOOLBOX_AREA_TOP && p.y < TOP_BARS_HEIGHT).then_some(p)
+            }
+            _ => None,
+        })
+    }
+    let click =
+        |ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame, p: egui::Pos2| {
+            for ev in [
+                vec![egui::Event::PointerMoved(p)],
+                vec![pointer_button(p, true)],
+                vec![pointer_button(p, false)],
+            ] {
+                run_real_frame_stable_ext(ctx, app, frame, ev);
+            }
+            for _ in 0..2 {
+                run_real_frame_stable_ext(ctx, app, frame, vec![]);
+            }
+        };
+
+    // 命令登记：命令面板列得出、标签读得通
+    assert!(
+        Command::all().contains(&Command::LineBreak),
+        "命令面板应含「换行」"
+    );
+    assert_eq!(Command::LineBreak.label(), "换行（插入 <br>）");
+
+    // 段落：先点进文字左缘把光标落到段首，再按「换行」
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("第一段文字", None);
+    app.home = false;
+    app.toolbar_tab = ToolbarTab::Start;
+    app.editor.active = 0;
+    let (shapes, _) = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
+    let body = body_text_center(&shapes, "第一段文字").expect("编辑态应画出整段源码");
+    // 点正文中心偏左 10px：落点必须严格在段中而不是段尾，否则「插到光标处」和
+    // 「追加到末尾」这两种实现分不出来。注意不能再往左，行号栏以右才算正文，
+    // 落在栏上会被判成点空白、光标直接跳到段尾。
+    click(&ctx, &mut app, &mut frame, body - egui::vec2(10.0, 0.0));
+    let caret = app.editor.last_cursor;
+    assert!(
+        (1..4).contains(&caret),
+        "点段落前半应把光标落在段中，实际 {caret}"
+    );
+    let (shapes, _) = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
+    // 图标名写错会掉进 toolbar_icon 的兜底分支，画出一个「?」——这里顺手把
+    // 开始页整排盒子的图标名一起验掉，不只验「换行」这一个。
+    let fallback_icons: Vec<String> = shapes
+        .iter()
+        .filter_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == "?" => {
+                let c = t.pos + t.galley.rect.center().to_vec2();
+                (c.y > TOOLBOX_AREA_TOP && c.y < TOP_BARS_HEIGHT).then_some(c.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        fallback_icons.is_empty(),
+        "开始页有盒子落在兜底「?」图标上（图标名拼错）：{fallback_icons:?}"
+    );
+    let p = label_pos(&shapes, "换行").expect("开始页应有「换行」盒子");
+    click(&ctx, &mut app, &mut frame, p);
+    let expect: String = {
+        let chars: Vec<char> = "第一段文字".chars().collect();
+        let mut out: Vec<char> = chars[..caret].to_vec();
+        out.extend("<br>".chars());
+        out.extend(&chars[caret..]);
+        out.into_iter().collect()
+    };
+    assert_eq!(app.doc.source(), expect, "点「换行」应在光标处插标签");
+    app.execute(Command::Undo, &ctx);
+    assert_eq!(app.doc.source(), "第一段文字", "换行应可撤销");
+
+    // 表格：先点进单元格，再按「换行」
+    let mut app2 = test_app();
+    app2.doc = Document::new("| A | B |\n| --- | --- |\n| 甲 | 乙 |", None);
+    app2.home = false;
+    app2.toolbar_tab = ToolbarTab::Start;
+    app2.editor.active = 0;
+    let (shapes, _) = run_real_frame_stable_ext(&ctx, &mut app2, &mut frame, vec![]);
+    let cell = body_text_center(&shapes, "甲").expect("应画出单元格文字「甲」");
+    click(&ctx, &mut app2, &mut frame, cell);
+    assert_eq!(
+        app2.editor.table_cell.map(|(_, r, c, _)| (r, c)),
+        Some((1, 0)),
+        "点进单元格后应记住所在格：{:?}",
+        app2.editor.table_cell
+    );
+    let (shapes, _) = run_real_frame_stable_ext(&ctx, &mut app2, &mut frame, vec![]);
+    let p = label_pos(&shapes, "换行").expect("开始页应有「换行」盒子");
+    click(&ctx, &mut app2, &mut frame, p);
+    assert!(
+        app2.doc.source().contains("甲<br>") || app2.doc.source().contains("<br>甲"),
+        "标签应写进光标所在的单元格：{:?}",
+        app2.doc.source()
+    );
+}
+
+/// 「插入 → HTML 内嵌」盒子：命令登记、真实点盒子开弹窗、预设填入、确认后落文档、
+/// 撤销可回退；不像 MD 的片段一律拒绝。
+#[test]
+fn toolbar_html_embed_box_inserts_tags() {
+    fn label_pos(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Pos2> {
+        shapes.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                let p = t.pos + t.galley.rect.center().to_vec2();
+                (p.y > TOOLBOX_AREA_TOP && p.y < TOP_BARS_HEIGHT).then_some(p)
+            }
+            _ => None,
+        })
+    }
+    let click =
+        |ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame, p: egui::Pos2| {
+            for ev in [
+                vec![egui::Event::PointerMoved(p)],
+                vec![pointer_button(p, true)],
+                vec![pointer_button(p, false)],
+            ] {
+                run_real_frame_stable_ext(ctx, app, frame, ev);
+            }
+            for _ in 0..2 {
+                run_real_frame_stable_ext(ctx, app, frame, vec![]);
+            }
+        };
+
+    // 命令登记：命令面板列得出、标签读得通
+    assert!(
+        Command::all().contains(&Command::HtmlEmbed),
+        "命令面板应含「插入 HTML 内嵌」"
+    );
+    assert_eq!(
+        Command::HtmlEmbed.label(),
+        "插入 HTML 内嵌（颜色/提示框/分割线）"
+    );
+
+    // 插入选项卡上要有这个盒子，且图标没落到兜底「?」
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("第一段文字", None);
+    app.home = false;
+    app.toolbar_tab = ToolbarTab::Start;
+    app.editor.active = 0;
+    // 盒子只登记在「插入」页：先在开始页确认它不出现，再切到插入页确认它出现，
+    // 免得把按钮加错选项卡也能过。
+    let (shapes, _) = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
+    assert!(
+        label_pos(&shapes, "HTML 内嵌").is_none(),
+        "「HTML 内嵌」只应出现在插入选项卡"
+    );
+    app.toolbar_tab = ToolbarTab::Insert;
+    let (shapes, _) = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
+    let fallback: Vec<String> = shapes
+        .iter()
+        .filter_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == "?" => {
+                let c = t.pos + t.galley.rect.center().to_vec2();
+                (c.y > TOOLBOX_AREA_TOP && c.y < TOP_BARS_HEIGHT).then_some(c.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        fallback.is_empty(),
+        "插入页有盒子落在兜底「?」图标上（图标名拼错）：{fallback:?}"
+    );
+    let p = label_pos(&shapes, "HTML 内嵌").expect("插入页应有「HTML 内嵌」盒子");
+
+    // 点盒子 → 弹窗带默认模板 → 直接确认 → span 落在光标处
+    click(&ctx, &mut app, &mut frame, p);
+    assert!(app.html_dialog.open, "点盒子应打开弹窗");
+    assert!(
+        app.html_dialog.text.starts_with("<span style="),
+        "弹窗应预填文字样式模板：{:?}",
+        app.html_dialog.text
+    );
+    let caret = app.editor.last_cursor;
+    app.confirm_html_dialog();
+    assert!(
+        app.doc.source().contains("<span style=\"color:red; font-size:18px;\">"),
+        "span 模板应写进正文：{:?}",
+        app.doc.source()
+    );
+    assert_eq!(
+        app.editor.caret_req,
+        Some((0, caret + app.html_dialog.text.chars().count().max(1))),
+        "光标应落到插入片段之后"
+    );
+    assert!(!app.html_dialog.open, "插入后弹窗应关闭");
+    app.execute(Command::Undo, &ctx);
+    assert_eq!(app.doc.source(), "第一段文字", "插入应可撤销");
+
+    // 分割线预设：整块插入，前后各留一块
+    app.html_dialog.text = "<hr>".to_string();
+    app.html_dialog.open = true;
+    app.editor.last_cursor = 2;
+    app.confirm_html_dialog();
+    let blocks = crate::ast::parse(&app.doc.source());
+    assert!(
+        blocks.iter().any(|b| matches!(b, crate::ast::Block::Rule { .. })),
+        "hr 预设应插成分隔线块：{:?}",
+        app.doc.source()
+    );
+    assert!(
+        app.doc.source().contains("第一段文字"),
+        "整块插入不该吃掉原有正文：{:?}",
+        app.doc.source()
+    );
+
+    // 提示框预设：div 块
+    app.doc = Document::new("正文", None);
+    app.editor = EditorState::default();
+    app.editor.active = 0;
+    app.html_dialog.text = "<div style=\"background:#eee; padding:10px;\">提示框</div>".to_string();
+    app.confirm_html_dialog();
+    assert!(
+        app.doc.source().contains("<div style=\"background:#eee;"),
+        "div 模板应整块插入：{:?}",
+        app.doc.source()
+    );
+
+    // 不像 HTML 的内容：拒绝且不动文档
+    let before = app.doc.source();
+    app.html_dialog.text = "just words".to_string();
+    app.html_dialog.open = true;
+    app.confirm_html_dialog();
+    assert_eq!(app.doc.source(), before, "非 HTML 片段不应写进文档");
+    assert!(app.html_dialog.open, "拒绝时弹窗应留着让用户改");
+    assert!(
+        app.status.contains("HTML") || app.status.contains("标签"),
+        "要给出可读提示：{}",
+        app.status
+    );
+}
+
+/// 弹窗本体：四个预设按钮填模板、点「插入」才落文档、「取消」只关窗；校验不过时
+/// 文档不动、窗留着。全程走真实点击（`MarkdApp::windows` 层），保证用户点得到这些控件。
+#[test]
+fn html_dialog_presets_insert_and_cancel() {
+    // 挂上弹窗的第一帧只登记区域、不画内容，取快照固定跑两帧
+    let snapshot = |ctx: &egui::Context, app: &mut MarkdApp| -> Vec<egui::epaint::ClippedShape> {
+        run_frame_with_windows(ctx, app, vec![]);
+        run_frame_with_windows(ctx, app, vec![])
+    };
+    let widget = |shapes: &[egui::epaint::ClippedShape], label: &str| -> Option<egui::Pos2> {
+        shapes.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                let p = t.pos + t.galley.rect.center().to_vec2();
+                (p.y > TOP_BARS_HEIGHT).then_some(p)
+            }
+            _ => None,
+        })
+    };
+    let click = |ctx: &egui::Context, app: &mut MarkdApp, p: egui::Pos2| {
+        for ev in [
+            vec![egui::Event::PointerMoved(p)],
+            vec![pointer_button(p, true)],
+            vec![pointer_button(p, false)],
+        ] {
+            run_frame_with_windows(ctx, app, ev);
+        }
+        run_frame_with_windows(ctx, app, vec![])
+    };
+    // 工具条选项卡也叫「插入」，只取和「取消」同一行的那一处
+    let insert_btn = |shapes: &[egui::epaint::ClippedShape], cancel: egui::Pos2| -> egui::Pos2 {
+        shapes
+            .iter()
+            .filter_map(|cs| match &cs.shape {
+                egui::Shape::Text(t) if t.galley.text() == "插入" => {
+                    let p = t.pos + t.galley.rect.center().to_vec2();
+                    (p.y > TOP_BARS_HEIGHT).then_some(p)
+                }
+                _ => None,
+            })
+            .min_by_key(|p| ((p.y - cancel.y).abs() * 1000.0) as i64)
+            .expect("弹窗应有「插入」按钮")
+    };
+
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    app.doc = Document::new("正文", None);
+    app.home = false;
+    app.toolbar_tab = ToolbarTab::Start;
+    app.editor.active = 0;
+    // 先跑一帧常规画面：中文字体在这一步装好，弹窗帧才排得出文字
+    run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
+
+    // 命令面板那条路（快速打开里选「插入 HTML 内嵌」）应开同一个弹窗
+    app.execute(Command::HtmlEmbed, &ctx);
+    assert!(app.html_dialog.open, "命令应打开弹窗");
+    assert!(
+        app.html_dialog.text.starts_with("<span style="),
+        "弹窗应预填文字样式模板：{:?}",
+        app.html_dialog.text
+    );
+    let shapes = snapshot(&ctx, &mut app);
+    let texts: Vec<String> = shapes
+        .iter()
+        .filter_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        texts.iter().any(|t| t == "插入 HTML 内嵌"),
+        "应画出弹窗标题：{texts:?}"
+    );
+    for preset in ["文字样式", "提示框", "分割线", "换行"] {
+        assert!(
+            widget(&shapes, preset).is_some(),
+            "弹窗应有「{preset}」预设按钮：{texts:?}"
+        );
+    }
+    let cancel = widget(&shapes, "取消").expect("弹窗应有「取消」按钮");
+    let ins = insert_btn(&shapes, cancel);
+    assert!(
+        (ins.y - cancel.y).abs() < 30.0,
+        "「插入」应与「取消」同排：{ins:?} {cancel:?}"
+    );
+
+    // 点预设只换框里的模板，文档要等「插入」才动
+    click(&ctx, &mut app, widget(&shapes, "分割线").expect("分割线预设"));
+    assert_eq!(app.html_dialog.text, "<hr>", "点「分割线」应填入 hr 模板");
+    assert_eq!(app.doc.source(), "正文", "点预设不该改文档");
+    let shapes = snapshot(&ctx, &mut app);
+    click(
+        &ctx,
+        &mut app,
+        widget(&shapes, "提示框").expect("重绘后仍有「提示框」预设"),
+    );
+    assert!(
+        app.html_dialog.text.starts_with("<div style="),
+        "点「提示框」应换成 div 模板：{:?}",
+        app.html_dialog.text
+    );
+
+    // 「插入」：div 整块落进文档，窗口关闭
+    let shapes = snapshot(&ctx, &mut app);
+    let cancel = widget(&shapes, "取消").expect("弹窗应有「取消」按钮");
+    click(&ctx, &mut app, insert_btn(&shapes, cancel));
+    assert!(
+        app.doc.source().contains("<div style=\"background:#eee;"),
+        "div 模板应整块落进文档：{:?}",
+        app.doc.source()
+    );
+    assert!(app.doc.source().contains("正文"), "整块插入不该吃掉原有正文");
+    assert!(!app.html_dialog.open, "插入后应关窗");
+
+    // 校验不过：文档不动、窗留着
+    app.execute(Command::HtmlEmbed, &ctx);
+    app.html_dialog.text = "just words".to_string();
+    let before = app.doc.source();
+    let shapes = snapshot(&ctx, &mut app);
+    let cancel = widget(&shapes, "取消").expect("弹窗应有「取消」按钮");
+    click(&ctx, &mut app, insert_btn(&shapes, cancel));
+    assert_eq!(app.doc.source(), before, "非法片段不应写文档");
+    assert!(app.html_dialog.open, "非法片段时窗应留着");
+
+    // 「取消」：只关窗
+    let shapes = snapshot(&ctx, &mut app);
+    let cancel = widget(&shapes, "取消").expect("弹窗应有「取消」按钮");
+    click(&ctx, &mut app, cancel);
+    assert!(!app.html_dialog.open, "取消应关窗");
+    assert_eq!(app.doc.source(), before, "取消不应改文档");
 }

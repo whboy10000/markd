@@ -392,6 +392,7 @@ fn stress_pipeline() {
             let name = match b {
                 Block::Heading { .. } => "heading",
                 Block::Paragraph { .. } => "para",
+                Block::Div { .. } => "div",
                 Block::Quote { .. } => "quote",
                 Block::ListItem { .. } => "list",
                 Block::Code { .. } => "code",

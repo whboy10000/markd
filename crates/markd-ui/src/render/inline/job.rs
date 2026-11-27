@@ -309,6 +309,33 @@ pub(crate) fn append_inline(
             f.color = theme.accent;
             job.append(&format!("[{}]", id), 0.0, f);
         }
+        Inline::Span { tag, content } => {
+            // 内嵌 HTML：`<span style="color:red; font-size:18px">` 就地换颜色与字号，
+            // 认不出的属性沿用外层样式（读取是纯函数，定值测过）。标签本身不占字符位，
+            // 与 `collect_link_ranges` 的计数口径一致。
+            let st = crate::html_style::style_of(tag, size);
+            let size = st.font_size_px.unwrap_or(size);
+            let color = st
+                .color
+                .map(|[r, g, b]| Color32::from_rgb(r, g, b))
+                .unwrap_or(color);
+            for x in content {
+                append_inline(
+                    job,
+                    x,
+                    theme,
+                    size,
+                    color,
+                    bold,
+                    italic,
+                    strike,
+                    underline,
+                    highlight,
+                    linked,
+                    math.as_deref_mut(),
+                );
+            }
+        }
         Inline::Break => job.append("\n", 0.0, theme.fmt(size)),
     }
 }

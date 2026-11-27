@@ -117,6 +117,17 @@ impl MarkdApp {
             }
             Command::Highlight => editor::wrap(&mut self.doc, &mut self.editor, "==", "==", true),
             Command::Code => editor::wrap(&mut self.doc, &mut self.editor, "`", "`", true),
+            // 换行按钮：往光标处插 `<br>`。表格走单元格草稿，普通块直接改块源码，
+            // 两态都成立（渲染态断行、编辑态露出标签）。
+            Command::LineBreak => {
+                if editor::insert_line_break(&mut self.doc, &mut self.editor) {
+                    self.on_changed();
+                } else {
+                    self.status = "换行要插在有文字的地方：先点进段落、列表或表格单元格".to_string();
+                }
+            }
+            // HTML 内嵌走弹窗：片段要用户自己写，预设只是起手。
+            Command::HtmlEmbed => self.open_html_dialog(),
             Command::Link => self.open_link_dialog(),
             Command::Image => {
                 // 从磁盘选图片：按设置复制到文档旁的资源目录（默认 imgs/），

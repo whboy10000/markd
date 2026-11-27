@@ -45,6 +45,10 @@ pub enum Command {
     /// 行内高亮（`==文字==`）。
     Highlight,
     Code,
+    /// 硬换行：在光标处插入 `<br>` 标签，段落、标题、列表、表格单元格都生效。
+    LineBreak,
+    /// 内嵌 HTML：弹窗里粘贴 `<span>` / `<div>` / `<hr>` / `<br>` 片段，插进文档。
+    HtmlEmbed,
     CodeBlock,
     /// 代码组：同一个代码区用 Tab 切换多种语言。
     CodeGroup,
@@ -125,6 +129,8 @@ impl Command {
             Command::Underline => "下划线",
             Command::Highlight => "高亮",
             Command::Code => "行内代码",
+            Command::LineBreak => "换行（插入 <br>）",
+            Command::HtmlEmbed => "插入 HTML 内嵌（颜色/提示框/分割线）",
             Command::CodeBlock => "代码块",
             Command::CodeGroup => "代码组（多语言 Tab）",
             Command::Link => "插入链接",
@@ -205,6 +211,8 @@ impl Command {
             Command::Highlight,
             Command::ClearFormat,
             Command::Code,
+            Command::LineBreak,
+            Command::HtmlEmbed,
             Command::CodeBlock,
             Command::CodeGroup,
             Command::Link,

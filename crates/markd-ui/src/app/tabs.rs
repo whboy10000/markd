@@ -2,6 +2,22 @@
 
 use super::*;
 
+/// 「插入 HTML 内嵌」弹窗的四个预设：按钮名 + 片段模板。
+/// 模板就是文档里该写的原文（标准 HTML，别的渲染器照常识别），用户可在框里接着改。
+pub(super) const HTML_PRESETS: [(&str, &str); 4] = [
+    (
+        "文字样式",
+        r#"<span style="color:red; font-size:18px;">红色大号文字</span>"#,
+    ),
+    (
+        "提示框",
+        r#"<div style="background:#eee; padding:10px;">灰色背景提示框</div>"#,
+    ),
+    ("分割线", "<hr>"),
+    ("换行", "<br>"),
+];
+
+
 impl MarkdApp {
     /// 大纲显隐开关：正在显示时切回文件树（隐藏），否则显示大纲面板。
     pub(super) fn toggle_outline(&mut self) {
@@ -447,6 +463,53 @@ impl MarkdApp {
             kind.describe()
         );
         self.attachment_dialog.open = false;
+    }
+
+    /// 打开「插入 HTML 内嵌」弹窗：预填最常用的文字样式模板，四个预设可随时替换。
+    pub(super) fn open_html_dialog(&mut self) {
+        self.html_dialog = HtmlDialog {
+            open: true,
+            text: HTML_PRESETS[0].1.to_string(),
+            focus_text: true,
+        };
+    }
+
+    /// 弹窗点「插入」：按 `html_drop` 的判定落文档——单行行内片段插到光标处，
+    /// div / hr / 跨行片段整块插入。认不出标签就拒绝，绝不往正文里写字面尖括号。
+    pub(super) fn confirm_html_dialog(&mut self) {
+        let raw = self.html_dialog.text.trim().to_string();
+        if raw.is_empty() {
+            self.status = "请先写一段 HTML 片段，或点上方的预设".to_string();
+            self.html_dialog.focus_text = true;
+            return;
+        }
+        let Some(drop) = crate::html_style::html_drop(&raw) else {
+            self.status =
+                "只支持 <span> <div> <br> <hr> 四种标签，且要成对写完整".to_string();
+            return;
+        };
+        // 行内片段走光标处，块级片段整块插入；状态栏说清落点，用户才知道为什么
+        // 有时插在字中间、有时另起一块。
+        let describe = match drop {
+            crate::html_style::HtmlDrop::Inline => {
+                if !editor::insert_inline_tag(&mut self.doc, &mut self.editor, &raw) {
+                    self.status =
+                        "行内片段要插在有文字的地方：先点进段落、标题、列表或表格单元格"
+                            .to_string();
+                    return;
+                }
+                "插到光标处"
+            }
+            crate::html_style::HtmlDrop::Block => {
+                editor::insert_rendered_block(&mut self.doc, &mut self.editor, &raw);
+                "整块插入"
+            }
+        };
+        self.on_changed();
+        self.status = format!(
+            "已{describe} HTML 片段：点这一块进编辑态可直接改标签，导出 HTML 原样保留"
+        );
+        self.html_dialog.open = false;
     }
 
     /// 附件地址落文档前的形状：远程链接原样；本地绝对路径尽量转成相对文档的

@@ -138,6 +138,7 @@ impl MarkdApp {
             link_dialog: LinkDialog::default(),
             video_dialog: VideoDialog::default(),
             attachment_dialog: AttachmentDialog::default(),
+            html_dialog: HtmlDialog::default(),
             file_downloads: Vec::new(),
             link_docs,
             link_rx: None,

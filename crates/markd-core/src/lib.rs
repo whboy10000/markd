@@ -8,6 +8,7 @@ pub mod attachment;
 pub mod command;
 pub mod document;
 pub mod export;
+pub mod html_style;
 pub mod image_host;
 pub mod theme;
 pub mod video;

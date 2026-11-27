@@ -37,6 +37,7 @@ fn inline_plain_len(i: &Inline) -> usize {
         | Inline::Link { label: v, .. } => v.iter().map(inline_plain_len).sum(),
         Inline::Image { alt, .. } => alt.chars().count(),
         Inline::Footnote(id) => id.chars().count(),
+        Inline::Span { content, .. } => content.iter().map(inline_plain_len).sum(),
         Inline::Break => 1,
     }
 }
@@ -113,6 +114,11 @@ fn inline_html_range(v: &[Inline], start: usize, end: usize) -> String {
                     esc(alt)
                 ));
             }
+            Inline::Span { tag, content } => {
+                out.push_str(tag);
+                out.push_str(&inline_html_range(content, local_lo, local_hi));
+                out.push_str("</span>");
+            }
             Inline::Footnote(id) => out.push_str(&format!("<sup class=\"fn\">[{}]</sup>", esc(id))),
             Inline::Break => out.push_str("<br/>"),
         }
@@ -172,6 +178,12 @@ fn inline_html(v: &[Inline]) -> String {
             }
             Inline::Footnote(id) => s.push_str(&format!("<sup class=\"fn\">[{}]</sup>", esc(id))),
             Inline::Break => s.push_str("<br/>"),
+            // 内嵌 HTML：标签原样写出，内部的 Markdown 照常渲染。
+            Inline::Span { tag, content } => {
+                s.push_str(tag);
+                s.push_str(&inline_html(content));
+                s.push_str("</span>");
+            }
         }
     }
     s
@@ -277,6 +289,10 @@ pub fn to_html(title: &str, source: &str, dark: bool) -> String {
                     Some(html) => out.push_str(&format!("{html}\n")),
                     None => out.push_str(&format!("<p>{}</p>\n", inline_html(content))),
                 }
+            }
+            Block::Div { tag, content, .. } => {
+                // 内嵌 HTML 块：开始标签原样写出，内部的 Markdown 照常渲染成 HTML。
+                out.push_str(&format!("{tag}{}\n</div>\n", inline_html(content)));
             }
             Block::Quote { content, .. } => {
                 out.push_str(&format!(
@@ -481,6 +497,10 @@ fn block_html(b: &Block, blocks: &[Block]) -> String {
                 Some(html) => html,
                 None => format!("<p>{}</p>", inline_html(content)),
             });
+        }
+        Block::Div { tag, content, .. } => {
+            // 内嵌 HTML 块：与整篇导出同一口径，标签原样、内部照常渲染。
+            out.push_str(&format!("{tag}{}\n</div>", inline_html(content)));
         }
         Block::Quote { content, .. } => {
             out.push_str(&format!(
@@ -756,6 +776,57 @@ mod tests {
         assert!(h.contains("<!doctype html>"));
     }
 
+    /// 内嵌 HTML 透传：`<span>` / `<div>` 的标签必须原样写进导出的 HTML（样式跟着走），
+    /// 标签内部的 Markdown 照常渲染成 HTML；`<hr>` 走 Rule 分支导出 `<hr/>`。
+    #[test]
+    fn to_html_keeps_embedded_html_tags() {
+        let src = "前<span style=\"color:red; font-size:18px\">红色**粗**</span>后\n\n<div style=\"background:#eee; padding:10px;\">提示框<span style=\"color:blue\">蓝</span></div>\n\n<hr>\n\n结束";
+        let h = to_html("T", src, false);
+        assert!(
+            h.contains("<span style=\"color:red; font-size:18px\">红色<strong>粗</strong></span>"),
+            "span 标签要原样带出、正文照常渲染: {h}"
+        );
+        assert!(
+            h.contains("<div style=\"background:#eee; padding:10px;\">提示框<span style=\"color:blue\">蓝</span>\n</div>"),
+            "div 要写成成对标签包住已渲染的正文: {h}"
+        );
+        assert!(h.contains("<hr/>"), "hr 标签应导出成分割线: {h}");
+        assert!(!h.contains("**粗**"), "span 内不能漏出 Markdown 字面量: {h}");
+        assert!(h.contains("<p>结束</p>"), "hr 之后的段落照常: {h}");
+    }
+
+    /// 块级导出（拖选复制用的片段 HTML）与整篇导出同一口径：div 带标签、span 带标签。
+    #[test]
+    fn block_html_keeps_embedded_html_tags() {
+        let src = "<div style=\"background:#eee;\">提示<span style=\"color:red\">红</span></div>";
+        let blocks = ast::parse(src);
+        let h = block_html(&blocks[0], &blocks);
+        assert_eq!(
+            h,
+            "<div style=\"background:#eee;\">提示<span style=\"color:red\">红</span>\n</div>",
+            "{h}"
+        );
+    }
+
+    /// span 的字符数必须按「只算正文、不算标签」计入口内偏移：
+    /// `inline_plain_len` 漏掉这一支时，跨块选区的端点会切错位置。
+    #[test]
+    fn cross_sel_html_counts_span_body_only() {
+        let src = "甲<span style=\"color:red\">乙丙</span>丁";
+        let blocks = ast::parse(src);
+        // 所见文本是「甲乙丙丁」，全选应拿到四个字的正文与 span 标签。
+        let h = cross_sel_html(&blocks, (0, 0, 0, 4));
+        assert_eq!(
+            h,
+            "<p>甲<span style=\"color:red\">乙丙</span>丁</p>",
+            "按所见字符下标切片: {h}"
+        );
+        // 只选「丙丁」：起点落在 span 内部第二个字，终点在 span 之后。
+        let part = cross_sel_html(&blocks, (0, 2, 0, 4));
+        assert!(part.contains("丙"), "起要点在 span 内要拿到那半个 span: {part}");
+        assert!(part.contains('丁'), "span 之后的字要跟上: {part}");
+    }
+
     #[test]
     fn cross_sel_html_preserves_block_and_inline_format() {
         let src = "# 标题 **粗**\n\n段落含 `代码` 与 *斜体*\n\n```rust\nfn main(){}\n```\n\n| A | B |\n| --- | --- |\n| 1 | 2 |";
@@ -912,5 +983,21 @@ a = 1
         let h = block_html(&blocks[0], &blocks);
         assert!(h.contains("file-embed"), "{h}");
         assert!(h.contains("压缩包"), "{h}");
+    }
+
+    /// 硬换行导出的三种落点：段落、表格单元格、富文本片段都要出 `<br/>`，
+    /// 不能在导出/复制这一层退化成空格或被吞掉。
+    #[test]
+    fn hard_break_exports_as_br() {
+        let para = to_html("T", "上文<br>下文", false);
+        assert!(para.contains("上文<br/>下文"), "{para}");
+        let table = to_html("T", "| A | B |\n| --- | --- |\n| 甲<br>乙 | 丙 |", false);
+        assert!(table.contains("甲<br/>乙"), "{table}");
+        let blocks = ast::parse("甲<br>乙");
+        let rich = block_html(&blocks[0], &blocks);
+        assert!(rich.contains("甲<br/>乙"), "{rich}");
+        // 跨块选区复制走的是另一套区间输出（inline_html_range），同样要留标签
+        let sel = cross_sel_html(&blocks, (0, 0, 0, 100));
+        assert!(sel.contains("甲<br/>乙"), "{sel}");
     }
 }

@@ -193,6 +193,17 @@ struct AttachmentDialog {
     focus_url: bool,
 }
 
+/// 插入 HTML 内嵌弹窗：一个可编辑的片段框 + 四个预设，确认后按片段形状决定
+/// 是插到光标处（纯行内片段）还是整块插入（div / hr）。
+#[derive(Default)]
+struct HtmlDialog {
+    open: bool,
+    /// 片段原文，预设只负责往里填模板，用户可以接着改。
+    text: String,
+    /// 打开后的第一帧把焦点交给片段框。
+    focus_text: bool,
+}
+
 /// 一个标签页的完整文档状态。除活动标签外，其余标签的状态都暂存在这里，
 /// 切换时与 MarkdApp 上的 doc/editor/outline/stats 字段整体换出换入。
 struct TabState {
@@ -257,6 +268,8 @@ pub struct MarkdApp {
     video_dialog: VideoDialog,
     /// 插入文件弹窗（本地附件 / 远程链接）。
     attachment_dialog: AttachmentDialog,
+    /// 插入 HTML 内嵌弹窗（span / div / hr / br）。
+    html_dialog: HtmlDialog,
     /// 后台下载附件的结果通道：地址自己留着，通道断开（线程意外退出）时好把
     /// 卡片上的「下载中…」摘掉，否则那一栏会永远挂着。
     file_downloads: Vec<(

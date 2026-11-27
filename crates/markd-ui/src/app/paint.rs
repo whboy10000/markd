@@ -162,6 +162,29 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
                 stroke,
             );
         }
+        "line_break" => {
+            // 回车箭头 ⏎：上一行文字 → 折到下一行，只用线段画，不依赖符号字体。
+            painter.line_segment(
+                [c + egui::vec2(-9.0, -7.0), c + egui::vec2(7.0, -7.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [c + egui::vec2(7.0, -7.0), c + egui::vec2(7.0, 3.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [c + egui::vec2(7.0, 3.0), c + egui::vec2(-9.0, 3.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [c + egui::vec2(-5.0, -1.0), c + egui::vec2(-9.0, 3.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [c + egui::vec2(-9.0, 3.0), c + egui::vec2(-5.0, 7.0)],
+                stroke,
+            );
+        }
         "list" => {
             for (i, len) in [10.0_f32, 13.0, 8.0].into_iter().enumerate() {
                 let y = c.y - 9.0 + i as f32 * 9.0;
@@ -371,6 +394,10 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
                 [c + egui::vec2(-10.0, 9.0), c + egui::vec2(10.0, 9.0)],
                 stroke,
             );
+        }
+        "html" => {
+            // 尖括号对：一看就是「写标签」，和「代码」的 </> 区分开。
+            text("<>", 16.0, c);
         }
         "mermaid" => text("M", 21.0, c),
         "snapshot" => {

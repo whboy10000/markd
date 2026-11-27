@@ -483,12 +483,19 @@ pub fn show_editor(
                                     !matches!(&state.table_draft, Some((i, _, _)) if *i == idx);
                                 if need {
                                     let mut grid: Vec<Vec<String>> = Vec::new();
+                                    // 单元格草稿用 inline_cell_source：换行标签要留着，
+                                    // 否则点进含 <br> 的格子再写回就把换行摊成空格丢了。
                                     grid.push(
-                                        head.iter().map(|c| crate::ast::inline_plain(c)).collect(),
+                                        head
+                                            .iter()
+                                            .map(|c| crate::ast::inline_cell_source(c))
+                                            .collect(),
                                     );
                                     for r in rows.iter() {
                                         grid.push(
-                                            r.iter().map(|c| crate::ast::inline_plain(c)).collect(),
+                                            r.iter()
+                                                .map(|c| crate::ast::inline_cell_source(c))
+                                                .collect(),
                                         );
                                     }
                                     state.table_draft = Some((idx, grid, align.clone()));
@@ -713,6 +720,56 @@ pub fn show_editor(
                                                         r.request_focus();
                                                     }
                                                     if r.changed() {
+                                                        edited = true;
+                                                    }
+                                                    // 记下光标所在单元格（含格内光标下标）。
+                                                    // 只在持有焦点时刷新：点工具条按钮后编辑框失焦，
+                                                    // 上一帧记下的位置才是用户真正在改的那一格。
+                                                    if r.has_focus() {
+                                                        let caret = egui::TextEdit::load_state(
+                                                            ui.ctx(),
+                                                            r.id,
+                                                        )
+                                                        .and_then(|ts| ts.cursor.char_range())
+                                                        .map(|cr| cr.primary.index.0)
+                                                        .unwrap_or_else(|| cell.chars().count());
+                                                        state.table_cell =
+                                                            Some((idx, ri, ci, caret));
+                                                    }
+                                                    // 「换行」按钮 / HTML 弹窗的请求：往这一格的
+                                                    // 草稿里插标签。必须在本帧置 edited，草稿才会
+                                                    // 写回源码，否则下一次按键会用旧草稿把标签盖掉。
+                                                    // 只在坐标对得上那一格才摘走请求：
+                                                    // 先 take 再判等会让请求在别处被吞掉。
+                                                    let pending = state
+                                                        .table_inline_req
+                                                        .as_ref()
+                                                        .filter(|((bi, br, bc, _), _)| {
+                                                            (*bi, *br, *bc) == (idx, ri, ci)
+                                                        })
+                                                        .map(|((_, _, _, bp), tag)| (*bp, tag.clone()));
+                                                    if let Some((bp, tag)) = pending {
+                                                        state.table_inline_req = None;
+                                                        let mut cs: Vec<char> =
+                                                            cell.chars().collect();
+                                                        let at = bp.min(cs.len());
+                                                        cs.splice(at..at, tag.chars());
+                                                        let next = at + tag.chars().count();
+                                                        *cell = cs.into_iter().collect();
+                                                        let mut ts =
+                                                            egui::TextEdit::load_state(
+                                                                ui.ctx(),
+                                                                r.id,
+                                                            )
+                                                            .unwrap_or_default();
+                                                        ts.cursor.set_char_range(Some(
+                                                            egui::text::CCursorRange::one(
+                                                                egui::text::CCursor::new(next),
+                                                            ),
+                                                        ));
+                                                        ts.store(ui.ctx(), r.id);
+                                                        state.table_cell =
+                                                            Some((idx, ri, ci, next));
                                                         edited = true;
                                                     }
                                                 }
@@ -2629,11 +2686,20 @@ pub fn show_editor(
     // 只在本帧真的改到了字时写回：egui 对「空代码块里按一次退格」这类没删掉
     // 任何东西的按键也报 changed，照写会把 "```rust\n```" 重排成带空行的等价
     // 源码，白白把文档标脏、撤销栈多塞一步空操作。
-    let text_differs = doc
-        .blocks
-        .get(active)
-        .map(|b| block_editable_text(b) != active_buf)
-        .unwrap_or(true);
+    // 表格要比对草稿重建出的源码：单元格里编辑的是草稿，`active_buf` 那份整块源码
+    // 从头到尾没动过，照老口径判断会把每一次按键都当成「没改到字」而丢掉。
+    let text_differs = match &table_edit_src {
+        Some(src) => doc
+            .blocks
+            .get(active)
+            .map(|b| b.source() != src.as_str())
+            .unwrap_or(true),
+        None => doc
+            .blocks
+            .get(active)
+            .map(|b| block_editable_text(b) != active_buf)
+            .unwrap_or(true),
+    };
     if changed && text_differs {
         doc.maybe_record();
         let src = table_edit_src.clone().unwrap_or_else(|| {
