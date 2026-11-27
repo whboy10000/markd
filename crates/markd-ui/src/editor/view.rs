@@ -17,21 +17,124 @@ pub(super) fn gutter_width(show: bool) -> f32 {
 /// 固定 70px 栏宽下留 12px，保证最大字号（26pt）的 4 位行号仍能完整显示。
 pub(super) const GUTTER_PAD: f32 = 12.0;
 
-/// 滚动条所在的那条窄带：点这里应该交给滚动条，不能当成空白点击。
-pub(super) fn scroll_bar_zone(
+/// 编辑区竖向滚动条宽度：0.5 cm（仓库口径 1 cm ≈ 37.8 pt，与 `app` 里标题栏尺寸的注释同一换算）。
+///
+/// egui 默认是 10pt 的浮动条（`ScrollStyle::floating()`）：不占正文宽度，静止时
+/// 底色与滑块的透明度都是 0，要悬停才显形，用户看不出文档有多长、自己滚到哪儿了。
+/// 这里换成常显的实条，并在其上加分隔线与光标位置标记。
+pub(super) const SCROLLBAR_WIDTH: f32 = 0.5 * 37.8;
+
+/// 正文与滚动条之间的分隔线宽度。
+pub(super) const SCROLLBAR_DIVIDER: f32 = 1.0;
+
+/// 光标位置标记的线宽（横穿轨道的一条短横线）。
+pub(super) const SCROLLBAR_MARKER: f32 = 2.0;
+
+/// 标记外圈光晕的线宽：比核心粗一档，让短横线在深色轨道与浅色滑块上都看得见。
+pub(super) const SCROLLBAR_MARKER_HALO: f32 = SCROLLBAR_MARKER + 2.0;
+
+/// 把编辑区这一层的滚动条样式设成实条：不浮动、不占额外边距，宽度 [`SCROLLBAR_WIDTH`]，
+/// 轨道底色跟着主题走。
+///
+/// 只改这一层 `ui` 的 style，因此设置弹窗、侧栏、终端的滚动条不受影响。
+pub(super) fn apply_scrollbar_style(ui: &mut egui::Ui, theme: &Theme) {
+    let s = &mut ui.spacing_mut().scroll;
+    s.floating = false;
+    s.bar_width = SCROLLBAR_WIDTH;
+    s.bar_inner_margin = 0.0;
+    s.bar_outer_margin = 0.0;
+
+    // 本 app 从不设 `Visuals`（只设 `clear_color`），所以 egui 的滚动条永远是深色那套：
+    // 轨道走 `extreme_bg_color`（实测深色为 `#0A0A0A`），浅色主题下就是一根黑条，很突兀。
+    // 轨道改成面板色：编辑区子树里读 `extreme_bg_color` 的只有滚动条——段落的 TextEdit 用
+    // `Frame::NONE` 或自带 `fill`，没有进度条，也没有 `Frame::canvas`。
+    //
+    // 滑块**不能**这样改：它的颜色在 `widgets.{inactive,hovered,active}.bg_fill`，而任务列表
+    // 的复选框内芯读同一个字段（A/B 实测：改之前 `#3C3C3C`，改之后跟着变成主题色）。
+    // 所以滑块留给 `paint_scrollbar_marks` 自己盖。
+    ui.visuals_mut().extreme_bg_color = theme.panel;
+}
+
+/// 在滚动条那条窄带上画三样东西：滑块的主题色、与正文之间的分隔线、光标在整篇文档里的位置。
+///
+/// `caret_y` 与 `offset_y` 都是**内容坐标系**里的 y（0 = 文档顶部），由调用方算好交进来：
+/// 坐标换算与「光标在哪、滚到哪儿」的判定分开，这里才只是在窄带上描几笔。
+pub(super) fn paint_scrollbar_marks(
     ui: &egui::Ui,
-    inner_rect: egui::Rect,
-    content_height: f32,
-) -> egui::Rect {
-    if content_height > inner_rect.height() {
-        let w = ui.spacing().scroll.bar_width + ui.spacing().scroll.bar_inner_margin;
-        egui::Rect::from_min_max(
-            egui::pos2(inner_rect.right() - w - 2.0, inner_rect.top()),
-            egui::pos2(inner_rect.right() + 8.0, inner_rect.bottom()),
-        )
-    } else {
-        egui::Rect::NOTHING
-    }
+    theme: &Theme,
+    inner: egui::Rect,
+    total_h: f32,
+    offset_y: f32,
+    caret_y: f32,
+) {
+    let left = inner.right();
+    let right = left + ui.spacing().scroll.bar_width;
+    ui.painter().line_segment(
+        [
+            egui::pos2(left, inner.top()),
+            egui::pos2(left, inner.bottom()),
+        ],
+        egui::Stroke::new(SCROLLBAR_DIVIDER, theme.dim),
+    );
+
+    // 滑块：egui 已经按它自己的颜色画了一遍（那个颜色字段不能动，见
+    // `apply_scrollbar_style`），这里按同一几何再盖一层主题色。几何照 egui
+    // `calculate_handle_rect` 的式子来，`scrollbar::painted_thumb_matches_eguis_geometry`
+    // 逐帧比对两者，差一点就红——差一点就会在边上露出一圈 egui 的浅灰。
+    let strip = egui::Rect::from_min_max(
+        egui::pos2(left, inner.top()),
+        egui::pos2(right, inner.bottom()),
+    );
+    let from_content = |c: f32| {
+        egui::remap_clamp(c, 0.0..=total_h, strip.top()..=strip.bottom())
+    };
+    let max_off = (total_h - inner.height()).max(0.0);
+    let len = (from_content(offset_y + inner.height()) - from_content(offset_y))
+        .max(ui.spacing().scroll.handle_min_length);
+    let start = egui::remap_clamp(
+        offset_y,
+        0.0..=max_off,
+        strip.top()..=(strip.bottom() - len),
+    );
+    let thumb = egui::Rect::from_min_max(
+        egui::pos2(strip.left(), start),
+        egui::pos2(strip.right(), start + len),
+    );
+    // 圆角取 egui 用的同一个值（实测深色主题三态都是 6，与状态无关），否则角上会露底。
+    let radius = ui.visuals().widgets.inactive.corner_radius;
+    let pressed = ui.input(|i| i.pointer.any_down());
+    let hover = ui.rect_contains_pointer(thumb) || (pressed && ui.rect_contains_pointer(strip));
+    ui.painter()
+        .rect_filled(thumb, radius, if hover { theme.text } else { theme.dim });
+
+    // 标记的 y 与 egui 算滑块用的映射一致：内容 0..总高 线性映到轨道 y 区间。
+    // 分母取下限「一屏高」：文档不满一屏时内容坐标就等于屏幕坐标，
+    // 标记于是正好落在光标那一行上，而不是在短内容里被除到中间去。
+    let denom = total_h.max(inner.height());
+    let frac = (caret_y / denom).clamp(0.0, 1.0);
+    let y = inner.top() + frac * inner.height();
+    // 描两遍：先粗一圈纸色光晕，再画正文色的核心。滑块压在轨道上，两者明度不同，
+    // 而光标几乎总落在滑块上——单色总有一侧对比不够，光晕与核心互为深浅就两侧都看得见。
+    let seg = [egui::pos2(left + 3.0, y), egui::pos2(right - 3.0, y)];
+    ui.painter()
+        .line_segment(seg, egui::Stroke::new(SCROLLBAR_MARKER_HALO, theme.bg));
+    ui.painter()
+        .line_segment(seg, egui::Stroke::new(SCROLLBAR_MARKER, theme.text));
+}
+
+/// 滚动条所在的那条窄带：点这里应该交给滚动条，不能当成空白点击。
+///
+/// 实条从第一帧起就占着这条带子（见 `show_editor` 里的 `AlwaysVisible`），
+/// 所以不必等内容真的超出一屏才排除。
+pub(super) fn scroll_bar_zone(ui: &egui::Ui, inner_rect: egui::Rect) -> egui::Rect {
+    let s = &ui.spacing().scroll;
+    egui::Rect::from_min_max(
+        egui::pos2(inner_rect.right() - 2.0, inner_rect.top()),
+        egui::pos2(
+            inner_rect.right() + s.bar_width + s.bar_inner_margin + s.bar_outer_margin,
+            inner_rect.bottom(),
+        ),
+    )
 }
 
 /// 空白点击调试：`MARKD_TRACE_BLANK=1 cargo run` 时打印判定结果。
@@ -204,9 +307,16 @@ pub fn show_editor(
     // 列表项编辑态按下 Tab / Shift+Tab：记下方向，帧末统一调整缩进层级。
     let mut list_tab: Option<bool> = None;
 
+    // 滚动条样式只改编辑区这一层：设置弹窗、侧栏、终端仍用 egui 的浮动细条。
+    apply_scrollbar_style(ui, theme);
+
     let scroll_out = egui::ScrollArea::vertical()
         .id_salt("editor_scroll")
         .auto_shrink([false, false])
+        // 实条宽度从第一帧就要占满：默认 VisibleWhenNeeded 下 egui 会把滑块出现
+        // 做成动画（show_bars_factor 0→1），正文可用宽度逐帧变窄，而排版表按宽度
+        // 指纹整篇作废重测——滚动请求恰好落在那几帧就再也不会到位。
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
         // `show_viewport` 而不是 `show`：回调里能拿到「内容坐标系中的视口矩形」，
         // 于是可以只排版看得见的那几十块。帧成本原先与块数成正比
         // （实测每块约 23µs：1000 万字 24 万块 → 静置一帧 5.7s、首帧 13.9s），
@@ -2226,12 +2336,27 @@ pub fn show_editor(
             }
         });
 
+    // ---------------- 滚动条上的分隔线与光标位置标记 ----------------
+    // 位置取自排版表，不取本帧画出来的块矩形：锚点本来就是表算的，两者一致，
+    // 而活动块被滚出视口时表是唯一还说得清它在哪儿的东西（它仍为键盘而排版）。
+    if active < doc.blocks.len() {
+        let caret_y = state.layout.top(active) + state.layout.height_of(active) * 0.5;
+        paint_scrollbar_marks(
+            ui,
+            theme,
+            scroll_out.inner_rect,
+            scroll_out.content_size.y,
+            scroll_out.state.offset().y,
+            caret_y,
+        );
+    }
+
     // 空白点击判定：不依赖哪个控件抢到这次点击，直接看指针落点。
     // 条件：在编辑区范围内、不在任何块（含块里的链接/按钮）上、且事件归属
     // 编辑区这一层（弹窗/对话框盖在上面时不算）。滚动条那一条也要排除。
     let pointer = ctx.input(|i| i.pointer.interact_pos());
     let primary_clicked = ctx.input(|i| i.pointer.primary_clicked());
-    let bar_zone = scroll_bar_zone(ui, scroll_out.inner_rect, scroll_out.content_size.y);
+    let bar_zone = scroll_bar_zone(ui, scroll_out.inner_rect);
     let blank_pos = pointer.filter(|p| {
         ui.max_rect().contains(*p)
             && !bar_zone.contains(*p)

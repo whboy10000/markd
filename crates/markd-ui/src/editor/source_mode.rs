@@ -158,6 +158,9 @@ pub(super) fn show_source_mode(
 
     // 纵向 + 横向都要滚：长行不换行，超出视口的部分靠横向滚动露出
     //（光标移动时 TextEdit 会调 scroll_to_rect，ScrollArea 跟随平移）。
+    // 滚动条与混合模式同一套 0.5 cm 实条 + 分隔线 + 光标位置标记；
+    // 这里横向也要滚，条按需要显形（见下面 `vbar`）。
+    apply_scrollbar_style(ui, theme);
     let scroll = egui::ScrollArea::both()
         .id_salt("source_scroll")
         .auto_shrink([false, false])
@@ -319,12 +322,29 @@ pub(super) fn show_source_mode(
             (out, byte_first, byte_last, chunk)
         });
     let (_out, byte_first, byte_last, chunk) = scroll.inner;
+    // 源码模式横向也要滚，条按需要显形，所以分隔线与标记只在纵向真的有条时才画，
+    // 免得短文档右缘凭空多一条线。光标行位置：一行 = 一个视觉行，行号乘行高即内容坐标。
+    let vbar = scroll.content_size.y > scroll.inner_rect.height();
+    if vbar {
+        paint_scrollbar_marks(
+            ui,
+            theme,
+            scroll.inner_rect,
+            scroll.content_size.y,
+            scroll.state.offset().y,
+            (cur_line as f32 - 0.5) * row_h,
+        );
+    }
     state.source.band = band_next;
     // 源码模式同样支持「点空白落光标」：点在编辑框外（页边距/正文下方）时，
     // 把光标移到文档末尾（最后一行）并立刻聚焦，行为与混合模式一致。
     let pointer = ctx.input(|i| i.pointer.interact_pos());
     let clicked = ctx.input(|i| i.pointer.primary_clicked());
-    let bar_zone = scroll_bar_zone(ui, scroll.inner_rect, scroll.content_size.y);
+    let bar_zone = if vbar {
+        scroll_bar_zone(ui, scroll.inner_rect)
+    } else {
+        egui::Rect::NOTHING
+    };
     let blank = pointer.filter(|p| {
         clicked
             && ui.max_rect().contains(*p)

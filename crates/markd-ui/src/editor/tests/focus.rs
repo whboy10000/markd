@@ -23,10 +23,12 @@ fn blank_click_refocuses_first_line() {
     );
 
     // 正文下方、左右页边距、页面中部：反复点，每次都必须落回第一行。
+    // 最右那一点取 760 而不是 790：编辑区右缘 0.5 cm 是常显滚动条，点那里
+    // 属于拖条，不算空白点击（`scrollbar::clicking_the_strip_is_not_a_blank_click` 管着）。
     for (i, pos) in [
         egui::pos2(400.0, 800.0),
         egui::pos2(20.0, 400.0),
-        egui::pos2(780.0, 400.0),
+        egui::pos2(760.0, 400.0),
         egui::pos2(400.0, 300.0),
         egui::pos2(400.0, 800.0),
     ]
