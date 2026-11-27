@@ -254,6 +254,7 @@ impl MarkdApp {
                                     ("代码块公式", "", Command::MathCode),
                                     ("表格", "⌥⌘T", Command::Table),
                                     ("B 站视频", "", Command::Video),
+                                    ("文件", "", Command::Attachment),
                                 ] {
                                     if menu_button_row(ui, label, Some(key), false, &theme) {
                                         self.execute(cmd, ctx);

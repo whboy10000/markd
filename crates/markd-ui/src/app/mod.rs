@@ -179,6 +179,20 @@ struct VideoDialog {
     focus_url: bool,
 }
 
+/// 插入文件弹窗：地址可以是远程链接，也可以是本地文件路径。
+///
+/// 名称留空时按地址末段自动推断（`name_of`），用户可以改——远程链接的最后一段
+/// 常常是 `download?id=123` 这类没法看的名字。
+#[derive(Default)]
+struct AttachmentDialog {
+    open: bool,
+    /// 链接或本地路径原文。
+    url: String,
+    /// 显示名，空串表示按地址推断。
+    name: String,
+    focus_url: bool,
+}
+
 /// 一个标签页的完整文档状态。除活动标签外，其余标签的状态都暂存在这里，
 /// 切换时与 MarkdApp 上的 doc/editor/outline/stats 字段整体换出换入。
 struct TabState {
@@ -241,6 +255,14 @@ pub struct MarkdApp {
     link_dialog: LinkDialog,
     /// 插入视频弹窗。
     video_dialog: VideoDialog,
+    /// 插入文件弹窗（本地附件 / 远程链接）。
+    attachment_dialog: AttachmentDialog,
+    /// 后台下载附件的结果通道：地址自己留着，通道断开（线程意外退出）时好把
+    /// 卡片上的「下载中…」摘掉，否则那一栏会永远挂着。
+    file_downloads: Vec<(
+        String,
+        std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>,
+    )>,
     link_docs: HashMap<String, Vec<String>>,
     /// 后台线程算好的链接图，算完通过它回传。
     link_rx: Option<std::sync::mpsc::Receiver<HashMap<String, Vec<String>>>>,

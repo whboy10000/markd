@@ -225,7 +225,8 @@ fn escape_link(link: &str) -> String {
 }
 
 /// 计算 `target` 相对 `base` 的路径（写文档里用相对链接）。
-fn relative_to(base: &Path, target: &Path) -> String {
+/// 附件插入本地文件时同样用它，保证资源相对文档存放。
+pub(crate) fn relative_to(base: &Path, target: &Path) -> String {
     let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
     let target = target
         .canonicalize()

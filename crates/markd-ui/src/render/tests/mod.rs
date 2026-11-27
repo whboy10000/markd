@@ -4,6 +4,7 @@ use super::*;
 use crate::theme::ThemeKind;
 
 mod all_templates;
+mod attachment;
 mod block;
 mod code_chip;
 mod diagram;

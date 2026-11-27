@@ -390,6 +390,10 @@ pub fn render_block(
                     }
                     return merged.expect("段落里至少有一张图片");
                 }
+                // 「整段只有一个附件链接」才升成文件卡片；句中夹的文件链接仍是普通链接。
+                if let Some((url, label, kind)) = attachment_of(content) {
+                    return file_panel(ui, theme, env, idx, url, &label, kind);
+                }
                 text_response(ui, content, theme, theme.body, color, false, env, idx)
             }
             Block::Quote { level, content, .. } => {

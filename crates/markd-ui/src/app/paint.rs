@@ -264,6 +264,30 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
             painter.line_segment([tri[1], tri[2]], stroke);
             painter.line_segment([tri[2], tri[0]], stroke);
         }
+        "file" => {
+            // 附件：一页纸 + 右上角折角，下面两道文字线，与其余线框图标同一语言。
+            let r = egui::Rect::from_center_size(c + egui::vec2(0.0, 0.5), egui::vec2(16.0, 20.0));
+            let fold = 5.5_f32;
+            let a = egui::pos2(r.left(), r.top());
+            let b = egui::pos2(r.right() - fold, r.top());
+            let d = egui::pos2(r.right(), r.top() + fold);
+            let e = r.right_bottom();
+            let f = r.left_bottom();
+            for (p, q) in [(a, b), (b, d), (d, e), (e, f), (f, a)] {
+                painter.line_segment([p, q], stroke);
+            }
+            // 折角内侧两笔，让右上角看着是翻起来的而不是被切掉一块。
+            let g = egui::pos2(r.right() - fold, r.top() + fold);
+            painter.line_segment([b, g], stroke);
+            painter.line_segment([g, d], stroke);
+            for dy in [1.0_f32, 5.5] {
+                let y = r.center().y + dy;
+                painter.line_segment(
+                    [egui::pos2(r.left() + 3.0, y), egui::pos2(r.right() - 3.0, y)],
+                    egui::Stroke::new(1.3, fg),
+                );
+            }
+        }
         "formula" => text("f(x)", 15.0, c),
         "code" => text("</>", 14.0, c),
         "table" => {

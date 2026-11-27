@@ -137,6 +137,8 @@ impl MarkdApp {
             table_cols: 3,
             link_dialog: LinkDialog::default(),
             video_dialog: VideoDialog::default(),
+            attachment_dialog: AttachmentDialog::default(),
+            file_downloads: Vec::new(),
             link_docs,
             link_rx: None,
             last_autosave: now_secs(),

@@ -30,7 +30,7 @@ markd-core → markd-platform → markd-ui → markd (bin)
 
 | crate | 路径 | 职责 |
 | --- | --- | --- |
-| `markd-core` | `crates/markd-core` | 数据与逻辑层，不依赖 eframe/窗口：`ast`（自研 Markdown 解析，产出 `Vec<Block>`，每个 Block 保留原始 `source`，这是 Hybrid View 无损往返的基础）、`document`（源码拼接、节流式撤销/重做、统计、大纲）、`command`（`Command` 枚举，UI 与原生菜单共用）、`theme`（2 套主题与 Visuals）、`workspace`（文件树扫描、Markdown 读写、配置持久化、路径解析）、`export`（AST → 自包含 HTML）、`image_host`（Gitee / GitHub / 阿里云 OSS / 七牛云 Kodo / 火山引擎 TOS 图床上传 + 远程图片下载）。注意：它仍链接 `egui`，因为 `theme.rs` 和 `image_host.rs` 要用到 `Color32` / `ColorImage` / `Context`。 |
+| `markd-core` | `crates/markd-core` | 数据与逻辑层，不依赖 eframe/窗口：`ast`（自研 Markdown 解析，产出 `Vec<Block>`，每个 Block 保留原始 `source`，这是 Hybrid View 无损往返的基础）、`document`（源码拼接、节流式撤销/重做、统计、大纲）、`command`（`Command` 枚举，UI 与原生菜单共用）、`theme`（2 套主题与 Visuals）、`workspace`（文件树扫描、Markdown 读写、配置持久化、路径解析）、`export`（AST → 自包含 HTML）、`attachment`（按扩展名认附件、链接名编解码、`~/.markd/attachments` 缓存路径与后台下载）、`image_host`（Gitee / GitHub / 阿里云 OSS / 七牛云 Kodo / 火山引擎 TOS 图床上传 + 远程图片下载）。注意：它仍链接 `egui`，因为 `theme.rs` 和 `image_host.rs` 要用到 `Color32` / `ColorImage` / `Context`。 |
 | `markd-platform` | `crates/markd-platform` | 平台集成：`native_menu`（macOS 系统菜单栏 + 命令队列）、`fonts`（系统中文字体加载）。`muda` 只在 `[target.'cfg(target_os = "macos")'.dependencies]` 中引入。 |
 | `markd-ui` | `crates/markd-ui` | egui 界面层，主体已拆成目录模块：`app/`（窗口布局、菜单、快捷键、命令分发、各浮层窗口、标签页）、`editor/`（Hybrid View、块排版表与视口裁剪、按键交互）、`render/`（富文本/表格/代码块高亮/公式/流程图/图片）、`sidebar`（文件树/大纲）、`find`（文档内查找/替换，支持正则与 $1）、`terminal/`（PTY 交互式集成终端）、`settings`（偏好设置弹窗）、`icons`、`image_insert`、`features`（快照、命令面板、全文搜索、关系图、写作统计）。 |
 | `markd` | `crates/markd-app` | 二进制入口，只有 `main.rs`：初始化字体、`NativeOptions`、`eframe::run_native`。默认窗口 1000×600（`with_inner_size`）、最小 720×480，运行时用 `include_bytes!("assets/icon.png")` 设置窗口图标。 |

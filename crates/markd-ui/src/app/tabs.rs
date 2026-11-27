@@ -407,6 +407,67 @@ impl MarkdApp {
         self.video_dialog.open = false;
     }
 
+    /// 打开「插入文件」弹窗：本地文件与远程链接共用一个地址框。
+    pub(super) fn open_attachment_dialog(&mut self) {
+        self.attachment_dialog = AttachmentDialog {
+            open: true,
+            url: String::new(),
+            name: String::new(),
+            focus_url: true,
+        };
+    }
+
+    /// 弹窗点「插入」：写一条 `[文件名](地址)` 链接，卡片立刻以渲染态显示。
+    ///
+    /// 本地文件只写引用、不复制文件本身：附件动辄几十 MB，静默复制既占盘又会让
+    /// UI 卡在拷贝上；要连文件一起带走，交给用户自己放进文档目录。
+    pub(super) fn confirm_attachment_dialog(&mut self) {
+        let raw = self.attachment_dialog.url.trim().to_string();
+        if raw.is_empty() {
+            self.status = "请先粘贴文件链接，或点「选择本地文件」".to_string();
+            self.attachment_dialog.focus_url = true;
+            return;
+        }
+        let url = self.attachment_target(&raw);
+        let Some(kind) = crate::attachment::kind_of(&url) else {
+            // 认不出类型就不动文档：插一条不是附件的链接只会得到一段普通文字。
+            self.status = format!(
+                "认不出文件类型（需带扩展名，如 PDF/Word/Excel/PPT/压缩包）：{url}"
+            );
+            return;
+        };
+        let inferred = crate::attachment::name_of(&url);
+        let typed = self.attachment_dialog.name.trim().to_string();
+        let name = if typed.is_empty() { inferred } else { typed };
+        let md = crate::attachment::attachment_link(&name, &url);
+        editor::insert_rendered_block(&mut self.doc, &mut self.editor, &md);
+        self.on_changed();
+        self.status = format!(
+            "已插入{}附件 {name}（点卡片下载预览，或新标签页打开）",
+            kind.describe()
+        );
+        self.attachment_dialog.open = false;
+    }
+
+    /// 附件地址落文档前的形状：远程链接原样；本地绝对路径尽量转成相对文档的
+    /// 相对路径（文档整目录搬走也不会断）；用户手写的相对路径原样保留。
+    pub(super) fn attachment_target(&self, raw: &str) -> String {
+        if crate::image_host::is_remote(raw) || raw.contains("://") {
+            return raw.to_string();
+        }
+        let p = std::path::PathBuf::from(raw);
+        if !p.is_absolute() {
+            return raw.to_string();
+        }
+        match self.doc.path.as_ref().and_then(|d| d.parent()) {
+            Some(dir) if !dir.as_os_str().is_empty() => {
+                crate::image_insert::relative_to(dir, &p)
+            }
+            // 未保存的文档没有「相对」可言，只能写绝对路径。
+            _ => p.to_string_lossy().to_string(),
+        }
+    }
+
     pub(super) fn open_link(&mut self, url: &str) {
         if url.starts_with("http://") || url.starts_with("https://") {
             #[cfg(target_os = "macos")]
@@ -419,7 +480,7 @@ impl MarkdApp {
                 .spawn();
             self.status = format!("已打开链接 {}", url);
         } else if let Some(p) =
-            workspace::resolve(self.doc.path.as_ref().and_then(|x| x.parent()), url)
+            crate::attachment::local_path(self.doc.path.as_ref().and_then(|x| x.parent()), url)
         {
             if p.is_file() {
                 if p.extension()
@@ -427,12 +488,44 @@ impl MarkdApp {
                     .unwrap_or(false)
                 {
                     self.open_file(p);
+                } else if let Err(e) = open_with_default_app(&p) {
+                    self.status = format!("打开附件失败: {e}");
                 } else {
-                    self.status = format!("附件: {}", p.display());
+                    self.status = format!("已用系统默认程序打开 {}", p.display());
                 }
             } else {
                 self.status = format!("目标不存在: {}", p.display());
             }
         }
     }
+}
+
+/// 用系统默认程序打开一个本地文件（PDF 交给预览、Office 文档交给对应套件）。
+///
+/// 走 `spawn` 而不是 `status`：`xdg-open` 会一直挂着到目标程序退出，
+/// 同步等待等于把界面冻住。
+pub(crate) fn open_with_default_app(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(path);
+        c
+    };
+    #[cfg(target_os = "linux")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(path);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        // 空标题参数不能省：`start` 会把第一个带引号的参数当窗口标题，
+        // 缺了它，含空格的路径就被当成标题而不是要打开的文件。
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", "", path.as_os_str()]);
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    return Err(std::io::Error::other("当前平台不支持打开外部文件"));
+    cmd.spawn().map(|_| ())
 }

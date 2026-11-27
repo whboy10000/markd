@@ -410,7 +410,7 @@ impl MarkdApp {
                                 let count = if start {
                                     16
                                 } else if insert {
-                                    13
+                                    14
                                 } else if advanced {
                                     3
                                 } else {
@@ -531,6 +531,15 @@ impl MarkdApp {
                                     );
                                     if r.clicked() {
                                         chosen = Some(Command::Video);
+                                    }
+                                    let r = toolbar_box(
+                                        ui,
+                                        "file",
+                                        "文件",
+                                        "插入文件（PDF/Word/Excel…）：可选本地文件或粘贴远程链接，预览是附件卡片",
+                                    );
+                                    if r.clicked() {
+                                        chosen = Some(Command::Attachment);
                                     }
 
                                     let r = toolbar_box(

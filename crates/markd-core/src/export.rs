@@ -193,6 +193,44 @@ fn video_html(lang: &str, code: &str) -> Option<String> {
     ))
 }
 
+/// 独占一段的文件链接（PDF/Word/Excel…）导出成附件条：一个下载链接、一个
+/// 新标签页预览链接，与编辑器里的附件卡片同一套动作。
+/// 不是附件（普通网页链接、图片）返回 None，仍走普通 `<a>` 渲染。
+fn file_html(content: &[Inline]) -> Option<String> {
+    if content.len() != 1 {
+        return None;
+    }
+    let Inline::Link { label, url } = &content[0] else {
+        return None;
+    };
+    let kind = crate::attachment::kind_of(url)?;
+    let name = ast::inline_plain(label);
+    let name = if name.trim().is_empty() {
+        crate::attachment::name_of(url)
+    } else {
+        name
+    };
+    let href = crate::attachment::export_href(url);
+    // 属性值里的引号/尖括号必须转义，中文名与查询串都可能是用户原文。
+    let h = esc(&href);
+    let n = esc(&name);
+    // 远程地址才给 download：本地 file:// 链接加 download 会被浏览器忽略甚至报错。
+    let dl = if crate::image_host::is_remote(&href) {
+        format!("<a href=\"{h}\" download=\"{n}\">下载</a>")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "<div class=\"file-embed\"><span class=\"file-kind\">{kind}</span>\
+         <span class=\"file-name\">{n}</span>{dl}\
+         <a href=\"{h}\" target=\"_blank\" rel=\"noopener\">新标签页打开</a></div>",
+        kind = esc(kind.label()),
+        h = h,
+        n = n,
+        dl = dl,
+    ))
+}
+
 fn align_attr(a: Align) -> &'static str {
     match a {
         Align::Left => "left",
@@ -234,7 +272,11 @@ pub fn to_html(title: &str, source: &str, dark: bool) -> String {
                 ));
             }
             Block::Paragraph { content, .. } => {
-                out.push_str(&format!("<p>{}</p>\n", inline_html(content)));
+                // 独占一段的附件链接画成附件条，其余段落照旧走行内渲染。
+                match file_html(content) {
+                    Some(html) => out.push_str(&format!("{html}\n")),
+                    None => out.push_str(&format!("<p>{}</p>\n", inline_html(content))),
+                }
             }
             Block::Quote { content, .. } => {
                 out.push_str(&format!(
@@ -402,6 +444,10 @@ hr{{border:none;border-top:1px solid #ddd;margin:2em 0}}
 img{{max-width:100%}} .wiki{{color:#8957e5}}
 .video-embed{{position:relative;width:100%;padding-top:56.25%;margin:1em 0;background:#000;border-radius:8px;overflow:hidden}}
 .video-embed iframe{{position:absolute;left:0;top:0;width:100%;height:100%;border:0}}
+.file-embed{{display:flex;align-items:center;gap:.7em;flex-wrap:wrap;margin:1em 0;padding:.7em 1em;border:1px solid #ddd;border-radius:8px;background:rgba(127,127,127,.07)}}
+.file-kind{{font-size:.7em;font-weight:700;letter-spacing:.04em;padding:.3em .55em;border-radius:4px;background:rgba(127,127,127,.2)}}
+.file-name{{flex:1;min-width:8em;font-weight:600;word-break:break-all}}
+.file-embed a{{font-size:.85em;white-space:nowrap;border:1px solid #ddd;border-radius:5px;padding:.25em .7em}}
 .math-block{{text-align:center;font-family:Georgia,serif;font-size:1.15em;margin:1.2em 0}}
 .front-matter{{font-size:.85em;opacity:.8}}
 .toc{{border:1px solid #ddd;border-radius:8px;padding:12px 20px;margin:1em 0}}
@@ -431,7 +477,10 @@ fn block_html(b: &Block, blocks: &[Block]) -> String {
             out.push_str(&format!("<h{0}>{1}</h{0}>", level, inline_html(content)));
         }
         Block::Paragraph { content, .. } => {
-            out.push_str(&format!("<p>{}</p>", inline_html(content)));
+            out.push_str(&match file_html(content) {
+                Some(html) => html,
+                None => format!("<p>{}</p>", inline_html(content)),
+            });
         }
         Block::Quote { content, .. } => {
             out.push_str(&format!(
@@ -804,5 +853,64 @@ a = 1
         assert!(bad.contains("language-video"), "{bad}");
         assert!(bad.contains("example.com"), "{bad}");
         assert!(!bad.contains("<iframe"), "{bad}");
+    }
+
+    /// 独占一段的附件链接导出成附件条：类型徽标 + 文件名 + 下载 + 新标签页。
+    #[test]
+    fn attachment_link_exports_file_bar() {
+        let src = "[年报 2026.pdf](https://x.com/f/%E5%B9%B4%E6%8A%A5%202026.pdf?v=2&t=1)";
+        let h = to_html("T", src, false);
+        assert!(h.contains("<div class=\"file-embed\">"), "{h}");
+        assert!(h.contains("file-kind\">PDF<"), "{h}");
+        assert!(h.contains("<span class=\"file-name\">年报 2026.pdf</span>"), "{h}");
+        assert!(h.contains("download=\"年报 2026.pdf\""), "{h}");
+        assert!(h.contains("target=\"_blank\" rel=\"noopener\""), "{h}");
+        // 查询串里的 & 在属性值里必须转义
+        assert!(h.contains("?v=2&amp;t=1"), "{h}");
+        assert!(!h.contains("<p>"), "附件段不该包成普通段落：{h}");
+        assert!(h.contains(".file-embed{"), "缺少附件条样式：{h}");
+    }
+
+    /// 行内的附件链接、普通网页链接、图片都不能被当成附件卡片。
+    #[test]
+    fn only_lone_attachment_link_becomes_file_bar() {
+        let mixed = to_html("T", "正文 [附件.xlsx](https://x.com/a.xlsx) 结尾", false);
+        assert!(mixed.contains("<p>正文"), "{mixed}");
+        assert!(!mixed.contains("class=\"file-embed\""), "{mixed}");
+        // 链接在段首的夹句同样不是「独占一段」：只看第一个内联元素的实现会在这里翻车
+        let leading = to_html("T", "[附件.xlsx](https://x.com/a.xlsx) 结尾", false);
+        assert!(
+            leading.contains("<p><a href=\"https://x.com/a.xlsx\">"),
+            "{leading}"
+        );
+        assert!(!leading.contains("class=\"file-embed\""), "{leading}");
+        let page = to_html("T", "[官网](https://x.com/home)", false);
+        assert!(page.contains("<p><a href=\"https://x.com/home\">"), "{page}");
+        assert!(!page.contains("class=\"file-embed\""), "{page}");
+        let img = to_html("T", "![](https://x.com/a.png)", false);
+        assert!(img.contains("<img"), "{img}");
+        assert!(!img.contains("class=\"file-embed\""), "{img}");
+    }
+
+    /// 本地绝对路径导出成 `file://`（中文与空格编码），相对路径保持相对、不给 download。
+    #[test]
+    fn local_attachment_exports_file_url() {
+        let abs = to_html("T", "[台账.xlsx](/tmp/台账%201月.xlsx)", false);
+        assert!(
+            abs.contains("href=\"file:///tmp/%E5%8F%B0%E8%B4%A6%201%E6%9C%88.xlsx\""),
+            "{abs}"
+        );
+        assert!(!abs.contains("download="), "本地链接不给下载属性：{abs}");
+        let rel = to_html("T", "[合同.pdf](files/合同.pdf)", false);
+        assert!(rel.contains("href=\"files/合同.pdf\""), "{rel}");
+    }
+
+    /// 复制为富文本走 block_html：附件同样要出附件条，不能退化成裸链接。
+    #[test]
+    fn block_html_renders_attachment() {
+        let blocks = ast::parse("[包.tar.gz](https://x.com/dl/包.tar.gz)");
+        let h = block_html(&blocks[0], &blocks);
+        assert!(h.contains("file-embed"), "{h}");
+        assert!(h.contains("压缩包"), "{h}");
     }
 }

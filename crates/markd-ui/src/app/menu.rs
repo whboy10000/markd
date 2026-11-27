@@ -481,6 +481,7 @@ pub(super) fn menu_commands(k: MenuKind) -> Vec<Command> {
             Command::Toc,
             Command::Footnote,
             Command::Video,
+            Command::Attachment,
             Command::FrontMatter,
         ],
         MenuKind::Format => vec![

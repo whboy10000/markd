@@ -121,6 +121,8 @@ pub struct ImageCache {
     video_pending: HashSet<String>,
     vrx: Receiver<(String, Option<VideoInfo>)>,
     vtx: Sender<(String, Option<VideoInfo>)>,
+    /// 正在后台下载的附件地址：卡片据此把按钮显示成「下载中…」，避免重复点。
+    downloading: HashSet<String>,
 }
 
 impl ImageCache {
@@ -139,6 +141,7 @@ impl ImageCache {
             video_pending: HashSet::new(),
             vrx,
             vtx,
+            downloading: HashSet::new(),
         }
     }
 
@@ -286,6 +289,21 @@ impl ImageCache {
     /// 该视频是否仍在取元数据（卡片据此显示「正在获取…」而不是「取不到」）。
     pub fn video_loading(&self, src: &VideoSource) -> bool {
         self.video_pending.contains(&src.id())
+    }
+
+    /// 标记某附件正在下载（app 层起线程时调用）。
+    pub fn begin_download(&mut self, url: &str) {
+        self.downloading.insert(url.trim().to_string());
+    }
+
+    /// 下载结束，无论成败都要摘掉标记，否则卡片会一直停在「下载中…」。
+    pub fn end_download(&mut self, url: &str) {
+        self.downloading.remove(url.trim());
+    }
+
+    /// 该附件是否正在后台下载。
+    pub fn is_downloading(&self, url: &str) -> bool {
+        self.downloading.contains(url.trim())
     }
 
     /// 测试专用：预置元数据，免得单测真去访问 B 站接口。

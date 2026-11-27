@@ -362,6 +362,8 @@ fn test_app() -> MarkdApp {
         table_cols: 3,
         link_dialog: Default::default(),
         video_dialog: Default::default(),
+        attachment_dialog: Default::default(),
+        file_downloads: Vec::new(),
         link_docs: HashMap::new(),
         link_rx: None,
         last_autosave: now_secs(),
@@ -5126,14 +5128,14 @@ fn toolbar_button_boxes_are_centered() {
         "宽窗口里开始页盒子组应居中，实际中心 {start_center}"
     );
 
-    // 插入页展开后有 13 个盒子，1280 宽下仍应居中。
+    // 插入页展开后有 14 个盒子（含「文件」附件），1280 宽下仍应居中。
     app.toolbar_tab = ToolbarTab::Insert;
     let (shapes, _) = run_real_frame_ext(&ctx, &mut app, &mut frame, vec![]);
     let insert_rects = box_rects(&shapes);
     assert_eq!(
         insert_rects.len(),
-        13,
-        "插入页应有 13 个盒子，实际 {}",
+        14,
+        "插入页应有 14 个盒子，实际 {}",
         insert_rects.len()
     );
     let insert_center = center(&insert_rects);
@@ -5381,8 +5383,114 @@ fn toolbar_video_box_opens_dialog_and_inserts_fence() {
     assert!(app.status.contains("请先粘贴"), "{}", app.status);
 }
 
-/// 「段落」菜单（Windows / Linux 的窗口内菜单栏）也要挂上插入视频，
-/// 位置和 macOS 原生菜单栏一致：脚注之后、Front Matter 之前。
+/// 插入选项卡的「文件」盒子：点开弹窗 → 填本地路径 → 插入 `[名](路径)` 链接；
+/// 认不出类型的地址与空地址都不动文档。附件不复制文件，所以这里只验链接形状。
+#[test]
+fn toolbar_file_box_opens_dialog_and_inserts_attachment_link() {
+    fn label_pos(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Pos2> {
+        shapes.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                let p = t.pos + t.galley.rect.center().to_vec2();
+                (p.y > TOOLBOX_AREA_TOP && p.y < TOP_BARS_HEIGHT).then_some(p)
+            }
+            _ => None,
+        })
+    }
+
+    let click =
+        |ctx: &egui::Context, app: &mut MarkdApp, frame: &mut eframe::Frame, p: egui::Pos2| {
+            for ev in [
+                vec![egui::Event::PointerMoved(p)],
+                vec![pointer_button(p, true)],
+                vec![pointer_button(p, false)],
+            ] {
+                run_real_frame_stable_ext(ctx, app, frame, ev);
+            }
+            for _ in 0..2 {
+                run_real_frame_stable_ext(ctx, app, frame, vec![]);
+            }
+        };
+
+    // 「文件」只在插入页出现。
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    app.home = false;
+    let mut frame = eframe::Frame::_new_kittest();
+    let (shapes, _) = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
+    assert!(
+        label_pos(&shapes, "文件").is_none(),
+        "「文件」应只放在插入选项卡里"
+    );
+    app.toolbar_tab = ToolbarTab::Insert;
+    let (shapes, _) = run_real_frame_stable_ext(&ctx, &mut app, &mut frame, vec![]);
+    let p = label_pos(&shapes, "文件").expect("插入页应有「文件」盒子");
+
+    // 真实点击：打开弹窗，文档一个字都不该动。
+    click(&ctx, &mut app, &mut frame, p);
+    assert!(
+        app.attachment_dialog.open,
+        "点「文件」应打开插入文件弹窗"
+    );
+    let before = app.doc.source();
+
+    // 空地址不动文档。
+    app.attachment_dialog.url = "   ".to_string();
+    app.confirm_attachment_dialog();
+    assert_eq!(app.doc.source(), before, "空地址不该改文档");
+    assert!(app.status.contains("请先粘贴"), "{}", app.status);
+
+    // 认不出类型的地址（无扩展名）同样不动文档，弹窗留着改。
+    app.attachment_dialog.url = "https://example.com/download".to_string();
+    app.confirm_attachment_dialog();
+    assert_eq!(app.doc.source(), before, "认不出类型不该改文档");
+    assert!(app.status.contains("认不出文件类型"), "{}", app.status);
+    assert!(app.attachment_dialog.open, "失败时弹窗保持打开，可改地址重试");
+
+    // 带空格与中文的本地路径：写进文档时百分号编码，显示名用用户填的名字。
+    // 相对还是绝对取决于当前文档存不存在路径，这里只钉住「名字 + 转义」这两件与文档无关的事。
+    app.new_document();
+    app.attachment_dialog.url = "/tmp/季度 报告 (最终).xlsx".to_string();
+    app.attachment_dialog.name = "季度报告".to_string();
+    app.attachment_dialog.open = true;
+    app.confirm_attachment_dialog();
+    let src = app.doc.source();
+    assert!(
+        src.contains("[季度报告](") && src.contains("%20报告%20%28最终%29.xlsx)"),
+        "空格与括号应百分号编码后用「季度报告」作显示名：{src:?}"
+    );
+    assert!(
+        !app.attachment_dialog.open,
+        "插入成功后弹窗应关闭"
+    );
+    assert!(
+        app.status.contains("已插入") && app.status.contains("电子表格"),
+        "状态栏应说明插入了什么：{}",
+        app.status
+    );
+}
+
+/// 点卡片预览不存在的本地附件：如实提示，不去起外部程序、也不动文档。
+#[test]
+fn preview_missing_local_attachment_reports() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    app.home = false;
+    let before = app.doc.source();
+    app.preview_attachment("files/根本不存在.pdf", &ctx);
+    assert!(
+        app.status.contains("找不到本地文件") && app.status.contains("根本不存在.pdf"),
+        "应提示找不到的文件名：{}",
+        app.status
+    );
+    assert_eq!(app.doc.source(), before, "预览不该改文档");
+    assert!(
+        app.file_downloads.is_empty(),
+        "本地路径不该起下载线程"
+    );
+    assert!(!app.images.is_downloading("files/根本不存在.pdf"));
+}
+
+/// 「段落」菜单（Windows / Linux 的窗口内菜单栏）也要挂上插入视频与插入文件，
 #[test]
 fn paragraph_menu_exposes_video_command() {
     let items = menu_commands(MenuKind::Paragraph);
@@ -5393,8 +5501,14 @@ fn paragraph_menu_exposes_video_command() {
     assert_eq!(items[at - 1], Command::Footnote, "视频应紧跟脚注");
     assert_eq!(
         items[at + 1],
+        Command::Attachment,
+        "插入文件应紧跟插入视频"
+    );
+    assert_eq!(
+        items[at + 2],
         Command::FrontMatter,
-        "视频应在 Front Matter 之前"
+        "两个插入项都应在 Front Matter 之前"
     );
     assert_eq!(Command::Video.label(), "插入视频（哔哩哔哩）");
+    assert_eq!(Command::Attachment.label(), "插入文件（PDF/Word/Excel…）");
 }

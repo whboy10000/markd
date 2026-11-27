@@ -134,6 +134,8 @@ impl MarkdApp {
             }
             // 视频链接要先认得出是 B 站才插，所以走弹窗而不是直接插模板。
             Command::Video => self.open_video_dialog(),
+            // 附件同理：要么选本地文件、要么粘远程链接，都要先确认才落文档。
+            Command::Attachment => self.open_attachment_dialog(),
             Command::UploadImages => self.upload_local_images(ctx),
             Command::ClearFormat => {
                 // 与工具条橡皮擦同一动作：当前块去掉块级/行内标记变回普通段落。
@@ -470,6 +472,17 @@ impl MarkdApp {
                     .unwrap_or_else(|| path.to_string_lossy().to_string());
                 editor::insert_template(&mut self.doc, &mut self.editor, &format!("![]({})", rel));
                 self.on_changed();
+            } else if crate::attachment::is_attachment(&path.to_string_lossy()) {
+                // 拖进来的 PDF / Office 文档按附件插入：与「插入 → 文件」同一条落文档路径。
+                let url = self.attachment_target(&path.to_string_lossy());
+                let name = crate::attachment::name_of(&url);
+                editor::insert_rendered_block(
+                    &mut self.doc,
+                    &mut self.editor,
+                    &crate::attachment::attachment_link(&name, &url),
+                );
+                self.on_changed();
+                self.status = format!("已插入附件 {name}（点卡片下载预览，或新标签页打开）");
             }
         }
     }

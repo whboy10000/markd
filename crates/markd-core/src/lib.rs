@@ -4,6 +4,7 @@
 //! 该层不依赖 eframe/窗口，可被 UI、平台集成等上层 crate 复用。
 
 pub mod ast;
+pub mod attachment;
 pub mod command;
 pub mod document;
 pub mod export;
