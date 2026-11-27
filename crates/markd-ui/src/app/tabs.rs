@@ -585,7 +585,7 @@ pub(crate) fn open_with_default_app(path: &std::path::Path) -> std::io::Result<(
         // 空标题参数不能省：`start` 会把第一个带引号的参数当窗口标题，
         // 缺了它，含空格的路径就被当成标题而不是要打开的文件。
         let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", "", path.as_os_str()]);
+        c.args(["/C", "start", ""]).arg(path);
         c
     };
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]

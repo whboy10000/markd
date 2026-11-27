@@ -738,12 +738,12 @@ fn checkbox_interior_keeps_eguis_own_color() {
 #[test]
 fn thumb_respects_eguis_min_length_on_long_docs() {
     let min = egui::Style::default().spacing.scroll.handle_min_length;
-    let mut b = Bar::new(&list_doc(2000), 55);
+    let mut b = Bar::new(&list_doc(10000), 55);
     b.idle(2);
     let s = strip(&b.shapes);
     assert!(
         (s.thumb_rect.height() - min).abs() < 0.01,
-        "2000 条的文档里滑块该被夹到 egui 的下限 {min}，实测 {}",
+        "10000 条的文档里滑块该被夹到 egui 的下限 {min}，实测 {}",
         s.thumb_rect.height()
     );
     let (under_rect, under_radius) = s.under.expect("滑块下面应有 egui 自己画的那张");
