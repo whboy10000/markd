@@ -45,6 +45,10 @@ pub enum Command {
     /// 行内高亮（`==文字==`）。
     Highlight,
     Code,
+    /// 硬换行：在光标处插入 `<br>` 标签，段落、标题、列表、表格单元格都生效。
+    LineBreak,
+    /// 内嵌 HTML：弹窗里粘贴 `<span>` / `<div>` / `<hr>` / `<br>` 片段，插进文档。
+    HtmlEmbed,
     CodeBlock,
     /// 代码组：同一个代码区用 Tab 切换多种语言。
     CodeGroup,
@@ -52,6 +56,8 @@ pub enum Command {
     Image,
     /// 插入哔哩哔哩视频（```video 围栏）。
     Video,
+    /// 插入文件附件（PDF / Word / Excel 等，本地文件或远程链接）。
+    Attachment,
     /// 把当前文档里的本地图片批量上传到图床，并把链接换成公网 URL。
     UploadImages,
     /// 清除当前块的 Markdown 标记，变回普通段落（工具条橡皮擦同一动作）。
@@ -123,11 +129,14 @@ impl Command {
             Command::Underline => "下划线",
             Command::Highlight => "高亮",
             Command::Code => "行内代码",
+            Command::LineBreak => "换行（插入 <br>）",
+            Command::HtmlEmbed => "插入 HTML 内嵌（颜色/提示框/分割线）",
             Command::CodeBlock => "代码块",
             Command::CodeGroup => "代码组（多语言 Tab）",
             Command::Link => "插入链接",
             Command::Image => "插入图片",
             Command::Video => "插入视频（哔哩哔哩）",
+            Command::Attachment => "插入文件（PDF/Word/Excel…）",
             Command::UploadImages => "上传本地图片到图床",
             Command::ClearFormat => "清除格式",
             Command::Quote => "引用",
@@ -202,6 +211,8 @@ impl Command {
             Command::Highlight,
             Command::ClearFormat,
             Command::Code,
+            Command::LineBreak,
+            Command::HtmlEmbed,
             Command::CodeBlock,
             Command::CodeGroup,
             Command::Link,

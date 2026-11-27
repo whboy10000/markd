@@ -6,7 +6,9 @@
 //! 因此各模块内仍可沿用 `crate::ast`、`crate::theme`、`crate::native_menu` 等路径，
 //! 拆分 workspace 时不需要改动每个文件的引用。
 
-pub use markd_core::{ast, command, document, export, image_host, theme, video, workspace};
+pub use markd_core::{
+    ast, attachment, command, document, export, html_style, image_host, theme, video, workspace,
+};
 pub use markd_platform::native_menu;
 
 pub mod app;

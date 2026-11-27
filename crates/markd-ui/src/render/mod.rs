@@ -5,7 +5,8 @@
 //! 非活动块走这里；活动块由 editor 用 TextEdit 显示源码，形成 Hybrid View。
 //!
 //! 子模块：`inline` 行内排版，`block` 块级分派，`syntax` 代码着色，
-//! `diagram` 各类 Mermaid 图表，`media` 图片，`video` 视频卡片，`language` 语言下拉，`frames` 外框样式。
+//! `diagram` 各类 Mermaid 图表，`media` 图片，`video` 视频卡片，`attachment` 附件卡片，
+//! `language` 语言下拉，`frames` 外框样式。
 
 use crate::ast::*;
 use crate::document::OutlineItem;
@@ -18,6 +19,7 @@ use egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+mod attachment;
 mod block;
 mod diagram;
 mod frames;
@@ -32,7 +34,7 @@ mod tests;
 mod video;
 
 pub use self::{block::*, inline::*, language::*, lists::*, math::*, media::*, syntax::*};
-pub(crate) use self::{diagram::*, frames::*, video::*};
+pub(crate) use self::{attachment::*, diagram::*, frames::*, video::*};
 
 #[derive(Clone, Debug)]
 pub enum Action {
@@ -77,6 +79,8 @@ pub enum Action {
     ShiftClick(usize, usize),
     /// 拖动图片右下角缩放：(块下标, 图片序号, 新宽度像素)。
     ResizeImage(usize, usize, u32),
+    /// 点开附件卡片：本地文件直接交给系统程序，远程文件先下到本机再打开。
+    PreviewFile(String),
 }
 
 pub struct RenderEnv<'a> {

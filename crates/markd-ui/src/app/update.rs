@@ -51,6 +51,8 @@ impl eframe::App for MarkdApp {
         }
         // 图床上传完成：把本地图片链接替换成公网 URL。
         self.poll_image_uploads(&ctx);
+        // 远程附件下载完成：摘掉卡片的「下载中…」并打开文件。
+        self.poll_file_downloads(&ctx);
         // 设置里的编辑器选项每帧同步到编辑器状态
         self.editor.tab_size = self.config.tab_size.max(1);
         self.editor.auto_pair = self.config.auto_pair;
@@ -220,6 +222,11 @@ impl eframe::App for MarkdApp {
                     self.on_changed();
                 }
                 Action::OpenLink(url) => self.open_link(&url),
+                // 点开附件卡片：本机直开，远程先后台下载（卡片随即显示「下载中…」）。
+                Action::PreviewFile(url) => {
+                    self.preview_attachment(&url, &ctx);
+                    ctx.request_repaint();
+                }
                 Action::Jump(i) => {
                     self.editor.active = i.min(self.doc.blocks.len().saturating_sub(1));
                     self.editor.scroll_req = Some(self.editor.active);

@@ -649,6 +649,141 @@ impl MarkdApp {
             }
         }
 
+        if self.attachment_dialog.open {
+            let mut open = true;
+            let mut insert = false;
+            let mut cancel = false;
+            let mut pick = false;
+            egui::Window::new("插入文件")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label("文件链接或本地路径");
+                    ui.horizontal(|ui| {
+                        let url_resp = ui.add(
+                            egui::TextEdit::singleline(&mut self.attachment_dialog.url)
+                                .hint_text("https://example.com/report.pdf，或 /Users/me/报告.docx")
+                                .desired_width(360.0),
+                        );
+                        if ui.button("选择本地文件…").clicked() {
+                            pick = true;
+                        }
+                        if self.attachment_dialog.focus_url {
+                            url_resp.request_focus();
+                            self.attachment_dialog.focus_url = false;
+                        }
+                        if url_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            insert = true;
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label("显示名");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.attachment_dialog.name)
+                                .hint_text("留空则用文件名")
+                                .desired_width(300.0),
+                        );
+                    });
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "支持 PDF、Word、Excel、PPT、电子书、压缩包等常见文件；\
+                             本地文件只写引用，不复制进文档目录，移动文档时请一并带走文件。",
+                        )
+                        .size(12.0)
+                        .color(self.theme.dim),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("插入").clicked() {
+                            insert = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if pick {
+                self.pick_attachment_file();
+            }
+            if insert {
+                self.confirm_attachment_dialog();
+            }
+            if cancel || !open {
+                self.attachment_dialog.open = false;
+            }
+        }
+
+        if self.html_dialog.open {
+            let mut open = true;
+            let mut insert = false;
+            let mut cancel = false;
+            let mut preset: Option<usize> = None;
+            egui::Window::new("插入 HTML 内嵌")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label("点预设填模板，也可以直接在框里改");
+                    ui.horizontal(|ui| {
+                        for (i, (label, _)) in super::tabs::HTML_PRESETS.iter().enumerate() {
+                            if ui.button(*label).clicked() {
+                                preset = Some(i);
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    let text_resp = ui.add(
+                        egui::TextEdit::multiline(&mut self.html_dialog.text)
+                            .desired_rows(4)
+                            .desired_width(460.0)
+                            .hint_text("<span style=\"color:red; font-size:18px;\">文字</span>"),
+                    );
+                    if self.html_dialog.focus_text {
+                        text_resp.request_focus();
+                        self.html_dialog.focus_text = false;
+                    }
+                    // 多行框里回车是换行，所以「插入」另给一个 Cmd/Ctrl+Enter。
+                    let submit =
+                        ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "支持 <span> 文字颜色/字号、<div> 背景提示框、<br> 强制换行、\
+                             <hr> 分割线（等价于 ---）；可写单行行内片段，也可写整块。\
+                             文档里存的就是原生 HTML，其它 Markdown 渲染器照常识别。",
+                        )
+                        .size(12.0)
+                        .color(self.theme.dim),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("插入").clicked() {
+                            insert = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            cancel = true;
+                        }
+                    });
+                    if submit {
+                        insert = true;
+                    }
+                });
+            if let Some(i) = preset {
+                self.html_dialog.text = super::tabs::HTML_PRESETS[i].1.to_string();
+            }
+            if insert {
+                self.confirm_html_dialog();
+            }
+            if cancel || !open {
+                self.html_dialog.open = false;
+            }
+        }
+
         if self.table_dialog {
             let mut open = true;
             let mut confirm = false;

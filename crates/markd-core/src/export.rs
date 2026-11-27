@@ -37,6 +37,7 @@ fn inline_plain_len(i: &Inline) -> usize {
         | Inline::Link { label: v, .. } => v.iter().map(inline_plain_len).sum(),
         Inline::Image { alt, .. } => alt.chars().count(),
         Inline::Footnote(id) => id.chars().count(),
+        Inline::Span { content, .. } => content.iter().map(inline_plain_len).sum(),
         Inline::Break => 1,
     }
 }
@@ -113,6 +114,11 @@ fn inline_html_range(v: &[Inline], start: usize, end: usize) -> String {
                     esc(alt)
                 ));
             }
+            Inline::Span { tag, content } => {
+                out.push_str(tag);
+                out.push_str(&inline_html_range(content, local_lo, local_hi));
+                out.push_str("</span>");
+            }
             Inline::Footnote(id) => out.push_str(&format!("<sup class=\"fn\">[{}]</sup>", esc(id))),
             Inline::Break => out.push_str("<br/>"),
         }
@@ -172,6 +178,12 @@ fn inline_html(v: &[Inline]) -> String {
             }
             Inline::Footnote(id) => s.push_str(&format!("<sup class=\"fn\">[{}]</sup>", esc(id))),
             Inline::Break => s.push_str("<br/>"),
+            // 内嵌 HTML：标签原样写出，内部的 Markdown 照常渲染。
+            Inline::Span { tag, content } => {
+                s.push_str(tag);
+                s.push_str(&inline_html(content));
+                s.push_str("</span>");
+            }
         }
     }
     s
@@ -190,6 +202,44 @@ fn video_html(lang: &str, code: &str) -> Option<String> {
         "<div class=\"video-embed\"><iframe src=\"{}\" title=\"bilibili 视频\" scrolling=\"no\" frameBorder=\"0\" allowfullscreen=\"allowfullscreen\" allow=\"autoplay; video-fullscreen; fullscreen\"></iframe><noscript><a href=\"{}\">在 B 站观看此视频</a></noscript></div>",
         esc(&src.player_url()),
         esc(&src.page_url())
+    ))
+}
+
+/// 独占一段的文件链接（PDF/Word/Excel…）导出成附件条：一个下载链接、一个
+/// 新标签页预览链接，与编辑器里的附件卡片同一套动作。
+/// 不是附件（普通网页链接、图片）返回 None，仍走普通 `<a>` 渲染。
+fn file_html(content: &[Inline]) -> Option<String> {
+    if content.len() != 1 {
+        return None;
+    }
+    let Inline::Link { label, url } = &content[0] else {
+        return None;
+    };
+    let kind = crate::attachment::kind_of(url)?;
+    let name = ast::inline_plain(label);
+    let name = if name.trim().is_empty() {
+        crate::attachment::name_of(url)
+    } else {
+        name
+    };
+    let href = crate::attachment::export_href(url);
+    // 属性值里的引号/尖括号必须转义，中文名与查询串都可能是用户原文。
+    let h = esc(&href);
+    let n = esc(&name);
+    // 远程地址才给 download：本地 file:// 链接加 download 会被浏览器忽略甚至报错。
+    let dl = if crate::image_host::is_remote(&href) {
+        format!("<a href=\"{h}\" download=\"{n}\">下载</a>")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "<div class=\"file-embed\"><span class=\"file-kind\">{kind}</span>\
+         <span class=\"file-name\">{n}</span>{dl}\
+         <a href=\"{h}\" target=\"_blank\" rel=\"noopener\">新标签页打开</a></div>",
+        kind = esc(kind.label()),
+        h = h,
+        n = n,
+        dl = dl,
     ))
 }
 
@@ -234,7 +284,15 @@ pub fn to_html(title: &str, source: &str, dark: bool) -> String {
                 ));
             }
             Block::Paragraph { content, .. } => {
-                out.push_str(&format!("<p>{}</p>\n", inline_html(content)));
+                // 独占一段的附件链接画成附件条，其余段落照旧走行内渲染。
+                match file_html(content) {
+                    Some(html) => out.push_str(&format!("{html}\n")),
+                    None => out.push_str(&format!("<p>{}</p>\n", inline_html(content))),
+                }
+            }
+            Block::Div { tag, content, .. } => {
+                // 内嵌 HTML 块：开始标签原样写出，内部的 Markdown 照常渲染成 HTML。
+                out.push_str(&format!("{tag}{}\n</div>\n", inline_html(content)));
             }
             Block::Quote { content, .. } => {
                 out.push_str(&format!(
@@ -402,6 +460,10 @@ hr{{border:none;border-top:1px solid #ddd;margin:2em 0}}
 img{{max-width:100%}} .wiki{{color:#8957e5}}
 .video-embed{{position:relative;width:100%;padding-top:56.25%;margin:1em 0;background:#000;border-radius:8px;overflow:hidden}}
 .video-embed iframe{{position:absolute;left:0;top:0;width:100%;height:100%;border:0}}
+.file-embed{{display:flex;align-items:center;gap:.7em;flex-wrap:wrap;margin:1em 0;padding:.7em 1em;border:1px solid #ddd;border-radius:8px;background:rgba(127,127,127,.07)}}
+.file-kind{{font-size:.7em;font-weight:700;letter-spacing:.04em;padding:.3em .55em;border-radius:4px;background:rgba(127,127,127,.2)}}
+.file-name{{flex:1;min-width:8em;font-weight:600;word-break:break-all}}
+.file-embed a{{font-size:.85em;white-space:nowrap;border:1px solid #ddd;border-radius:5px;padding:.25em .7em}}
 .math-block{{text-align:center;font-family:Georgia,serif;font-size:1.15em;margin:1.2em 0}}
 .front-matter{{font-size:.85em;opacity:.8}}
 .toc{{border:1px solid #ddd;border-radius:8px;padding:12px 20px;margin:1em 0}}
@@ -431,7 +493,14 @@ fn block_html(b: &Block, blocks: &[Block]) -> String {
             out.push_str(&format!("<h{0}>{1}</h{0}>", level, inline_html(content)));
         }
         Block::Paragraph { content, .. } => {
-            out.push_str(&format!("<p>{}</p>", inline_html(content)));
+            out.push_str(&match file_html(content) {
+                Some(html) => html,
+                None => format!("<p>{}</p>", inline_html(content)),
+            });
+        }
+        Block::Div { tag, content, .. } => {
+            // 内嵌 HTML 块：与整篇导出同一口径，标签原样、内部照常渲染。
+            out.push_str(&format!("{tag}{}\n</div>", inline_html(content)));
         }
         Block::Quote { content, .. } => {
             out.push_str(&format!(
@@ -707,6 +776,57 @@ mod tests {
         assert!(h.contains("<!doctype html>"));
     }
 
+    /// 内嵌 HTML 透传：`<span>` / `<div>` 的标签必须原样写进导出的 HTML（样式跟着走），
+    /// 标签内部的 Markdown 照常渲染成 HTML；`<hr>` 走 Rule 分支导出 `<hr/>`。
+    #[test]
+    fn to_html_keeps_embedded_html_tags() {
+        let src = "前<span style=\"color:red; font-size:18px\">红色**粗**</span>后\n\n<div style=\"background:#eee; padding:10px;\">提示框<span style=\"color:blue\">蓝</span></div>\n\n<hr>\n\n结束";
+        let h = to_html("T", src, false);
+        assert!(
+            h.contains("<span style=\"color:red; font-size:18px\">红色<strong>粗</strong></span>"),
+            "span 标签要原样带出、正文照常渲染: {h}"
+        );
+        assert!(
+            h.contains("<div style=\"background:#eee; padding:10px;\">提示框<span style=\"color:blue\">蓝</span>\n</div>"),
+            "div 要写成成对标签包住已渲染的正文: {h}"
+        );
+        assert!(h.contains("<hr/>"), "hr 标签应导出成分割线: {h}");
+        assert!(!h.contains("**粗**"), "span 内不能漏出 Markdown 字面量: {h}");
+        assert!(h.contains("<p>结束</p>"), "hr 之后的段落照常: {h}");
+    }
+
+    /// 块级导出（拖选复制用的片段 HTML）与整篇导出同一口径：div 带标签、span 带标签。
+    #[test]
+    fn block_html_keeps_embedded_html_tags() {
+        let src = "<div style=\"background:#eee;\">提示<span style=\"color:red\">红</span></div>";
+        let blocks = ast::parse(src);
+        let h = block_html(&blocks[0], &blocks);
+        assert_eq!(
+            h,
+            "<div style=\"background:#eee;\">提示<span style=\"color:red\">红</span>\n</div>",
+            "{h}"
+        );
+    }
+
+    /// span 的字符数必须按「只算正文、不算标签」计入口内偏移：
+    /// `inline_plain_len` 漏掉这一支时，跨块选区的端点会切错位置。
+    #[test]
+    fn cross_sel_html_counts_span_body_only() {
+        let src = "甲<span style=\"color:red\">乙丙</span>丁";
+        let blocks = ast::parse(src);
+        // 所见文本是「甲乙丙丁」，全选应拿到四个字的正文与 span 标签。
+        let h = cross_sel_html(&blocks, (0, 0, 0, 4));
+        assert_eq!(
+            h,
+            "<p>甲<span style=\"color:red\">乙丙</span>丁</p>",
+            "按所见字符下标切片: {h}"
+        );
+        // 只选「丙丁」：起点落在 span 内部第二个字，终点在 span 之后。
+        let part = cross_sel_html(&blocks, (0, 2, 0, 4));
+        assert!(part.contains("丙"), "起要点在 span 内要拿到那半个 span: {part}");
+        assert!(part.contains('丁'), "span 之后的字要跟上: {part}");
+    }
+
     #[test]
     fn cross_sel_html_preserves_block_and_inline_format() {
         let src = "# 标题 **粗**\n\n段落含 `代码` 与 *斜体*\n\n```rust\nfn main(){}\n```\n\n| A | B |\n| --- | --- |\n| 1 | 2 |";
@@ -804,5 +924,80 @@ a = 1
         assert!(bad.contains("language-video"), "{bad}");
         assert!(bad.contains("example.com"), "{bad}");
         assert!(!bad.contains("<iframe"), "{bad}");
+    }
+
+    /// 独占一段的附件链接导出成附件条：类型徽标 + 文件名 + 下载 + 新标签页。
+    #[test]
+    fn attachment_link_exports_file_bar() {
+        let src = "[年报 2026.pdf](https://x.com/f/%E5%B9%B4%E6%8A%A5%202026.pdf?v=2&t=1)";
+        let h = to_html("T", src, false);
+        assert!(h.contains("<div class=\"file-embed\">"), "{h}");
+        assert!(h.contains("file-kind\">PDF<"), "{h}");
+        assert!(h.contains("<span class=\"file-name\">年报 2026.pdf</span>"), "{h}");
+        assert!(h.contains("download=\"年报 2026.pdf\""), "{h}");
+        assert!(h.contains("target=\"_blank\" rel=\"noopener\""), "{h}");
+        // 查询串里的 & 在属性值里必须转义
+        assert!(h.contains("?v=2&amp;t=1"), "{h}");
+        assert!(!h.contains("<p>"), "附件段不该包成普通段落：{h}");
+        assert!(h.contains(".file-embed{"), "缺少附件条样式：{h}");
+    }
+
+    /// 行内的附件链接、普通网页链接、图片都不能被当成附件卡片。
+    #[test]
+    fn only_lone_attachment_link_becomes_file_bar() {
+        let mixed = to_html("T", "正文 [附件.xlsx](https://x.com/a.xlsx) 结尾", false);
+        assert!(mixed.contains("<p>正文"), "{mixed}");
+        assert!(!mixed.contains("class=\"file-embed\""), "{mixed}");
+        // 链接在段首的夹句同样不是「独占一段」：只看第一个内联元素的实现会在这里翻车
+        let leading = to_html("T", "[附件.xlsx](https://x.com/a.xlsx) 结尾", false);
+        assert!(
+            leading.contains("<p><a href=\"https://x.com/a.xlsx\">"),
+            "{leading}"
+        );
+        assert!(!leading.contains("class=\"file-embed\""), "{leading}");
+        let page = to_html("T", "[官网](https://x.com/home)", false);
+        assert!(page.contains("<p><a href=\"https://x.com/home\">"), "{page}");
+        assert!(!page.contains("class=\"file-embed\""), "{page}");
+        let img = to_html("T", "![](https://x.com/a.png)", false);
+        assert!(img.contains("<img"), "{img}");
+        assert!(!img.contains("class=\"file-embed\""), "{img}");
+    }
+
+    /// 本地绝对路径导出成 `file://`（中文与空格编码），相对路径保持相对、不给 download。
+    #[test]
+    fn local_attachment_exports_file_url() {
+        let abs = to_html("T", "[台账.xlsx](/tmp/台账%201月.xlsx)", false);
+        assert!(
+            abs.contains("href=\"file:///tmp/%E5%8F%B0%E8%B4%A6%201%E6%9C%88.xlsx\""),
+            "{abs}"
+        );
+        assert!(!abs.contains("download="), "本地链接不给下载属性：{abs}");
+        let rel = to_html("T", "[合同.pdf](files/合同.pdf)", false);
+        assert!(rel.contains("href=\"files/合同.pdf\""), "{rel}");
+    }
+
+    /// 复制为富文本走 block_html：附件同样要出附件条，不能退化成裸链接。
+    #[test]
+    fn block_html_renders_attachment() {
+        let blocks = ast::parse("[包.tar.gz](https://x.com/dl/包.tar.gz)");
+        let h = block_html(&blocks[0], &blocks);
+        assert!(h.contains("file-embed"), "{h}");
+        assert!(h.contains("压缩包"), "{h}");
+    }
+
+    /// 硬换行导出的三种落点：段落、表格单元格、富文本片段都要出 `<br/>`，
+    /// 不能在导出/复制这一层退化成空格或被吞掉。
+    #[test]
+    fn hard_break_exports_as_br() {
+        let para = to_html("T", "上文<br>下文", false);
+        assert!(para.contains("上文<br/>下文"), "{para}");
+        let table = to_html("T", "| A | B |\n| --- | --- |\n| 甲<br>乙 | 丙 |", false);
+        assert!(table.contains("甲<br/>乙"), "{table}");
+        let blocks = ast::parse("甲<br>乙");
+        let rich = block_html(&blocks[0], &blocks);
+        assert!(rich.contains("甲<br/>乙"), "{rich}");
+        // 跨块选区复制走的是另一套区间输出（inline_html_range），同样要留标签
+        let sel = cross_sel_html(&blocks, (0, 0, 0, 100));
+        assert!(sel.contains("甲<br/>乙"), "{sel}");
     }
 }

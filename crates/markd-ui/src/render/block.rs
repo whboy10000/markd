@@ -390,7 +390,29 @@ pub fn render_block(
                     }
                     return merged.expect("段落里至少有一张图片");
                 }
+                // 「整段只有一个附件链接」才升成文件卡片；句中夹的文件链接仍是普通链接。
+                if let Some((url, label, kind)) = attachment_of(content) {
+                    return file_panel(ui, theme, env, idx, url, &label, kind);
+                }
                 text_response(ui, content, theme, theme.body, color, false, env, idx)
+            }
+            Block::Div { tag, content, .. } => {
+                // 内嵌 HTML 的盒子：`<div style="background:#eee; padding:10px">提示框</div>`
+                // 画成灰底圆角框，没写 background 就只留内边距（不凭空给个框骗人）。
+                // 高度由 Frame 自己推进游标，编辑器按 `adv` 量回真实高度，不需要额外表。
+                let st = crate::html_style::style_of(tag, theme.body);
+                egui::Frame::NONE
+                    .fill(
+                        st.background
+                            .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
+                            .unwrap_or(egui::Color32::TRANSPARENT),
+                    )
+                    .corner_radius(6.0)
+                    .inner_margin(st.padding_px.unwrap_or(10.0))
+                    .show(ui, |ui| {
+                        text_response(ui, content, theme, theme.body, color, false, env, idx)
+                    })
+                    .inner
             }
             Block::Quote { level, content, .. } => {
                 ui.horizontal(|ui| {

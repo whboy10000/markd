@@ -58,6 +58,135 @@ impl MarkdApp {
         }
     }
 
+    /// 弹窗里的「选择本地文件…」：只把路径填回地址框，不直接落文档——
+    /// 显示名可能还想改，而且用户选完也可能改主意。
+    pub(super) fn pick_attachment_file(&mut self) {
+        let base = crate::image_insert::doc_dir(self.doc.path.as_deref());
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("选择要插入的文件")
+            .add_filter(
+                "常见文档",
+                &[
+                    "pdf", "doc", "docx", "xls", "xlsx", "csv", "ppt", "pptx", "epub", "mobi",
+                    "zip", "rar", "7z", "txt", "json", "mp3", "mp4",
+                ],
+            )
+            .add_filter("所有文件", &["*"]);
+        if base.is_dir() {
+            dialog = dialog.set_directory(&base);
+        }
+        match dialog.pick_file() {
+            Some(p) => {
+                self.attachment_dialog.url = p.to_string_lossy().to_string();
+                self.attachment_dialog.focus_url = false;
+                self.status = format!("已选择 {}，点「插入」写进文档", p.display());
+            }
+            None => self.status = "已取消选择文件".to_string(),
+        }
+    }
+
+    /// 点附件卡片：本机有的直接交给系统程序打开；远程的先下到 `~/.markd/attachments`
+    /// 再打开。文档里的相对路径和绝对路径都先按文档目录解析。
+    pub(super) fn preview_attachment(&mut self, url: &str, ctx: &egui::Context) {
+        let base = self.doc.path.as_ref().and_then(|p| p.parent());
+        let local = crate::attachment::local_path(base, url);
+        if let Some(p) = local.as_ref().filter(|p| p.is_file()) {
+            self.open_attachment_file(p);
+            return;
+        }
+        if !crate::image_host::is_remote(url) {
+            self.status = format!(
+                "找不到本地文件：{}",
+                local
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| url.to_string())
+            );
+            return;
+        }
+        let cached = crate::attachment::cached_path(url);
+        if cached.is_file() {
+            self.open_attachment_file(&cached);
+            return;
+        }
+        if self.images.is_downloading(url) {
+            self.status = "这个附件正在下载，稍等片刻".to_string();
+            return;
+        }
+        self.spawn_attachment_download(url, ctx);
+    }
+
+    /// 把本机文件交给系统默认程序（PDF → 预览，Office 文档 → 对应套件）。
+    fn open_attachment_file(&mut self, path: &Path) {
+        match super::tabs::open_with_default_app(path) {
+            Ok(()) => self.status = format!("已用系统默认程序打开 {}", path.display()),
+            Err(e) => self.status = format!("打开附件失败: {e}"),
+        }
+    }
+
+    /// 起一个后台下载线程：下完由 [`Self::poll_file_downloads`] 收尾并打开。
+    /// 附件动辄几十 MB，同步下载等于把界面冻住。
+    fn spawn_attachment_download(&mut self, url: &str, ctx: &egui::Context) {
+        let url = url.to_string();
+        let dest = crate::attachment::cached_path(&url);
+        let Some(dir) = dest.parent().map(|p| p.to_path_buf()) else {
+            self.status = format!("附件地址里没有文件名：{url}");
+            return;
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.file_downloads.push((url.clone(), rx));
+        self.images.begin_download(&url);
+        self.status = format!("正在下载附件 {}…", crate::attachment::name_of(&url));
+        let ctx2 = ctx.clone();
+        std::thread::spawn(move || {
+            let result = std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("创建下载目录失败：{e}"))
+                .and_then(|()| {
+                    crate::attachment::download(&url, &dest)
+                        .map(|_| dest.clone())
+                        .map_err(|e| e.to_string())
+                });
+            let _ = tx.send(result);
+            ctx2.request_repaint();
+        });
+    }
+
+    /// 每帧收后台下载结果。成败都要摘掉「下载中」标记，卡片才会把按钮变回「打开」；
+    /// 线程意外断开（下载函数 panic）也要摘，否则那一栏永远挂着。
+    pub(super) fn poll_file_downloads(&mut self, ctx: &egui::Context) {
+        if self.file_downloads.is_empty() {
+            return;
+        }
+        let mut done = Vec::new();
+        self.file_downloads.retain(|(url, rx)| match rx.try_recv() {
+            Ok(r) => {
+                done.push((url.clone(), r));
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(300));
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                done.push((url.clone(), Err("下载线程意外结束".to_string())));
+                false
+            }
+        });
+        for (url, result) in done {
+            self.images.end_download(&url);
+            match result {
+                // 用户点卡片就是要看这个文件：下完顺手打开，不用再点第二次。
+                Ok(path) => match super::tabs::open_with_default_app(&path) {
+                    Ok(()) => self.notify(ctx, format!("附件已下载并打开：{}", path.display())),
+                    Err(e) => self.notify(
+                        ctx,
+                        format!("附件已下载到 {}，打开失败：{e}", path.display()),
+                    ),
+                },
+                Err(e) => self.notify(ctx, format!("附件下载失败：{e}")),
+            }
+        }
+    }
+
     /// 图床启用时，把刚插入的图片交给后台线程上传。
     /// 上传在后台进行，UI 不卡顿；完成后由 [`Self::poll_image_uploads`] 替换链接。
     fn maybe_upload_image(

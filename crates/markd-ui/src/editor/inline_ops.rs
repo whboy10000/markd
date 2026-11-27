@@ -1,6 +1,9 @@
-//! 行内样式包裹与链接插入。
+//! 行内样式包裹、链接插入与硬换行。
 
 use super::*;
+
+/// 换行按钮写进文档的硬换行标记（解析见 `ast::BREAK_TAGS`）。
+pub(super) const LINE_BREAK_TAG: &str = "<br>";
 
 /// 用标记包裹内容（加粗 / 斜体 / 删除线 / 行内代码 / 链接共用）：
 /// - 有选区（含工具条点击时记住的选区）→ 包裹选中的文字；
@@ -260,6 +263,80 @@ pub fn insert_link(
         (a + label.chars().count() + url.chars().count() + 4).min(out.chars().count());
     state.caret_req = Some((idx, state.last_cursor));
     state.focus_req = Some(idx);
+    true
+}
+
+/// 能承载行内 HTML 标签的块：正文类（标题、段落、提示框、引用、列表项、脚注、空行）。
+/// 代码 / 图表 / 公式里 `<br>` `<span>` 只是字面字符，FrontMatter / TOC / 分隔线是整块语法，
+/// 在这些块里插标签只会污染内容，所以按钮直接不动它们。
+fn accepts_inline_tag(b: &Block) -> bool {
+    matches!(
+        b,
+        Block::Heading { .. }
+            | Block::Paragraph { .. }
+            | Block::Div { .. }
+            | Block::Quote { .. }
+            | Block::ListItem { .. }
+            | Block::Footnote { .. }
+            | Block::Blank { .. }
+    )
+}
+
+/// 换行按钮：在光标处插入硬换行标记 `<br>`。
+pub fn insert_line_break(doc: &mut Document, state: &mut EditorState) -> bool {
+    insert_inline_tag(doc, state, LINE_BREAK_TAG)
+}
+
+/// 往光标处插入一段 HTML 标签原文（`<br>`、`<span …>…</span>` 等）。
+///
+/// - 普通块（段落/标题/提示框/引用/列表项/脚注）：在光标处（有选区时取选区起点）写进
+///   可编辑文本，再 `rebuild_source` 还原成源码，和加粗那条路径同一套口径。
+/// - 表格：格子里编辑的是草稿文本，只改源码会被下一次按键用旧草稿盖回去，
+///   所以把请求挂到 `table_inline_req`，由视图帧内的单元格循环消费。
+/// - 返回 false = 当前块/单元格放不下标签（代码块、没点进单元格），调用方给提示。
+pub fn insert_inline_tag(doc: &mut Document, state: &mut EditorState, tag: &str) -> bool {
+    let draft_idx = state.table_draft.as_ref().map(|(i, _, _)| *i);
+    if draft_idx == Some(state.active) {
+        // 单元格与草稿必须指向同一张表：删表/换表后 table_cell 可能是上一张留下的。
+        let Some(cell @ (b, _, _, _)) = state.table_cell else {
+            return false;
+        };
+        if b != state.active {
+            return false;
+        }
+        state.table_inline_req = Some((cell, tag.to_string()));
+        return true;
+    }
+
+    let idx = state.active;
+    let Some(b) = doc.blocks.get(idx) else {
+        return false;
+    };
+    if !accepts_inline_tag(b) {
+        return false;
+    }
+    let text = block_buffer(b);
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    // 与 wrap 同源：点按钮时编辑框已失焦，实时选区可能被清空，要回退到 last_sel。
+    let sel_start = state
+        .sel
+        .map(|(a, _)| a)
+        .or_else(|| state.last_sel.filter(|(b, _, _)| *b == idx).map(|(_, a, _)| a))
+        .unwrap_or(state.last_cursor);
+    let p = sel_start.min(len);
+
+    let mut out: String = chars[..p].iter().collect();
+    out.push_str(tag);
+    out.extend(&chars[p..]);
+    let src_out = rebuild_source(b, &out);
+    doc.record();
+    doc.edit_block(idx, &src_out);
+    state.sel = None;
+    state.last_sel = None;
+    // 光标落到标签之后，接着打字不会打进标签中间。
+    state.last_cursor = (p + tag.chars().count()).min(out.chars().count());
+    state.caret_req = Some((idx, state.last_cursor));
     true
 }
 

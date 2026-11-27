@@ -63,6 +63,13 @@ pub struct EditorState {
     pub clicked: bool,
     /// 正在原地编辑的表格草稿：(块下标, 单元格文本, 对齐)。
     pub table_draft: Option<(usize, Vec<Vec<String>>, Vec<crate::ast::Align>)>,
+    /// 光标所在单元格：(块下标, 行, 列, 格内光标)。每帧由单元格的文本框刷新，
+    /// 换行按钮靠它才知道该往哪一格的哪个位置插 `<br>`。
+    pub table_cell: Option<(usize, usize, usize, usize)>,
+    /// 一次性插标签请求：((块下标, 行, 列, 格内光标), 标签原文)。「换行」按钮与
+    /// HTML 弹窗在表格里挂上，由视图帧内的单元格循环消费——草稿改了必须同一帧写回
+    /// 源码，否则下次按键会盖掉。标签原文随请求走，才能插 `<br>` 以外的片段。
+    pub table_inline_req: Option<((usize, usize, usize, usize), String)>,
     /// 表格里按下鼠标的起点：(块下标, 行, 列)。从该单元格拖到别的单元格时，
     /// 只选中经过的那几格（`table_sel`）；拖出表格边界才把整张表交给跨块选区。
     pub table_drag_from: Option<(usize, usize, usize)>,

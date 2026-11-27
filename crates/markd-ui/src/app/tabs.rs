@@ -2,6 +2,22 @@
 
 use super::*;
 
+/// 「插入 HTML 内嵌」弹窗的四个预设：按钮名 + 片段模板。
+/// 模板就是文档里该写的原文（标准 HTML，别的渲染器照常识别），用户可在框里接着改。
+pub(super) const HTML_PRESETS: [(&str, &str); 4] = [
+    (
+        "文字样式",
+        r#"<span style="color:red; font-size:18px;">红色大号文字</span>"#,
+    ),
+    (
+        "提示框",
+        r#"<div style="background:#eee; padding:10px;">灰色背景提示框</div>"#,
+    ),
+    ("分割线", "<hr>"),
+    ("换行", "<br>"),
+];
+
+
 impl MarkdApp {
     /// 大纲显隐开关：正在显示时切回文件树（隐藏），否则显示大纲面板。
     pub(super) fn toggle_outline(&mut self) {
@@ -407,6 +423,114 @@ impl MarkdApp {
         self.video_dialog.open = false;
     }
 
+    /// 打开「插入文件」弹窗：本地文件与远程链接共用一个地址框。
+    pub(super) fn open_attachment_dialog(&mut self) {
+        self.attachment_dialog = AttachmentDialog {
+            open: true,
+            url: String::new(),
+            name: String::new(),
+            focus_url: true,
+        };
+    }
+
+    /// 弹窗点「插入」：写一条 `[文件名](地址)` 链接，卡片立刻以渲染态显示。
+    ///
+    /// 本地文件只写引用、不复制文件本身：附件动辄几十 MB，静默复制既占盘又会让
+    /// UI 卡在拷贝上；要连文件一起带走，交给用户自己放进文档目录。
+    pub(super) fn confirm_attachment_dialog(&mut self) {
+        let raw = self.attachment_dialog.url.trim().to_string();
+        if raw.is_empty() {
+            self.status = "请先粘贴文件链接，或点「选择本地文件」".to_string();
+            self.attachment_dialog.focus_url = true;
+            return;
+        }
+        let url = self.attachment_target(&raw);
+        let Some(kind) = crate::attachment::kind_of(&url) else {
+            // 认不出类型就不动文档：插一条不是附件的链接只会得到一段普通文字。
+            self.status = format!(
+                "认不出文件类型（需带扩展名，如 PDF/Word/Excel/PPT/压缩包）：{url}"
+            );
+            return;
+        };
+        let inferred = crate::attachment::name_of(&url);
+        let typed = self.attachment_dialog.name.trim().to_string();
+        let name = if typed.is_empty() { inferred } else { typed };
+        let md = crate::attachment::attachment_link(&name, &url);
+        editor::insert_rendered_block(&mut self.doc, &mut self.editor, &md);
+        self.on_changed();
+        self.status = format!(
+            "已插入{}附件 {name}（点卡片下载预览，或新标签页打开）",
+            kind.describe()
+        );
+        self.attachment_dialog.open = false;
+    }
+
+    /// 打开「插入 HTML 内嵌」弹窗：预填最常用的文字样式模板，四个预设可随时替换。
+    pub(super) fn open_html_dialog(&mut self) {
+        self.html_dialog = HtmlDialog {
+            open: true,
+            text: HTML_PRESETS[0].1.to_string(),
+            focus_text: true,
+        };
+    }
+
+    /// 弹窗点「插入」：按 `html_drop` 的判定落文档——单行行内片段插到光标处，
+    /// div / hr / 跨行片段整块插入。认不出标签就拒绝，绝不往正文里写字面尖括号。
+    pub(super) fn confirm_html_dialog(&mut self) {
+        let raw = self.html_dialog.text.trim().to_string();
+        if raw.is_empty() {
+            self.status = "请先写一段 HTML 片段，或点上方的预设".to_string();
+            self.html_dialog.focus_text = true;
+            return;
+        }
+        let Some(drop) = crate::html_style::html_drop(&raw) else {
+            self.status =
+                "只支持 <span> <div> <br> <hr> 四种标签，且要成对写完整".to_string();
+            return;
+        };
+        // 行内片段走光标处，块级片段整块插入；状态栏说清落点，用户才知道为什么
+        // 有时插在字中间、有时另起一块。
+        let describe = match drop {
+            crate::html_style::HtmlDrop::Inline => {
+                if !editor::insert_inline_tag(&mut self.doc, &mut self.editor, &raw) {
+                    self.status =
+                        "行内片段要插在有文字的地方：先点进段落、标题、列表或表格单元格"
+                            .to_string();
+                    return;
+                }
+                "插到光标处"
+            }
+            crate::html_style::HtmlDrop::Block => {
+                editor::insert_rendered_block(&mut self.doc, &mut self.editor, &raw);
+                "整块插入"
+            }
+        };
+        self.on_changed();
+        self.status = format!(
+            "已{describe} HTML 片段：点这一块进编辑态可直接改标签，导出 HTML 原样保留"
+        );
+        self.html_dialog.open = false;
+    }
+
+    /// 附件地址落文档前的形状：远程链接原样；本地绝对路径尽量转成相对文档的
+    /// 相对路径（文档整目录搬走也不会断）；用户手写的相对路径原样保留。
+    pub(super) fn attachment_target(&self, raw: &str) -> String {
+        if crate::image_host::is_remote(raw) || raw.contains("://") {
+            return raw.to_string();
+        }
+        let p = std::path::PathBuf::from(raw);
+        if !p.is_absolute() {
+            return raw.to_string();
+        }
+        match self.doc.path.as_ref().and_then(|d| d.parent()) {
+            Some(dir) if !dir.as_os_str().is_empty() => {
+                crate::image_insert::relative_to(dir, &p)
+            }
+            // 未保存的文档没有「相对」可言，只能写绝对路径。
+            _ => p.to_string_lossy().to_string(),
+        }
+    }
+
     pub(super) fn open_link(&mut self, url: &str) {
         if url.starts_with("http://") || url.starts_with("https://") {
             #[cfg(target_os = "macos")]
@@ -419,7 +543,7 @@ impl MarkdApp {
                 .spawn();
             self.status = format!("已打开链接 {}", url);
         } else if let Some(p) =
-            workspace::resolve(self.doc.path.as_ref().and_then(|x| x.parent()), url)
+            crate::attachment::local_path(self.doc.path.as_ref().and_then(|x| x.parent()), url)
         {
             if p.is_file() {
                 if p.extension()
@@ -427,12 +551,44 @@ impl MarkdApp {
                     .unwrap_or(false)
                 {
                     self.open_file(p);
+                } else if let Err(e) = open_with_default_app(&p) {
+                    self.status = format!("打开附件失败: {e}");
                 } else {
-                    self.status = format!("附件: {}", p.display());
+                    self.status = format!("已用系统默认程序打开 {}", p.display());
                 }
             } else {
                 self.status = format!("目标不存在: {}", p.display());
             }
         }
     }
+}
+
+/// 用系统默认程序打开一个本地文件（PDF 交给预览、Office 文档交给对应套件）。
+///
+/// 走 `spawn` 而不是 `status`：`xdg-open` 会一直挂着到目标程序退出，
+/// 同步等待等于把界面冻住。
+pub(crate) fn open_with_default_app(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(path);
+        c
+    };
+    #[cfg(target_os = "linux")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(path);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        // 空标题参数不能省：`start` 会把第一个带引号的参数当窗口标题，
+        // 缺了它，含空格的路径就被当成标题而不是要打开的文件。
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", "", path.as_os_str()]);
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    return Err(std::io::Error::other("当前平台不支持打开外部文件"));
+    cmd.spawn().map(|_| ())
 }

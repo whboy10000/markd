@@ -162,6 +162,29 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
                 stroke,
             );
         }
+        "line_break" => {
+            // 回车箭头 ⏎：上一行文字 → 折到下一行，只用线段画，不依赖符号字体。
+            painter.line_segment(
+                [c + egui::vec2(-9.0, -7.0), c + egui::vec2(7.0, -7.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [c + egui::vec2(7.0, -7.0), c + egui::vec2(7.0, 3.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [c + egui::vec2(7.0, 3.0), c + egui::vec2(-9.0, 3.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [c + egui::vec2(-5.0, -1.0), c + egui::vec2(-9.0, 3.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [c + egui::vec2(-9.0, 3.0), c + egui::vec2(-5.0, 7.0)],
+                stroke,
+            );
+        }
         "list" => {
             for (i, len) in [10.0_f32, 13.0, 8.0].into_iter().enumerate() {
                 let y = c.y - 9.0 + i as f32 * 9.0;
@@ -264,6 +287,30 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
             painter.line_segment([tri[1], tri[2]], stroke);
             painter.line_segment([tri[2], tri[0]], stroke);
         }
+        "file" => {
+            // 附件：一页纸 + 右上角折角，下面两道文字线，与其余线框图标同一语言。
+            let r = egui::Rect::from_center_size(c + egui::vec2(0.0, 0.5), egui::vec2(16.0, 20.0));
+            let fold = 5.5_f32;
+            let a = egui::pos2(r.left(), r.top());
+            let b = egui::pos2(r.right() - fold, r.top());
+            let d = egui::pos2(r.right(), r.top() + fold);
+            let e = r.right_bottom();
+            let f = r.left_bottom();
+            for (p, q) in [(a, b), (b, d), (d, e), (e, f), (f, a)] {
+                painter.line_segment([p, q], stroke);
+            }
+            // 折角内侧两笔，让右上角看着是翻起来的而不是被切掉一块。
+            let g = egui::pos2(r.right() - fold, r.top() + fold);
+            painter.line_segment([b, g], stroke);
+            painter.line_segment([g, d], stroke);
+            for dy in [1.0_f32, 5.5] {
+                let y = r.center().y + dy;
+                painter.line_segment(
+                    [egui::pos2(r.left() + 3.0, y), egui::pos2(r.right() - 3.0, y)],
+                    egui::Stroke::new(1.3, fg),
+                );
+            }
+        }
         "formula" => text("f(x)", 15.0, c),
         "code" => text("</>", 14.0, c),
         "table" => {
@@ -347,6 +394,10 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
                 [c + egui::vec2(-10.0, 9.0), c + egui::vec2(10.0, 9.0)],
                 stroke,
             );
+        }
+        "html" => {
+            // 尖括号对：一看就是「写标签」，和「代码」的 </> 区分开。
+            text("<>", 16.0, c);
         }
         "mermaid" => text("M", 21.0, c),
         "snapshot" => {

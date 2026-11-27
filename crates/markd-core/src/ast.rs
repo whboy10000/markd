@@ -28,6 +28,13 @@ pub enum Inline {
     Math(String),
     Wiki(String),
     Footnote(String),
+    /// 内嵌 HTML 的 `<span style="color:red; font-size:18px">文字</span>`。
+    /// `tag` 存开始标签原文（导出时原样写回，`class` 之类的自定义属性不会丢），
+    /// 渲染层用 [`crate::html_style::style_of`] 现读颜色与字号。
+    Span {
+        tag: String,
+        content: Vec<Inline>,
+    },
     Break,
 }
 
@@ -199,6 +206,14 @@ pub enum Block {
         content: Vec<Inline>,
         source: SourceText,
     },
+    /// 内嵌 HTML 的 `<div style="background:#eee; padding:10px">提示框</div>`：
+    /// 一段带自定义背景与内边距的块级容器，渲染态画成盒子，编辑态露出源码。
+    /// `tag` 是开始标签原文，`content` 是标签内部的行内树，`source` 是整段原文。
+    Div {
+        tag: String,
+        content: Vec<Inline>,
+        source: SourceText,
+    },
     Quote {
         level: usize,
         content: Vec<Inline>,
@@ -261,6 +276,7 @@ impl Block {
         match self {
             Block::Heading { source, .. }
             | Block::Paragraph { source, .. }
+            | Block::Div { source, .. }
             | Block::Quote { source, .. }
             | Block::ListItem { source, .. }
             | Block::Code { source, .. }
@@ -287,6 +303,7 @@ impl Block {
                 self,
                 Block::Heading { .. }
                     | Block::Paragraph { .. }
+                    | Block::Div { .. }
                     | Block::Quote { .. }
                     | Block::Footnote { .. }
                     | Block::ListItem { .. }
@@ -299,6 +316,7 @@ impl Block {
         match self {
             Block::Heading { source, .. }
             | Block::Paragraph { source, .. }
+            | Block::Div { source, .. }
             | Block::Quote { source, .. }
             | Block::ListItem { source, .. }
             | Block::Code { source, .. }
@@ -324,6 +342,7 @@ impl Block {
                 | Block::Diagram { .. }
                 | Block::Math { .. }
                 | Block::FrontMatter { .. }
+                | Block::Div { .. }
         )
     }
 
@@ -351,6 +370,7 @@ impl Block {
         match self {
             Block::Heading { content, .. }
             | Block::Paragraph { content, .. }
+            | Block::Div { content, .. }
             | Block::Quote { content, .. }
             | Block::Footnote { content, .. } => inline_plain(content),
             Block::ListItem { item, .. } => inline_plain(&item.content),
@@ -390,6 +410,12 @@ impl Block {
                 }
             }
             Block::Paragraph { .. } => plain_inline(src, out),
+            // 内嵌 div：剥掉成对标签，正文按行内规则剥离标记，与走行内树的分支同口径。
+            Block::Div { .. } => {
+                if let Some(body) = div_body(src.trim_start()) {
+                    plain_inline(body, out);
+                }
+            }
             Block::Quote { .. } => {
                 if let Some((_, body)) = quote_level(src.trim_end()) {
                     plain_inline(body, out);
@@ -431,6 +457,17 @@ impl Block {
 }
 
 pub fn inline_plain(inlines: &[Inline]) -> String {
+    inline_plain_with(inlines, " ", false)
+}
+
+/// 表格单元格草稿用的纯文本：与 `inline_plain` 有两处区别——硬换行写成 `<br>`，
+/// `<span style=…>` 连标签一起留。单元格是单行文本框，若按 `inline_plain` 把换行摊成
+/// 一个空格、把内嵌样式摊成裸文字，点进含换行或样式的单元格再写回，用户插的东西就丢了。
+pub fn inline_cell_source(inlines: &[Inline]) -> String {
+    inline_plain_with(inlines, "<br>", true)
+}
+
+fn inline_plain_with(inlines: &[Inline], brk: &str, keep_span: bool) -> String {
     let mut s = String::new();
     for i in inlines {
         match i {
@@ -441,11 +478,20 @@ pub fn inline_plain(inlines: &[Inline]) -> String {
             | Inline::Underline(v)
             | Inline::Highlight(v)
             | Inline::Link { label: v, .. } => {
-                s.push_str(&inline_plain(v));
+                s.push_str(&inline_plain_with(v, brk, keep_span));
             }
             Inline::Image { alt, .. } => s.push_str(alt),
             Inline::Footnote(id) => s.push_str(id),
-            Inline::Break => s.push(' '),
+            Inline::Break => s.push_str(brk),
+            Inline::Span { tag, content } => {
+                if keep_span {
+                    s.push_str(tag);
+                }
+                s.push_str(&inline_plain_with(content, brk, keep_span));
+                if keep_span {
+                    s.push_str("</span>");
+                }
+            }
         }
     }
     s
@@ -572,6 +618,18 @@ pub fn plain_inline<S: PlainSink>(s: &str, out: &mut S) {
             }
         }
         if c == b'<' {
+            // 硬换行标签吃掉，与 parse_inline 同口径：`inline_plain` 里 Break 是一个空格。
+            if let Some(n) = break_tag_bytes(b, i) {
+                out.push_plain(" ");
+                i += n;
+                continue;
+            }
+            // <span style=…>…</span>：标签不进纯文本，正文继续按行内规则剥离。
+            if let Some((_tag, inner, next)) = span_tag_bytes(s, i) {
+                plain_inline(&s[inner], out);
+                i = next;
+                continue;
+            }
             // <u>…</u>
             if b.get(i + 1) == Some(&b'u') && b.get(i + 2) == Some(&b'>') {
                 if let Some(end) = find_bytes(b, i + 3, b"</u>") {
@@ -740,6 +798,160 @@ fn has_trigger(s: &str) -> bool {
     s.as_bytes().iter().any(|b| TRIG[*b as usize])
 }
 
+/// 硬换行标签：`<br />` / `<br/>` / `</br>` / `<br>`，大小写都认，返回标签占的字符数。
+/// 四种写法互不为前缀（`<br>` 的第 4 个字符是 `>`，对不上 `<br />` 的空格），
+/// 所以任何顺序都判得对；仍按长度降序写，将来加 `<br >` 这类前缀形式时长标签必须在前
+/// ——`find_map` 取第一个命中，短的排前面会把长的截成标签 + 残字。
+const BREAK_TAGS: [&str; 4] = ["<br />", "<br/>", "</br>", "<br>"];
+
+/// 字符序列版（给逐字符的主循环用）。
+fn break_tag_len(cs: &[char]) -> Option<usize> {
+    BREAK_TAGS.iter().find_map(|t| {
+        let tc: Vec<char> = t.chars().collect();
+        let hit = cs.len() >= tc.len()
+            && cs[..tc.len()]
+                .iter()
+                .zip(&tc)
+                .all(|(a, b)| a.eq_ignore_ascii_case(b));
+        hit.then_some(tc.len())
+    })
+}
+
+/// 字节版（给 `plain_inline` 的快路径用，口径必须与 [`break_tag_len`] 一致）。
+fn break_tag_bytes(b: &[u8], i: usize) -> Option<usize> {
+    BREAK_TAGS.iter().find_map(|t| {
+        let hit = i + t.len() <= b.len() && b[i..i + t.len()].eq_ignore_ascii_case(t.as_bytes());
+        hit.then_some(t.len())
+    })
+}
+
+// ------------------------------------------------------------ 内嵌 HTML 标签
+//
+// Markdown 允许正文里直接写 HTML 标签，本编辑器把它们认成自己的语法：
+// `<span style="color:red; font-size:18px">` 是带样式的行内文字，
+// `<div style="background:#eee; padding:10px">` 是带样式的块，`<hr>` 等价于 `---`。
+// 标签原文一律保留在树里，导出与源码回写都不改写用户写的东西，别的渲染器照常识别。
+
+/// 整行就是一枚分割线标签时等价于 `---`：`<hr />` / `<hr/>` / `</hr>` / `<hr>`。
+/// 与 [`BREAK_TAGS`] 同理按长度降序排（将来加 `<hr  />` 这类前缀形式时长标签必须在前）。
+const HR_TAGS: [&str; 4] = ["<hr />", "<hr/>", "</hr>", "<hr>"];
+
+fn is_hr_tag(line: &str) -> bool {
+    let t = line.trim();
+    HR_TAGS.iter().any(|h| t.eq_ignore_ascii_case(h))
+}
+
+/// 大小写不敏感地从 `from` 起找 `pat`（标签名是纯 ASCII，按字节比不会切开汉字）。
+fn find_ci(text: &str, from: usize, pat: &str) -> Option<usize> {
+    let b = text.as_bytes();
+    let p = pat.as_bytes();
+    if p.is_empty() || from + p.len() > b.len() {
+        return None;
+    }
+    (from..=b.len() - p.len()).find(|&k| b[k..k + p.len()].eq_ignore_ascii_case(p))
+}
+
+/// `text` 从 0 起是不是 `<name …>`：返回 (标签原文, 标签之后的字节下标)。
+/// 名字后必须是空白或 `>`，所以 `<div>` / `<div style=…>` 算、`<divider>` 不算。
+/// 属性值里出现 `>`（`data-x="a>b"`）属极端写法，按第一个 `>` 收尾。
+fn open_tag_at<'a>(text: &'a str, name: &str) -> Option<(&'a str, usize)> {
+    let b = text.as_bytes();
+    if b.first() != Some(&b'<') || b.len() <= 1 + name.len() {
+        return None;
+    }
+    let end = 1 + name.len();
+    if !b[1..end].eq_ignore_ascii_case(name.as_bytes()) {
+        return None;
+    }
+    if !(b[end].is_ascii_whitespace() || b[end] == b'>') {
+        return None;
+    }
+    let gt = find_byte(b, end, b'>')?;
+    Some((&text[..=gt], gt + 1))
+}
+
+/// 字符版 [`open_tag_at`]（逐字符主循环按下标走 `Vec<char>`，口径必须一致）。
+fn open_tag_at_chars(cs: &[char], i: usize, name: &str) -> Option<(String, usize)> {
+    if cs.get(i) != Some(&'<') || cs.len() <= i + 1 + name.len() {
+        return None;
+    }
+    let start = i + 1;
+    let end = start + name.len();
+    if !cs[start..end].iter().zip(name.chars()).all(|(c, n)| c.eq_ignore_ascii_case(&n)) {
+        return None;
+    }
+    if !(cs[end].is_whitespace() || cs[end] == '>') {
+        return None;
+    }
+    let gt = (end..cs.len()).find(|&k| cs[k] == '>')?;
+    let tag: String = cs[i..=gt].iter().collect();
+    Some((tag, gt + 1))
+}
+
+/// 字符版 [`find_ci`]：从 `from` 起找 `</name>`，返回闭合标签起点。
+fn find_ci_chars(cs: &[char], from: usize, name: &str) -> Option<usize> {
+    let pat: Vec<char> = format!("</{name}>").chars().collect();
+    if from + pat.len() > cs.len() {
+        return None;
+    }
+    (from..=cs.len() - pat.len()).find(|&k| {
+        cs[k..k + pat.len()]
+            .iter()
+            .zip(&pat)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    })
+}
+
+/// 从 `cs[i]` 起是不是 `<span …>…</span>`：返回 (标签原文, 内部文本, 之后的下标)。
+/// 必须成对，只写半边就当普通文字，与 `<u>` / `<em>` 的规则一致。
+fn span_tag_chars(cs: &[char], i: usize) -> Option<(String, String, usize)> {
+    let (tag, after) = open_tag_at_chars(cs, i, "span")?;
+    let close = find_ci_chars(cs, after, "span")?;
+    let inner: String = cs[after..close].iter().collect();
+    Some((tag, inner, close + "</span>".chars().count()))
+}
+
+/// 字节版 [`span_tag_chars`]，交出内部文本的字节区间（`plain_inline` 零拷贝用）。
+fn span_tag_bytes(text: &str, i: usize) -> Option<(String, std::ops::Range<usize>, usize)> {
+    let (tag, after) = open_tag_at(&text[i..], "span")?;
+    let after = i + after;
+    let close = find_ci(text, after, "</span>")?;
+    Some((tag.to_string(), after..close, close + "</span>".len()))
+}
+
+/// 内嵌 div 的正文：剥掉 `<div …>` 与 `</div>`，供共享源码路径按行内规则继续剥离标记。
+fn div_body(text: &str) -> Option<&str> {
+    let (_, after) = open_tag_at(text, "div")?;
+    let close = find_ci(text, after, "</div>")?;
+    Some(text[after..close].trim())
+}
+
+/// 从 `lines[i]` 起收一整段 `<div …>…</div>`：返回 (开始标签, 内部文本, 结束行下标（不含）)。
+///
+/// 只在同一段连续非空行里配对——跨空行的 div 会让「按空行切片并行解析」与整篇串行
+/// 不一致（`safe_split_points` 只在围栏外的空行切片），所以找不到闭合就退回普通段落。
+fn div_block(lines: &[&str], i: usize) -> Option<(String, String, usize)> {
+    let head = lines.get(i)?.trim_start();
+    let (tag, after) = open_tag_at(head, "div")?;
+    let mut body: Vec<&str> = Vec::new();
+    let mut rest = head[after..].trim_start();
+    let mut j = i;
+    loop {
+        if let Some(close) = find_ci(rest, 0, "</div>") {
+            body.push(rest[..close].trim_end());
+            return Some((tag.to_string(), body.join("\n").trim().to_string(), j + 1));
+        }
+        if !rest.is_empty() {
+            body.push(rest);
+        }
+        j += 1;
+        rest = lines.get(j)?.trim_start();
+        if rest.is_empty() {
+            return None;
+        }
+    }
+}
+
 pub fn parse_inline(s: &str) -> Vec<Inline> {
     // 一个触发字符都没有 ⇒ 主循环只会把每个字符原样塞进 buf，结果必是单个 Text。
     // 提前返回省掉「整段转 Vec<char>」这次大分配：1000 万字里它占了解析时间的大头。
@@ -851,6 +1063,25 @@ fn parse_inline_slow(s: &str) -> Vec<Inline> {
                 continue;
             }
         }
+        if ch == '<' {
+            // 硬换行标签先于 <u>/<em>/<strong> 判：它没有闭合对，吃掉整段标签直接产 Break。
+            if let Some(n) = break_tag_len(&c[i..]) {
+                flush!();
+                out.push(Inline::Break);
+                i += n;
+                continue;
+            }
+            // 内嵌 HTML：<span style="color:red">正文</span> 留着标签，渲染层按样式上色。
+            if let Some((tag, inner, next)) = span_tag_chars(&c, i) {
+                flush!();
+                out.push(Inline::Span {
+                    tag,
+                    content: parse_inline(&inner),
+                });
+                i = next;
+                continue;
+            }
+        }
         if ch == '<' && i + 2 < c.len() && c[i + 1] == 'u' && c[i + 2] == '>' {
             if let Some(end) = find_seq(&c, i + 3, &['<', '/', 'u', '>']) {
                 let inner: String = c[i + 3..end].iter().collect();
@@ -954,6 +1185,11 @@ fn heading(line: &str) -> Option<(u8, &str)> {
 /// 这里改成一次字节遍历：绝大多数行是纯 ASCII，走快路径零分配；只有出现
 /// 非 ASCII 字节（如 U+3000 全角空格）才回退到原来的 char 实现，语义完全一致。
 fn is_rule(line: &str) -> bool {
+    // 内嵌 HTML 的 `<hr>`：整行就是一枚标签时等价于 `---`。
+    // 先用长度短路——`is_rule` 对每一行都要调，段落行普遍比这枚标签长。
+    if line.len() <= 16 && is_hr_tag(line) {
+        return true;
+    }
     let bytes = line.as_bytes();
     if bytes.is_ascii() {
         let mut marker = 0u8;
@@ -1355,6 +1591,7 @@ fn set_content(b: &mut Block, content: Vec<Inline>) {
     match b {
         Block::Heading { content: c, .. }
         | Block::Paragraph { content: c, .. }
+        | Block::Div { content: c, .. }
         | Block::Quote { content: c, .. }
         | Block::Footnote { content: c, .. } => *c = content,
         Block::ListItem { item, .. } => item.content = content,
@@ -1599,6 +1836,25 @@ fn parse_with_lines(
                 source: block_source(&lines, i, i + 1, shared, || line.to_string()),
             });
             i += 1;
+            continue;
+        }
+
+        // 内嵌 HTML 块：<div style="background:#eee; padding:10px">提示框</div>（见 div_block）。
+        // 必须排在段落合并之前：段落会把整段标签当成一行普通文字吞掉。
+        // 非 `<div` 开头的行在 `open_tag_at` 第一字节就返回，不会多扫。
+        if let Some((tag, body, end)) = div_block(lines, i) {
+            let job = if shared.is_none() {
+                jobs.owned(body)
+            } else {
+                0
+            };
+            out.push(Block::Div {
+                tag,
+                content: Vec::new(),
+                source: block_source(lines, i, end, shared, || lines[i..end].join("\n")),
+            });
+            jobs.single(out.len() - 1, job);
+            i = end;
             continue;
         }
 
@@ -1924,6 +2180,13 @@ mod tests {
             src.push_str(&format!(
                 "## 第 {i} 节\n\n段落 **粗体** 与 $x$ 和 [链接](http://x)。\n\n"
             ));
+            // 内嵌 HTML 也要进夹具：共享路径靠 `div_body` 剥标签，普通路径走行内树，
+            // 两条口径必须逐块给出同样的纯文本，否则字数统计会随打开方式漂移。
+            if i % 10 == 0 {
+                src.push_str(
+                    "<div style=\"background:#eee; padding:10px\">提示 **粗** 与<span style=\"color:red\">红字</span></div>\n\n<hr>\n\n",
+                );
+            }
         }
         assert!(src.len() > 4 * 1024 * 1024, "夹具需超过快开阈值");
         let shared = parse_auto(&src);
@@ -1958,6 +2221,10 @@ mod tests {
             "**未闭合 *嵌套** 结尾",
             "空 `` 代码与 $无闭合",
             "- [ ] 任务",
+            "上文<br>下文 与 <br/> 还有 <BR /> 及 </br>",
+            r#"红<span style="color:red; font-size:18px">大号</span>字 与 <SPAN style='x'>**粗**</SPAN>"#,
+            r#"未闭合<span style="color:red">正文 与 <spanx>y</spanx> 与 `代码<span>`"#,
+            r#"<div style="background:#eee">框</div>与<hr>"#,
         ];
         for s in cases {
             let want = inline_plain(&parse_inline(s));
@@ -1978,6 +2245,9 @@ mod tests {
             src.push_str("| a | b |\n|:--|--:|\n| 1 | 2 |\n\n");
             src.push_str("- [ ] 待办\n- [x] 完成\n\n");
             src.push_str("> 引用\n> 继续\n\n---\n\n");
+            // 内嵌 HTML 块不跨空行（见 div_block），所以在按空行切片时仍与串行逐块一致。
+            src.push_str("<div style=\"background:#eee\">\n提示 **粗**\n</div>\n\n");
+            src.push_str("<span style=\"color:red\">红字</span> 与正文\n\n<hr>\n\n");
         }
         let serial = parse_with(&src, 1);
         let parallel = parse_parallel(&src);
@@ -1990,6 +2260,8 @@ mod tests {
     }
 
     /// 分隔线快路径必须与原来的 char 实现逐例一致（含全角空格等非 ASCII 空白）。
+    /// 参考实现只认 `---` / `***` / `___`；`<hr>` 是后来加的内嵌 HTML 写法，
+    /// 所以断言是 `快路径 == 参考实现 || <hr> 标签`——两者都不许多判、也不许漏判。
     #[test]
     fn is_rule_fast_path_matches_reference() {
         fn reference(line: &str) -> bool {
@@ -2003,9 +2275,14 @@ mod tests {
             "---", "***", "___", "- - -", "* * * ", "_ _ _",
             "--", "- -", "----", "-*-", "-a-", "", "   ", "--- x",
             "\u{3000}---\u{3000}", "\u{3000}-\u{3000}-\u{3000}", "— ——", "---\t",
+            "<hr>", "<HR>", "<hr/>", "<hr />", "  <hr>  ", "</hr>", "<hr", "<hrx>", "甲<hr>",
         ];
         for s in cases {
-            assert_eq!(is_rule(s), reference(s), "is_rule({s:?}) 快路径与参考实现不一致");
+            assert_eq!(
+                is_rule(s),
+                reference(s) || is_hr_tag(s),
+                "is_rule({s:?}) 快路径与参考实现不一致"
+            );
         }
     }
 
@@ -2239,6 +2516,275 @@ mod tests {
             "孤立的开标签不应产生斜体: {:?}",
             v
         );
+    }
+
+    /// 换行按钮写下的硬换行标签：四种写法都归一成 Break，且标签本身必须被吃掉（不留残字）。
+    #[test]
+    fn inline_br_tag_is_hard_break() {
+        for tag in ["<br>", "<br/>", "<br />", "</br>", "<BR>", "<Br />"] {
+            let v = parse_inline(&format!("上文{tag}下文"));
+            assert_eq!(
+                v,
+                vec![
+                    Inline::Text("上文".into()),
+                    Inline::Break,
+                    Inline::Text("下文".into())
+                ],
+                "{tag} 应切成一次硬换行: {v:?}"
+            );
+        }
+    }
+
+    /// `<br />` 必须整体吃掉，不能被四字符前缀 `<br>` 抢走后留下「 />」。
+    #[test]
+    fn inline_br_long_tag_wins_over_prefix() {
+        let v = parse_inline("a<br />b");
+        assert!(
+            !v.iter()
+                .any(|i| matches!(i, Inline::Text(t) if t.contains('/'))),
+            "长标签被前缀截断了: {v:?}"
+        );
+        assert_eq!(
+            v,
+            vec![
+                Inline::Text("a".into()),
+                Inline::Break,
+                Inline::Text("b".into())
+            ],
+            "长标签应只产一次换行: {v:?}"
+        );
+    }
+
+    /// 表本身的定值约束：长度降序 + 互不为前缀。第二条是「任何顺序都对」这个说法的
+    /// 唯一凭据，将来往表里加写法时若出现前缀关系，这条必须先红，而不是让解析悄悄截标签。
+    #[test]
+    fn break_tags_sorted_and_prefix_free() {
+        for w in BREAK_TAGS.windows(2) {
+            assert!(
+                w[0].chars().count() >= w[1].chars().count(),
+                "BREAK_TAGS 未按长度降序: {BREAK_TAGS:?}"
+            );
+        }
+        for a in BREAK_TAGS {
+            for b in BREAK_TAGS {
+                assert!(
+                    a == b || !b.to_ascii_lowercase().starts_with(&a.to_ascii_lowercase()),
+                    "「{a}」是「{b}」的前缀，必须把长的排在前面"
+                );
+            }
+        }
+    }
+
+    /// 硬换行标签与 `\n` 软换行各自独立成一次 Break，互不吞并。
+    #[test]
+    fn inline_br_and_soft_break_coexist() {
+        assert_eq!(
+            parse_inline("a<br>\nb"),
+            vec![
+                Inline::Text("a".into()),
+                Inline::Break,
+                Inline::Break,
+                Inline::Text("b".into())
+            ],
+        );
+    }
+
+    /// 行内代码里的 `<br>` 是字面文本，不能被换行规则吃掉（反引号规则必须排在标签规则之前）。
+    #[test]
+    fn inline_br_inside_code_stays_literal() {
+        let v = parse_inline("写法 `<br>` 即可");
+        assert_eq!(
+            v,
+            vec![
+                Inline::Text("写法 ".into()),
+                Inline::Code("<br>".into()),
+                Inline::Text(" 即可".into())
+            ],
+            "代码块内的标签应保持原样: {v:?}"
+        );
+    }
+
+    /// 表格单元格是行内解析：`<br>` 要能在单元格里成立（换行按钮对表格生效的前提）。
+    #[test]
+    fn inline_br_in_table_cell() {
+        let b = parse("| A | B |\n| --- | --- |\n| 第一行<br>第二行 | x |\n");
+        let table = b
+            .iter()
+            .find_map(|x| match x {
+                Block::Table { rows, .. } => Some(rows),
+                _ => None,
+            })
+            .expect("应解析出表格");
+        let cell = &table[0][0];
+        assert!(
+            cell.iter().any(|i| matches!(i, Inline::Break)),
+            "单元格内应有硬换行: {cell:?}"
+        );
+    }
+
+    /// 段落同理（列表项也走行内解析）。
+    #[test]
+    fn inline_br_in_paragraph_and_list_item() {
+        let b = parse("第一行<br>第二行\n\n- 甲<br>乙\n");
+        assert!(
+            b.iter().any(|x| matches!(
+                x,
+                Block::Paragraph { content, .. }
+                    if content.iter().any(|i| matches!(i, Inline::Break))
+            )),
+            "段落内应有硬换行: {b:?}"
+        );
+        assert!(
+            b.iter().any(|x| matches!(
+                x,
+                Block::ListItem {
+                    item: ListItem { content, .. },
+                    ..
+                } if content.iter().any(|i| matches!(i, Inline::Break))
+            )),
+            "列表项内应有硬换行: {b:?}"
+        );
+    }
+
+    /// 单元格草稿用的 `inline_cell_source` 必须把换行留成 `<br>`，其余与 `inline_plain` 一致。
+    #[test]
+    fn cell_source_keeps_break() {
+        // 逐例给死期望值：换行→`<br>`，空格（真格里本来就有的）保持不变。
+        let cases = [
+            ("甲<br>乙", "甲 乙", "甲<br>乙"),
+            ("**粗**普通<br>斜", "粗普通 斜", "粗普通<br>斜"),
+            ("无换行文字", "无换行文字", "无换行文字"),
+            ("[标签](http://x)<br>后", "标签 后", "标签<br>后"),
+            ("甲 乙<br>丙", "甲 乙 丙", "甲 乙<br>丙"),
+        ];
+        for (src, plain, cell) in cases {
+            let v = parse_inline(src);
+            assert_eq!(inline_plain(&v), plain, "inline_plain({src:?})");
+            assert_eq!(inline_cell_source(&v), cell, "inline_cell_source({src:?})");
+        }
+        // 未闭合的 `<br` 不是标签，两个口径都应原样留着
+        let v = parse_inline("甲<br乙");
+        assert_eq!(inline_plain(&v), "甲<br乙");
+        assert_eq!(inline_cell_source(&v), "甲<br乙");
+    }
+
+    /// 内嵌 HTML 的 `<span>`：标签原文留在树里（导出原样写回），正文继续按行内规则解析，
+    /// 纯文本口径不含标签、单元格草稿口径必须含标签。
+    #[test]
+    fn inline_span_keeps_tag_and_content() {
+        let src = r#"前<span style="color:red; font-size:18px">红色大号</span>后"#;
+        let v = parse_inline(src);
+        let Inline::Span { tag, content } = &v[1] else {
+            panic!("第 2 个节点应是 Span: {v:?}");
+        };
+        assert_eq!(tag, r#"<span style="color:red; font-size:18px">"#);
+        assert_eq!(content, &[Inline::Text("红色大号".to_string())]);
+        assert_eq!(inline_plain(&v), "前红色大号后");
+        assert_eq!(inline_cell_source(&v), src, "草稿必须留住标签，否则写回就把样式摊平了");
+        // 大小写、单引号都认；内部的行内语法继续解析成节点。
+        let v = parse_inline("<SPAN style='color:red'>粗**体**</SPAN>");
+        let Inline::Span { tag, content } = &v[0] else {
+            panic!("大写 SPAN 也应识别: {v:?}");
+        };
+        assert_eq!(tag, "<SPAN style='color:red'>");
+        assert_eq!(content.len(), 2, "正文与加粗应是两个节点: {content:?}");
+        assert!(matches!(content[1], Inline::Strong(_)), "{content:?}");
+        // 未闭合不算标签，原样当文字（与 <u>/<em> 同规则）
+        let loose = r#"未闭合<span style="color:red">正文"#;
+        assert_eq!(inline_plain(&parse_inline(loose)), loose);
+        assert_eq!(inline_cell_source(&parse_inline(loose)), loose);
+        // 名字后必须是空白或 `>`：`<spanx …>` 不是 span
+        let near = r#"<spanx style="color:red">a</spanx>"#;
+        assert_eq!(inline_plain(&parse_inline(near)), near);
+        // 反引号里的字面标签不算语法
+        let code = r#"`<span style="color:red">x</span>`"#;
+        assert_eq!(inline_plain(&parse_inline(code)), r#"<span style="color:red">x</span>"#);
+    }
+
+    /// `<hr>` 等价于 `---`：整行就是一枚标签才算，嵌在句中的仍当文字。
+    #[test]
+    fn hr_tag_is_a_rule() {
+        for tag in ["<hr />", "<hr/>", "</hr>", "<hr>", "<HR>", "  <hr>  ", "<Hr />"] {
+            assert!(is_rule(tag), "{tag} 应算分割线");
+        }
+        for other in ["<hr", "文字<hr>", "<hr>文字", "<hrx>", "<hr></hr>", "", "--"] {
+            assert!(!is_rule(other), "{other} 不该算分割线");
+        }
+        let b = parse("上\n\n<hr>\n\n下");
+        let Block::Rule { source } = &b[2] else {
+            panic!("中间那块应是 Rule: {b:?}");
+        };
+        assert_eq!(source.as_str(), "<hr>", "源码要原样保留用户写的标签");
+        // 句中写法不进块级判定，留在段落里当文字
+        let b = parse("甲<hr>乙");
+        assert!(
+            b.iter().all(|x| !matches!(x, Block::Rule { .. })),
+            "句中 <hr> 不该变成块: {b:?}"
+        );
+    }
+
+    /// `is_rule` 开头那条长度短路是给热路径用的：表里最长的标签（含缩进）必须仍在
+    /// 上限之内，否则将来加写法会静默失效——这条测试就是拦住那一天的。
+    #[test]
+    fn hr_tags_fit_the_is_rule_length_guard() {
+        let longest = HR_TAGS.iter().map(|h| h.len()).max().unwrap();
+        assert!(
+            longest + 8 <= 16,
+            "HR_TAGS 最长 {longest} 字节，加上缩进会超出 is_rule 的 16 字节短路"
+        );
+        for h in HR_TAGS {
+            assert!(is_hr_tag(h), "{h} 应自认");
+            assert!(is_hr_tag(&format!("  {h}")), "{h} 带缩进也应算分割线");
+        }
+    }
+
+    /// 内嵌 HTML 的 `<div>`：整段成一个盒子块，源码无损、正文按行内规则解析。
+    #[test]
+    fn div_block_parses() {
+        let src = r#"<div style="background:#eee; padding:10px">灰色背景提示框</div>"#;
+        let b = parse(src);
+        let Block::Div { tag, content, source } = &b[0] else {
+            panic!("首块应是 Div: {b:?}");
+        };
+        assert_eq!(tag, r#"<div style="background:#eee; padding:10px">"#);
+        assert_eq!(source.as_str(), src);
+        assert_eq!(inline_plain(content), "灰色背景提示框");
+        assert_eq!(b[0].plain(), "灰色背景提示框");
+        // 跨行写法：整段属于一个块，行与行之间按硬换行进树，源码无损往返。
+        let src = "<div style=\"background:#eee\">\n提示 **粗**\n第二行\n</div>";
+        let b = parse(&format!("{src}\n\n后文"));
+        assert_eq!(b.len(), 3, "div 应吞掉整段连续非空行: {b:?}");
+        let Block::Div { content, source, .. } = &b[0] else {
+            panic!("首块应是 Div: {b:?}");
+        };
+        assert_eq!(source.as_str(), src);
+        assert_eq!(inline_plain(content), "提示 粗 第二行");
+        assert!(
+            content.iter().any(|i| matches!(i, Inline::Break)),
+            "跨行正文应含硬换行: {content:?}"
+        );
+        // div 内部的行内标签同样要解析
+        let b = parse(r#"<div style="padding:4px">前<span style="color:red">红</span>后</div>"#);
+        let Block::Div { content, .. } = &b[0] else {
+            panic!("首块应是 Div: {b:?}");
+        };
+        assert!(
+            content.iter().any(|i| matches!(i, Inline::Span { .. })),
+            "div 内部应有 Span: {content:?}"
+        );
+        // 没闭合、或闭合在空行之后：不认作 div，原样是段落
+        for src in [
+            r#"<div style="x">正文"#,
+            "<div style=\"x\">正文\n\n下一段\n</div>",
+            "<divider style=\"x\">正文</divider>",
+        ] {
+            let b = parse(src);
+            assert!(
+                matches!(&b[0], Block::Paragraph { .. }),
+                "{src:?} 不该变成 Div: {b:?}"
+            );
+            assert!(b.iter().all(|x| !matches!(x, Block::Div { .. })), "{b:?}");
+        }
     }
 
     #[test]
