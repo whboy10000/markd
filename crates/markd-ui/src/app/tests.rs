@@ -365,6 +365,7 @@ fn test_app() -> MarkdApp {
         attachment_dialog: Default::default(),
         html_dialog: Default::default(),
         file_downloads: Vec::new(),
+        pandoc: pandoc_export::PandocExport::new(),
         link_docs: HashMap::new(),
         link_rx: None,
         last_autosave: now_secs(),
@@ -5925,4 +5926,53 @@ fn html_dialog_presets_insert_and_cancel() {
     click(&ctx, &mut app, cancel);
     assert!(!app.html_dialog.open, "取消应关窗");
     assert_eq!(app.doc.source(), before, "取消不应改文档");
+}
+
+/// 工具条「工具」页应有一个 Pandoc 导出盒子，点击后真的派发导出命令。
+/// 用一个不存在的可执行文件，让后台线程立刻失败，从状态栏就能看到命令被派发了。
+#[test]
+fn toolbar_tools_tab_has_working_pandoc_button() {
+    const WIDTH: f32 = 1280.0;
+
+    fn label_pos(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Pos2> {
+        shapes.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                let p = t.pos + t.galley.rect.center().to_vec2();
+                (p.y > TOOLBOX_AREA_TOP && p.y < TOP_BARS_HEIGHT).then_some(p)
+            }
+            _ => None,
+        })
+    }
+
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    app.home = false;
+    app.toolbar_tab = ToolbarTab::Tools;
+    // 指向一个必然不存在的可执行文件：点了会立刻在状态栏报「启动 pandoc 失败」。
+    app.config.pandoc_path = "definitely-not-a-real-pandoc-xyz".to_string();
+    let mut frame = eframe::Frame::_new_kittest();
+
+    let shapes = run_real_frame_stable_ext_with_width(&ctx, &mut app, &mut frame, vec![], WIDTH).0;
+    let p = label_pos(&shapes, "Pandoc 导出").expect("工具页应有 Pandoc 导出盒子");
+
+    for ev in [
+        vec![egui::Event::PointerMoved(p)],
+        vec![pointer_button(p, true)],
+        vec![pointer_button(p, false)],
+    ] {
+        run_real_frame_stable_ext_with_width(&ctx, &mut app, &mut frame, ev, WIDTH);
+    }
+    // 等后台线程回传失败结果。
+    for _ in 0..20 {
+        run_real_frame_stable_ext_with_width(&ctx, &mut app, &mut frame, vec![], WIDTH);
+        if app.status.contains("启动 pandoc 失败") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        app.status.contains("启动 pandoc 失败"),
+        "点工具条按钮应派发 Pandoc 导出命令，实际状态：{}",
+        app.status
+    );
 }

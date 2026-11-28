@@ -111,6 +111,15 @@ pub struct Config {
     pub export_embed_images: bool,
     #[serde(default)]
     pub export_open_after: bool,
+    /// Pandoc 可执行文件路径；空字符串表示先用内置副本、再回退 PATH。
+    #[serde(default = "default_pandoc_path")]
+    pub pandoc_path: String,
+    /// Pandoc 默认输出格式 id（见 `pandoc::FORMATS`）。
+    #[serde(default = "default_pandoc_format")]
+    pub pandoc_format: String,
+    /// 透传给 pandoc 的额外参数，空格分隔（例如 `--pdf-engine=xelatex`）。
+    #[serde(default)]
+    pub pandoc_extra_args: String,
     #[serde(default = "default_true")]
     pub math_enabled: bool,
     #[serde(default = "default_true")]
@@ -253,6 +262,14 @@ fn default_image_host_dir() -> String {
 fn default_image_host_path() -> String {
     "{year}/{month}/{day}".to_string()
 }
+/// 留空表示优先用安装包内置的 pandoc，找不到再回退 PATH。
+/// 老版本配置文件里显式写了 "pandoc" 的用户仍会走 PATH，行为不变。
+fn default_pandoc_path() -> String {
+    String::new()
+}
+fn default_pandoc_format() -> String {
+    "html5".to_string()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -287,6 +304,9 @@ impl Default for Config {
             image_relative: true,
             export_embed_images: true,
             export_open_after: false,
+            pandoc_path: default_pandoc_path(),
+            pandoc_format: default_pandoc_format(),
+            pandoc_extra_args: String::new(),
             math_enabled: true,
             mermaid_enabled: true,
             toc_enabled: true,

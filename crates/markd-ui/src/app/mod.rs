@@ -31,6 +31,7 @@ mod graph;
 mod home;
 mod lifecycle;
 pub(crate) mod menu;
+mod pandoc_export;
 mod paint;
 mod tabs;
 #[cfg(test)]
@@ -276,6 +277,8 @@ pub struct MarkdApp {
         String,
         std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>,
     )>,
+    /// Pandoc 导出任务：后台进程 + 代际取消，结果每帧回收。
+    pandoc: pandoc_export::PandocExport,
     link_docs: HashMap<String, Vec<String>>,
     /// 后台线程算好的链接图，算完通过它回传。
     link_rx: Option<std::sync::mpsc::Receiver<HashMap<String, Vec<String>>>>,

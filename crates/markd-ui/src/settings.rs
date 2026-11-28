@@ -125,6 +125,17 @@ const SEARCH: &[(&str, &str, Page)] = &[
     ("标题自动编号（预览）", "编号 标题", Page::Markdown),
     ("导出 HTML 时内嵌图片", "html 导出 内嵌", Page::Export),
     ("导出完成后打开文件", "导出 打开", Page::Export),
+    (
+        "Pandoc 输出格式",
+        "pandoc docx pdf epub pptx html 转换 导出",
+        Page::Export,
+    ),
+    (
+        "Pandoc 可执行文件路径",
+        "pandoc 外部 转换 导出 路径",
+        Page::Export,
+    ),
+    ("Pandoc 额外参数", "pandoc 参数 pdf-engine 命令行", Page::Export),
 ];
 
 /// 主题下拉的三档视图。「跟随系统」不是一个配色档，所以不塞进 `ThemeKind`，
@@ -1355,6 +1366,65 @@ impl Settings {
                     focus,
                     &mut cfg.export_open_after,
                 );
+                section(ui, theme, "Pandoc 导出", "后台转换，不阻塞编辑；格式在下拉里选。");
+                changed |= row(
+                    ui,
+                    theme,
+                    "Pandoc 输出格式",
+                    "决定文件扩展名和内容格式；菜单、工具条与命令面板共用这个选择。",
+                    focus,
+                    |ui| {
+                        let current = crate::pandoc::format_by_id(&cfg.pandoc_format)
+                            .copied()
+                            .unwrap_or_else(|| *crate::pandoc::format_by_id("html5").unwrap());
+                        let mut picked = false;
+                        egui::ComboBox::from_id_salt("settings_pandoc_format")
+                            .selected_text(current.label)
+                            .width(230.0)
+                            .show_ui(ui, |ui| {
+                                let mut last_group = None;
+                                for f in crate::pandoc::FORMATS {
+                                    if last_group != Some(f.group) {
+                                        if last_group.is_some() {
+                                            ui.separator();
+                                        }
+                                        ui.label(RichText::new(f.group.label()).small().strong());
+                                        last_group = Some(f.group);
+                                    }
+                                    if ui
+                                        .selectable_label(f.id == current.id, f.label)
+                                        .clicked()
+                                    {
+                                        cfg.pandoc_format = f.id.to_string();
+                                        picked = true;
+                                    }
+                                }
+                            });
+                        picked
+                    },
+                );
+                changed |= host_row(
+                    ui,
+                    "Pandoc 可执行文件路径",
+                    &mut cfg.pandoc_path,
+                    260.0,
+                    "留空：优先用内置 Pandoc",
+                    false,
+                );
+                changed |= host_row(
+                    ui,
+                    "Pandoc 额外参数",
+                    &mut cfg.pandoc_extra_args,
+                    260.0,
+                    "如 --pdf-engine=xelatex",
+                    false,
+                );
+                if let Some(f) = crate::pandoc::format_by_id(&cfg.pandoc_format) {
+                    if !f.hint.is_empty() {
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(f.hint).small().color(theme.dim));
+                    }
+                }
                 ui.add_space(6.0);
                 ui.label(
                     RichText::new(

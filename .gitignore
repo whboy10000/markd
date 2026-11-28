@@ -22,6 +22,9 @@
 # 代码生成产物
 generated-images/
 
+# Pandoc 随包二进制：由 scripts/fetch-pandoc.sh 在打包时下载，不入库
+/vendor/
+
 # 打包产物（CI 会重新构建，不入库）
 dist/
 *.dmg

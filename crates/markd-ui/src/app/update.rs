@@ -53,6 +53,21 @@ impl eframe::App for MarkdApp {
         self.poll_image_uploads(&ctx);
         // 远程附件下载完成：摘掉卡片的「下载中…」并打开文件。
         self.poll_file_downloads(&ctx);
+        // Pandoc 导出完成：进程在后台跑，完成时会主动 request_repaint 唤醒这一帧。
+        if let Some(result) = self.pandoc.poll(&ctx) {
+            match result {
+                Ok(path) => {
+                    self.status = format!("已用 Pandoc 导出：{}", path.display());
+                    if self.config.export_open_after {
+                        if let Err(e) = super::tabs::open_with_default_app(&path) {
+                            self.status = format!("已导出，但打开失败：{e}");
+                        }
+                    }
+                }
+                Err(e) if e == crate::pandoc::CANCELLED => self.status.clear(),
+                Err(e) => self.status = format!("Pandoc 导出失败：{e}"),
+            }
+        }
         // 设置里的编辑器选项每帧同步到编辑器状态
         self.editor.tab_size = self.config.tab_size.max(1);
         self.editor.auto_pair = self.config.auto_pair;

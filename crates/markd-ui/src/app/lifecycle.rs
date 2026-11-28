@@ -140,6 +140,7 @@ impl MarkdApp {
             attachment_dialog: AttachmentDialog::default(),
             html_dialog: HtmlDialog::default(),
             file_downloads: Vec::new(),
+            pandoc: pandoc_export::PandocExport::new(),
             link_docs,
             link_rx: None,
             last_autosave: now_secs(),
