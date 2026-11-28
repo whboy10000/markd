@@ -364,8 +364,10 @@ fn test_app() -> MarkdApp {
         video_dialog: Default::default(),
         attachment_dialog: Default::default(),
         html_dialog: Default::default(),
+        pandoc_dialog: Default::default(),
         file_downloads: Vec::new(),
         pandoc: pandoc_export::PandocExport::new(),
+        pdf: pdf_export::PdfExport::new(),
         link_docs: HashMap::new(),
         link_rx: None,
         last_autosave: now_secs(),
@@ -5928,10 +5930,174 @@ fn html_dialog_presets_insert_and_cancel() {
     assert_eq!(app.doc.source(), before, "取消不应改文档");
 }
 
-/// 工具条「工具」页应有一个 Pandoc 导出盒子，点击后真的派发导出命令。
-/// 用一个不存在的可执行文件，让后台线程立刻失败，从状态栏就能看到命令被派发了。
+/// 工具条「工具」页的 Pandoc 导出盒子：点击后先弹窗选格式，
+/// 确认才按所选格式与文件名走后台导出（不再直接按偏好设置里的格式开跑）。
 #[test]
-fn toolbar_tools_tab_has_working_pandoc_button() {
+fn toolbar_tools_tab_opens_pandoc_export_dialog() {
+    const WIDTH: f32 = 1280.0;
+
+    fn label_pos(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Pos2> {
+        shapes.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                let p = t.pos + t.galley.rect.center().to_vec2();
+                (p.y > TOOLBOX_AREA_TOP && p.y < TOP_BARS_HEIGHT).then_some(p)
+            }
+            _ => None,
+        })
+    }
+    fn widget(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Pos2> {
+        shapes.iter().find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                Some(t.pos + t.galley.rect.center().to_vec2())
+            }
+            _ => None,
+        })
+    }
+    fn click(ctx: &egui::Context, app: &mut MarkdApp, p: egui::Pos2) {
+        for ev in [
+            vec![egui::Event::PointerMoved(p)],
+            vec![pointer_button(p, true)],
+            vec![pointer_button(p, false)],
+        ] {
+            run_frame_with_windows(ctx, app, ev);
+        }
+        run_frame_with_windows(ctx, app, vec![]);
+    }
+
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    app.home = false;
+    app.toolbar_tab = ToolbarTab::Tools;
+    // 指向一个必然不存在的可执行文件：确认导出后后台线程立刻失败，
+    // 状态栏的变化就是「命令真的被派发」的证据。
+    app.config.pandoc_path = "definitely-not-a-real-pandoc-xyz".to_string();
+    let mut frame = eframe::Frame::_new_kittest();
+    // 先跑一帧装中文字体，弹窗帧才排得出文字。
+    run_real_frame_stable_ext_with_width(&ctx, &mut app, &mut frame, vec![], WIDTH);
+
+    let shapes = run_real_frame_stable_ext_with_width(&ctx, &mut app, &mut frame, vec![], WIDTH).0;
+    let p = label_pos(&shapes, "Pandoc 导出").expect("工具页应有 Pandoc 导出盒子");
+    for ev in [
+        vec![egui::Event::PointerMoved(p)],
+        vec![pointer_button(p, true)],
+        vec![pointer_button(p, false)],
+    ] {
+        run_real_frame_stable_ext_with_width(&ctx, &mut app, &mut frame, ev, WIDTH);
+    }
+    assert!(app.pandoc_dialog.open, "点工具条按钮应打开格式选择弹窗");
+    assert!(
+        !app.status.contains("启动 pandoc 失败"),
+        "打开弹窗时还不该启动导出：{}",
+        app.status
+    );
+    assert_eq!(app.pandoc_dialog.format_id, "html5", "默认格式取自设置页");
+
+    // 弹窗里应同时有格式列表、保存位置、文件名与确认按钮。
+    let shapes = run_frame_with_windows(&ctx, &mut app, vec![]);
+    let texts: Vec<String> = shapes
+        .iter()
+        .filter_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+            _ => None,
+        })
+        .collect();
+    for label in [
+        "Pandoc 导出",
+        "导出格式",
+        "保存位置",
+        "文件名称",
+        "Microsoft Word (.docx)",
+        "导出",
+    ] {
+        assert!(
+            texts.iter().any(|t| t == label),
+            "弹窗缺少「{label}」：{texts:?}"
+        );
+    }
+
+    // 选 Word：只改本次弹窗的格式，不写回偏好设置。
+    let word = widget(&shapes, "Microsoft Word (.docx)").expect("格式列表应有 Word");
+    click(&ctx, &mut app, word);
+    assert_eq!(
+        app.pandoc_dialog.format_id, "docx",
+        "点格式项应切换选中格式"
+    );
+    assert_eq!(
+        app.config.pandoc_format, "html5",
+        "弹窗里的选择不该写回设置"
+    );
+
+    app.pandoc_dialog.name = "报告".to_string();
+    app.pandoc_dialog.dir = std::env::temp_dir().to_string_lossy().to_string();
+    let shapes = run_frame_with_windows(&ctx, &mut app, vec![]);
+    let export = widget(&shapes, "导出").expect("弹窗应有「导出」按钮");
+    click(&ctx, &mut app, export);
+    assert!(!app.pandoc_dialog.open, "确认后应关窗");
+
+    for _ in 0..20 {
+        run_real_frame_stable_ext_with_width(&ctx, &mut app, &mut frame, vec![], WIDTH);
+        if app.status.contains("启动 pandoc 失败") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        app.status.contains("启动 pandoc 失败"),
+        "确认导出后应派发 Pandoc 命令，实际状态：{}",
+        app.status
+    );
+}
+
+/// 弹窗里填的目录/文件名决定落盘路径，扩展名由格式决定。
+#[test]
+fn pandoc_export_target_uses_dialog_inputs() {
+    let fmt = *crate::pandoc::format_by_id("docx").unwrap();
+    let p = MarkdApp::pandoc_export_target("/tmp/导出", " 报告 ", &fmt);
+    assert_eq!(p, PathBuf::from("/tmp/导出/报告.docx"));
+
+    let blank = MarkdApp::pandoc_export_target("", "", &fmt);
+    assert_eq!(
+        blank.file_name().and_then(|s| s.to_str()),
+        Some("untitled.docx")
+    );
+}
+
+/// 「取消」只关窗，绝不启动导出。
+#[test]
+fn pandoc_export_dialog_cancel_does_not_export() {
+    let ctx = egui::Context::default();
+    let mut app = test_app();
+    let mut frame = eframe::Frame::_new_kittest();
+    run_real_frame(&ctx, &mut app, &mut frame, vec![]);
+
+    app.execute(Command::ExportWithPandoc, &ctx);
+    assert!(app.pandoc_dialog.open);
+    // egui 窗口首帧先定尺寸，第二帧按钮才稳定出现在可点区域。
+    run_frame_with_windows(&ctx, &mut app, vec![]);
+    let shapes = run_frame_with_windows(&ctx, &mut app, vec![]);
+    let cancel = shapes
+        .iter()
+        .find_map(|cs| match &cs.shape {
+            egui::Shape::Text(t) if t.galley.text() == "取消" => {
+                Some(t.pos + t.galley.rect.center().to_vec2())
+            }
+            _ => None,
+        })
+        .expect("弹窗应有「取消」按钮");
+    for ev in [
+        vec![egui::Event::PointerMoved(cancel)],
+        vec![pointer_button(cancel, true)],
+        vec![pointer_button(cancel, false)],
+    ] {
+        run_frame_with_windows(&ctx, &mut app, ev);
+    }
+    assert!(!app.pandoc_dialog.open, "取消应关窗");
+    assert!(app.status.is_empty(), "取消不该启动导出：{}", app.status);
+}
+
+/// 工具页「PDF 导出」盒子：点击后直接派发后台打印任务，不弹格式选择窗。
+#[test]
+fn toolbar_tools_tab_pdf_button_dispatches_export() {
     const WIDTH: f32 = 1280.0;
 
     fn label_pos(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Pos2> {
@@ -5944,17 +6110,19 @@ fn toolbar_tools_tab_has_working_pandoc_button() {
         })
     }
 
+    assert_eq!(Command::ExportPdf.label(), "导出 PDF");
+    assert!(Command::all().contains(&Command::ExportPdf));
+
     let ctx = egui::Context::default();
     let mut app = test_app();
     app.home = false;
     app.toolbar_tab = ToolbarTab::Tools;
-    // 指向一个必然不存在的可执行文件：点了会立刻在状态栏报「启动 pandoc 失败」。
-    app.config.pandoc_path = "definitely-not-a-real-pandoc-xyz".to_string();
+    // 不存在的浏览器：后台线程立刻失败，状态栏就能证明命令被派发了。
+    app.config.pdf_browser_path = "definitely-not-a-real-browser-xyz".to_string();
     let mut frame = eframe::Frame::_new_kittest();
 
     let shapes = run_real_frame_stable_ext_with_width(&ctx, &mut app, &mut frame, vec![], WIDTH).0;
-    let p = label_pos(&shapes, "Pandoc 导出").expect("工具页应有 Pandoc 导出盒子");
-
+    let p = label_pos(&shapes, "PDF 导出").expect("工具页应有 PDF 导出盒子");
     for ev in [
         vec![egui::Event::PointerMoved(p)],
         vec![pointer_button(p, true)],
@@ -5962,17 +6130,17 @@ fn toolbar_tools_tab_has_working_pandoc_button() {
     ] {
         run_real_frame_stable_ext_with_width(&ctx, &mut app, &mut frame, ev, WIDTH);
     }
-    // 等后台线程回传失败结果。
+    assert!(!app.pandoc_dialog.open, "PDF 导出不该走 Pandoc 格式弹窗");
     for _ in 0..20 {
         run_real_frame_stable_ext_with_width(&ctx, &mut app, &mut frame, vec![], WIDTH);
-        if app.status.contains("启动 pandoc 失败") {
+        if app.status.contains("启动浏览器失败") {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(
-        app.status.contains("启动 pandoc 失败"),
-        "点工具条按钮应派发 Pandoc 导出命令，实际状态：{}",
+        app.status.contains("启动浏览器失败"),
+        "点 PDF 导出应派发后台任务，实际状态：{}",
         app.status
     );
 }

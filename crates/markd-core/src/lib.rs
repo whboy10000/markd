@@ -11,6 +11,7 @@ pub mod export;
 pub mod html_style;
 pub mod image_host;
 pub mod pandoc;
+pub mod pdf;
 pub mod theme;
 pub mod video;
 pub mod workspace;

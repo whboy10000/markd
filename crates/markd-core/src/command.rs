@@ -18,6 +18,8 @@ pub enum Command {
     ExportHtml,
     /// 用外部 pandoc 异步导出完整 HTML；后台运行，不阻塞界面。
     ExportWithPandoc,
+    /// 把文档经自包含 HTML 交给浏览器无头打印成 PDF；后台运行。
+    ExportPdf,
     Undo,
     Redo,
     ToggleSource,
@@ -105,6 +107,7 @@ impl Command {
             Command::SaveAs => "另存为…",
             Command::ExportHtml => "导出 HTML",
             Command::ExportWithPandoc => "使用 Pandoc 导出…",
+            Command::ExportPdf => "导出 PDF",
             Command::Undo => "撤销",
             Command::Redo => "重做",
             Command::ToggleSource => "切换源码模式",
@@ -187,6 +190,7 @@ impl Command {
             Command::SaveAs,
             Command::ExportHtml,
             Command::ExportWithPandoc,
+            Command::ExportPdf,
             Command::Undo,
             Command::Redo,
             Command::ToggleSource,

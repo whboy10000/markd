@@ -784,6 +784,167 @@ impl MarkdApp {
             }
         }
 
+        // Pandoc 导出：左侧选格式、右侧定保存位置，确认后才交给后台进程。
+        if self.pandoc_dialog.open {
+            let mut open = true;
+            let mut confirm = false;
+            let mut cancel = false;
+            let mut pick_dir = false;
+            let theme = self.theme.clone();
+            let selected = crate::pandoc::format_by_id(&self.pandoc_dialog.format_id)
+                .copied()
+                .unwrap_or_else(|| *crate::pandoc::format_by_id("html5").unwrap());
+            // 预览路径只用于展示；真正的路径在「导出」时按当时的输入重算。
+            let preview = Self::pandoc_export_target(
+                &self.pandoc_dialog.dir,
+                &self.pandoc_dialog.name,
+                &selected,
+            )
+            .display()
+            .to_string();
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                cancel = true;
+            }
+            egui::Window::new("Pandoc 导出")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .default_width(760.0)
+                .max_height(560.0)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        // 左栏：全部 pandoc 输出格式，按分组隔开，可滚动。
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(230.0, 360.0),
+                            egui::Layout::top_down(egui::Align::LEFT),
+                            |ui| {
+                                ui.label(RichText::new("导出格式").strong());
+                                ui.add_space(4.0);
+                                egui::ScrollArea::vertical()
+                                    .auto_shrink([false, false])
+                                    .max_height(326.0)
+                                    .show(ui, |ui| {
+                                        let mut last_group = None;
+                                        for f in crate::pandoc::FORMATS {
+                                            if last_group != Some(f.group) {
+                                                if last_group.is_some() {
+                                                    ui.separator();
+                                                }
+                                                ui.label(
+                                                    RichText::new(f.group.label())
+                                                        .small()
+                                                        .strong()
+                                                        .color(theme.dim),
+                                                );
+                                                last_group = Some(f.group);
+                                            }
+                                            if ui
+                                                .selectable_label(
+                                                    f.id == self.pandoc_dialog.format_id,
+                                                    f.label,
+                                                )
+                                                .clicked()
+                                            {
+                                                self.pandoc_dialog.format_id = f.id.to_string();
+                                            }
+                                        }
+                                    });
+                            },
+                        );
+                        ui.separator();
+                        // 右栏：保存位置、文件名与本次导出的预览。
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), 360.0),
+                            egui::Layout::top_down(egui::Align::LEFT),
+                            |ui| {
+                                ui.label(RichText::new("保存位置").strong());
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.pandoc_dialog.dir)
+                                            .hint_text("留空则用当前工作目录")
+                                            .desired_width(340.0),
+                                    );
+                                    if ui.button("选择…").clicked() {
+                                        pick_dir = true;
+                                    }
+                                });
+                                ui.add_space(8.0);
+                                ui.label(RichText::new("文件名称").strong());
+                                ui.add_space(4.0);
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.pandoc_dialog.name)
+                                        .hint_text("不含扩展名")
+                                        .desired_width(340.0),
+                                );
+                                ui.add_space(10.0);
+                                ui.label(RichText::new("导出预览").strong());
+                                ui.add_space(4.0);
+                                ui.group(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("格式：{}", selected.label)).small(),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("文件：{preview}"))
+                                            .small()
+                                            .color(theme.dim),
+                                    );
+                                    if !selected.hint.is_empty() {
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            RichText::new(selected.hint)
+                                                .small()
+                                                .color(theme.accent),
+                                        );
+                                    }
+                                });
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(
+                                        "Pandoc 路径与额外参数可在「偏好设置 → 导出」里修改。",
+                                    )
+                                    .small()
+                                    .color(theme.dim),
+                                );
+                            },
+                        );
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("导出").clicked() {
+                            confirm = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            // 原生目录对话框在 UI 闭包结束后调用，避免阻塞 egui 构建。
+            if pick_dir {
+                if let Some(p) = rfd::FileDialog::new()
+                    .set_title("选择导出目录")
+                    .pick_folder()
+                {
+                    self.pandoc_dialog.dir = p.to_string_lossy().to_string();
+                }
+            }
+            if confirm {
+                let name = self.pandoc_dialog.name.trim().to_string();
+                if name.is_empty() {
+                    self.status = "请填写文件名称".to_string();
+                } else {
+                    let target =
+                        Self::pandoc_export_target(&self.pandoc_dialog.dir, &name, &selected);
+                    self.pandoc_dialog.open = false;
+                    self.export_with_pandoc(ctx, selected, target);
+                }
+            }
+            if cancel || !open {
+                self.pandoc_dialog.open = false;
+            }
+        }
+
         if self.table_dialog {
             let mut open = true;
             let mut confirm = false;

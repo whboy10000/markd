@@ -120,6 +120,9 @@ pub struct Config {
     /// 透传给 pandoc 的额外参数，空格分隔（例如 `--pdf-engine=xelatex`）。
     #[serde(default)]
     pub pandoc_extra_args: String,
+    /// PDF 打印用的浏览器路径；留空自动探测 Chrome / Edge / Chromium。
+    #[serde(default)]
+    pub pdf_browser_path: String,
     #[serde(default = "default_true")]
     pub math_enabled: bool,
     #[serde(default = "default_true")]
@@ -307,6 +310,7 @@ impl Default for Config {
             pandoc_path: default_pandoc_path(),
             pandoc_format: default_pandoc_format(),
             pandoc_extra_args: String::new(),
+            pdf_browser_path: String::new(),
             math_enabled: true,
             mermaid_enabled: true,
             toc_enabled: true,

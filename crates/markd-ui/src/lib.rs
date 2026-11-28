@@ -7,7 +7,7 @@
 //! 拆分 workspace 时不需要改动每个文件的引用。
 
 pub use markd_core::{
-    ast, attachment, command, document, export, html_style, image_host, pandoc, theme, video,
+    ast, attachment, command, document, export, html_style, image_host, pandoc, pdf, theme, video,
     workspace,
 };
 pub use markd_platform::native_menu;
