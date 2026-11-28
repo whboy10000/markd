@@ -32,11 +32,12 @@ fetch() {
 
 extract_binary() {
   local archive="$1" member_hint="$2" out="$3"
+  # member 在整个函数里都要用（tar 分支也引用），必须在 case 之前声明。
+  local member="$member_hint"
   mkdir -p "$(dirname "$out")"
   case "$archive" in
     *.zip)
       # 官方包成员带版本目录，本地缓存包可能不带：按提示名找，找不到就用同名裸文件。
-      local member="$member_hint"
       if command -v unzip >/dev/null 2>&1; then
         unzip -Z1 "$archive" | grep -qx "$member" || member="$(basename "$member_hint")"
         unzip -p "$archive" "$member" > "$out.part"
