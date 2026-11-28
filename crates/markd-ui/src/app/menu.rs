@@ -448,6 +448,7 @@ pub(super) fn menu_commands(k: MenuKind) -> Vec<Command> {
             Command::Save,
             Command::SaveAs,
             Command::ExportHtml,
+            Command::ExportWithPandoc,
             Command::Snapshot,
             Command::Quit,
         ],

@@ -7,6 +7,9 @@ Unicode true
 !ifndef SRCDIR
   !define SRCDIR "..\..\target\release"
 !endif
+!ifndef VENDORDIR
+  !define VENDORDIR "..\..\vendor\windows"
+!endif
 
 !define APPNAME "Markd"
 
@@ -30,6 +33,13 @@ UninstallIcon "..\\..\\assets\\icon.ico"
 Section "Install"
   SetOutPath "$INSTDIR"
   File "${SRCDIR}\markd.exe"
+  ; 随包分发 Pandoc：exe 同目录的 vendor\pandoc.exe 会被程序自动找到。
+  CreateDirectory "$INSTDIR\vendor\licenses"
+  SetOutPath "$INSTDIR\vendor"
+  File "${VENDORDIR}\pandoc.exe"
+  SetOutPath "$INSTDIR\vendor\licenses"
+  File "..\..\packaging\third-party\PANDOC-LICENSE.md"
+  SetOutPath "$INSTDIR"
   CreateShortCut "$SMPROGRAMS\Markd.lnk" "$INSTDIR\markd.exe"
   CreateShortCut "$DESKTOP\Markd.lnk" "$INSTDIR\markd.exe"
   WriteUninstaller "$INSTDIR\uninstall.exe"
@@ -41,6 +51,10 @@ SectionEnd
 
 Section "Uninstall"
   Delete "$INSTDIR\markd.exe"
+  Delete "$INSTDIR\vendor\pandoc.exe"
+  Delete "$INSTDIR\vendor\licenses\PANDOC-LICENSE.md"
+  RMDir "$INSTDIR\vendor\licenses"
+  RMDir "$INSTDIR\vendor"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   Delete "$SMPROGRAMS\Markd.lnk"

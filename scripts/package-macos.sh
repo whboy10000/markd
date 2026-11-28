@@ -23,6 +23,13 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 cargo build --release -p markd --target aarch64-apple-darwin
 cargo build --release -p markd --target x86_64-apple-darwin
 
+# 随包分发 Pandoc：用户下载后直接能用全部导出格式，无需自己安装。
+# 两个架构各取一份；universal 版在下面用 lipo 合成，跟主程序一致。
+./scripts/fetch-pandoc.sh macos
+mkdir -p vendor/macos-universal
+lipo -create vendor/macos-x86_64/pandoc vendor/macos-aarch64/pandoc \
+  -output vendor/macos-universal/pandoc
+
 mkdir -p target/release
 lipo -create \
   target/aarch64-apple-darwin/release/markd \
@@ -32,14 +39,17 @@ lipo -info target/release/markd-universal
 
 # 把单个架构的二进制打包成 .app + DMG。
 pack() {
-  local bin="$1" name="$2"
+  local bin="$1" name="$2" pandoc="$3"
   local APP="dist/Markd-$name.app"
   rm -rf "$APP" dist/dmg
-  mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+  mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/vendor" "$APP/Contents/Resources/vendor/licenses"
   cp "$bin" "$APP/Contents/MacOS/markd"
+  # 运行时从 Contents/MacOS/markd 找 ../Resources/vendor/pandoc（见 bundled_executable）。
+  cp "$pandoc" "$APP/Contents/Resources/vendor/pandoc"
+  cp packaging/third-party/PANDOC-LICENSE.md "$APP/Contents/Resources/vendor/licenses/PANDOC-LICENSE.md"
   sed "s/__VERSION__/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
   cp assets/morphe_aurora.icns "$APP/Contents/Resources/AppIcon.icns"
-  chmod +x "$APP/Contents/MacOS/markd"
+  chmod +x "$APP/Contents/MacOS/markd" "$APP/Contents/Resources/vendor/pandoc"
   codesign --force --deep --sign - "$APP" 2>/dev/null || true
   mkdir -p dist/dmg
   cp -R "$APP" dist/dmg/
@@ -50,9 +60,9 @@ pack() {
   echo "安装包：Markd-$VERSION-macos-$name.dmg"
 }
 
-pack target/x86_64-apple-darwin/release/markd intel
-pack target/aarch64-apple-darwin/release/markd apple-silicon
-pack target/release/markd-universal universal
+pack target/x86_64-apple-darwin/release/markd intel vendor/macos-x86_64/pandoc
+pack target/aarch64-apple-darwin/release/markd apple-silicon vendor/macos-aarch64/pandoc
+pack target/release/markd-universal universal vendor/macos-universal/pandoc
 
 # 留一份通用 .app 作为本机直接运行的入口（对齐旧版 dist/Markd.app 习惯）
 rm -rf dist/Markd.app

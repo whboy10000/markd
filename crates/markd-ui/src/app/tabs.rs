@@ -346,6 +346,36 @@ impl MarkdApp {
         }
     }
 
+    /// 用外部 pandoc 异步导出：源文、目标路径和参数都在进线程前克隆好，
+    /// 界面不需要等 pandoc 退出。重复点击会让旧任务作废。
+    /// 目标格式、可执行路径、额外参数都来自设置页。
+    pub(super) fn export_with_pandoc(&mut self, ctx: &egui::Context) {
+        let format = crate::pandoc::format_by_id(&self.config.pandoc_format)
+            .copied()
+            .unwrap_or_else(|| *crate::pandoc::format_by_id("html5").unwrap());
+        let target = match crate::pandoc::output_path(self.doc.path.as_deref(), &format) {
+            Ok(p) => p,
+            Err(e) => {
+                self.status = format!("确定导出路径失败：{e}");
+                return;
+            }
+        };
+        let request = crate::pandoc::PandocRequest {
+            source: self.doc.source(),
+            target: target.clone(),
+            executable: crate::pandoc::resolve_executable(&self.config.pandoc_path),
+            format,
+            extra_args: self
+                .config
+                .pandoc_extra_args
+                .split_whitespace()
+                .map(str::to_string)
+                .collect(),
+        };
+        self.pandoc.start(request, ctx);
+        self.status = format!("正在用 Pandoc 导出 {}…", format.label);
+    }
+
     pub(super) fn next_theme(&mut self) {
         let all = ThemeKind::ALL;
         let i = all

@@ -400,6 +400,20 @@ pub(super) fn toolbar_icon(painter: &egui::Painter, rect: egui::Rect, fg: Color3
             text("<>", 16.0, c);
         }
         "mermaid" => text("M", 21.0, c),
+        "pandoc" => {
+            // 一页纸 + 向下箭头：与 upload 的向上箭头对称，表示「导出成文件」。
+            painter.rect_stroke(
+                egui::Rect::from_center_size(c + egui::vec2(0.0, -4.0), egui::vec2(14.0, 12.0)),
+                egui::CornerRadius::same(1),
+                stroke,
+                egui::StrokeKind::Outside,
+            );
+            let top = c + egui::vec2(0.0, 0.0);
+            let bottom = c + egui::vec2(0.0, 10.0);
+            painter.line_segment([top, bottom], stroke);
+            painter.line_segment([bottom, c + egui::vec2(-4.0, 6.0)], stroke);
+            painter.line_segment([bottom, c + egui::vec2(4.0, 6.0)], stroke);
+        }
         "snapshot" => {
             painter.circle_stroke(c, 11.0, stroke);
             painter.line_segment([c, c + egui::vec2(0.0, -7.0)], stroke);

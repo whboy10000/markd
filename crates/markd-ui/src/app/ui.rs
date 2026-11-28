@@ -405,6 +405,7 @@ impl MarkdApp {
                                 let start = self.toolbar_tab == ToolbarTab::Start;
                                 let insert = self.toolbar_tab == ToolbarTab::Insert;
                                 let advanced = self.toolbar_tab == ToolbarTab::Advanced;
+                                let tools = self.toolbar_tab == ToolbarTab::Tools;
                                 // 盒子作为一组居中：横向布局不会替我们做主轴整体居中，
                                 // 所以按当前页的盒子数量算好总宽，先在左侧补空；放不下时补空为 0。
                                 let count = if start {
@@ -413,6 +414,8 @@ impl MarkdApp {
                                     15
                                 } else if advanced {
                                     3
+                                } else if tools {
+                                    1
                                 } else {
                                     0
                                 };
@@ -646,6 +649,24 @@ impl MarkdApp {
                                     }
                                 }
 
+                                // 「工具」页：Pandoc 导出。格式由设置页决定，
+                                // 点一下就按当前格式后台转换，不弹二次确认。
+                                if tools {
+                                    let fmt = crate::pandoc::format_by_id(&self.config.pandoc_format)
+                                        .copied()
+                                        .unwrap_or_else(|| {
+                                            *crate::pandoc::format_by_id("html5").unwrap()
+                                        });
+                                    let hover = format!(
+                                        "使用 Pandoc 导出为 {}（格式可在设置 → 导出里改）",
+                                        fmt.label
+                                    );
+                                    let r = toolbar_box(ui, "pandoc", "Pandoc 导出", &hover);
+                                    if r.clicked() {
+                                        chosen = Some(Command::ExportWithPandoc);
+                                    }
+                                }
+
                                 // 「查找和替换」留在开始页；快照 / 关系图 / 统计迁到「高级」选项卡。
                                 if start {
                                     let r = toolbar_box(ui, "search", "查找和替换", "查找和替换");
@@ -857,6 +878,9 @@ impl MarkdApp {
                     ))
                     .color(self.theme.dim),
                 );
+                if self.pandoc.is_busy() {
+                    ui.spinner();
+                }
                 if !self.status.is_empty() {
                     ui.label(RichText::new(&self.status).color(self.theme.accent));
                 }
