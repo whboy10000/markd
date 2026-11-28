@@ -37,9 +37,15 @@ extract_binary() {
   mkdir -p "$(dirname "$out")"
   case "$archive" in
     *.zip)
-      # 官方包成员带版本目录，本地缓存包可能不带：按提示名找，找不到就用同名裸文件。
+      # 官方包成员都带版本目录（如 pandoc-3.14/bin/pandoc.exe），本地缓存包
+      # 可能用 zip -j 压成裸文件名。按「精确 → 按 basename 后缀匹配」顺序找。
       if command -v unzip >/dev/null 2>&1; then
-        unzip -Z1 "$archive" | grep -qx "$member" || member="$(basename "$member_hint")"
+        local base
+        base="$(basename "$member_hint")"
+        if ! unzip -Z1 "$archive" | grep -qx "$member"; then
+          member="$(unzip -Z1 "$archive" | grep -E "(^|/)${base}$" | head -n 1)"
+        fi
+        test -n "$member" || { echo "归档里找不到 $base：$archive" >&2; exit 1; }
         unzip -p "$archive" "$member" > "$out.part"
       elif command -v powershell.exe >/dev/null 2>&1; then
         # Git Bash 未必带 unzip；Windows runner 一定有 PowerShell。
