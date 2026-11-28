@@ -18,7 +18,8 @@ impl MarkdApp {
             Command::Save => self.save(),
             Command::SaveAs => self.save_as(),
             Command::ExportHtml => self.export_html(),
-            Command::ExportWithPandoc => self.export_with_pandoc(ctx),
+            Command::ExportWithPandoc => self.open_pandoc_export_dialog(),
+            Command::ExportPdf => self.export_pdf(ctx),
             Command::Undo => {
                 if self.doc.undo() {
                     self.on_changed();

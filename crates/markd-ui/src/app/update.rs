@@ -68,6 +68,21 @@ impl eframe::App for MarkdApp {
                 Err(e) => self.status = format!("Pandoc 导出失败：{e}"),
             }
         }
+        // PDF 打印完成：与 Pandoc 同样走后台线程 + 代际取消。
+        if let Some(result) = self.pdf.poll(&ctx) {
+            match result {
+                Ok(path) => {
+                    self.status = format!("已导出 PDF：{}", path.display());
+                    if self.config.export_open_after {
+                        if let Err(e) = super::tabs::open_with_default_app(&path) {
+                            self.status = format!("已导出，但打开失败：{e}");
+                        }
+                    }
+                }
+                Err(e) if e == crate::pdf::CANCELLED => self.status.clear(),
+                Err(e) => self.status = format!("PDF 导出失败：{e}"),
+            }
+        }
         // 设置里的编辑器选项每帧同步到编辑器状态
         self.editor.tab_size = self.config.tab_size.max(1);
         self.editor.auto_pair = self.config.auto_pair;

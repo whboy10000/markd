@@ -136,6 +136,11 @@ const SEARCH: &[(&str, &str, Page)] = &[
         Page::Export,
     ),
     ("Pandoc 额外参数", "pandoc 参数 pdf-engine 命令行", Page::Export),
+    (
+        "PDF 打印浏览器路径",
+        "pdf 浏览器 chrome edge chromium 打印",
+        Page::Export,
+    ),
 ];
 
 /// 主题下拉的三档视图。「跟随系统」不是一个配色档，所以不塞进 `ThemeKind`，
@@ -1366,12 +1371,12 @@ impl Settings {
                     focus,
                     &mut cfg.export_open_after,
                 );
-                section(ui, theme, "Pandoc 导出", "后台转换，不阻塞编辑；格式在下拉里选。");
+                section(ui, theme, "Pandoc 导出", "后台转换，不阻塞编辑；点工具条按钮后在弹窗里选本次格式。");
                 changed |= row(
                     ui,
                     theme,
                     "Pandoc 输出格式",
-                    "决定文件扩展名和内容格式；菜单、工具条与命令面板共用这个选择。",
+                    "弹窗里的默认格式；每次导出仍可单独改，不写回这里。",
                     focus,
                     |ui| {
                         let current = crate::pandoc::format_by_id(&cfg.pandoc_format)
@@ -1419,6 +1424,14 @@ impl Settings {
                     "如 --pdf-engine=xelatex",
                     false,
                 );
+                changed |= host_row(
+                    ui,
+                    "PDF 打印浏览器路径",
+                    &mut cfg.pdf_browser_path,
+                    260.0,
+                    "留空自动检测 Chrome / Edge / Chromium",
+                    false,
+                );
                 if let Some(f) = crate::pandoc::format_by_id(&cfg.pandoc_format) {
                     if !f.hint.is_empty() {
                         ui.add_space(4.0);
@@ -1428,7 +1441,7 @@ impl Settings {
                 ui.add_space(6.0);
                 ui.label(
                     RichText::new(
-                        "PDF 由浏览器打印生成：先在 Markd 里导出 HTML，再用浏览器「打印 → 存储为 PDF」。",
+                        "PDF 由工具页「PDF 导出」直接生成：自包含 HTML 经浏览器无头打印，无需手动操作。",
                     )
                     .small(),
                 );

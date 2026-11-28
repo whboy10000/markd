@@ -415,7 +415,7 @@ impl MarkdApp {
                                 } else if advanced {
                                     3
                                 } else if tools {
-                                    1
+                                    2
                                 } else {
                                     0
                                 };
@@ -649,19 +649,20 @@ impl MarkdApp {
                                     }
                                 }
 
-                                // 「工具」页：Pandoc 导出。格式由设置页决定，
-                                // 点一下就按当前格式后台转换，不弹二次确认。
+                                // 「工具」页：PDF 导出（浏览器无头打印）与 Pandoc 格式选择弹窗。
                                 if tools {
-                                    let fmt = crate::pandoc::format_by_id(&self.config.pandoc_format)
-                                        .copied()
-                                        .unwrap_or_else(|| {
-                                            *crate::pandoc::format_by_id("html5").unwrap()
-                                        });
-                                    let hover = format!(
-                                        "使用 Pandoc 导出为 {}（格式可在设置 → 导出里改）",
-                                        fmt.label
+                                    let r = toolbar_box(
+                                        ui,
+                                        "pdf",
+                                        "PDF 导出",
+                                        "把当前文档打印成 PDF（自动检测 Chrome / Edge）",
                                     );
-                                    let r = toolbar_box(ui, "pandoc", "Pandoc 导出", &hover);
+                                    if r.clicked() {
+                                        chosen = Some(Command::ExportPdf);
+                                    }
+
+                                    let hover = "选择导出格式与保存位置（Word / PPT / HTML / PDF 等）";
+                                    let r = toolbar_box(ui, "pandoc", "Pandoc 导出", hover);
                                     if r.clicked() {
                                         chosen = Some(Command::ExportWithPandoc);
                                     }
@@ -878,7 +879,7 @@ impl MarkdApp {
                     ))
                     .color(self.theme.dim),
                 );
-                if self.pandoc.is_busy() {
+                if self.pandoc.is_busy() || self.pdf.is_busy() {
                     ui.spinner();
                 }
                 if !self.status.is_empty() {

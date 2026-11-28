@@ -33,6 +33,7 @@ mod lifecycle;
 pub(crate) mod menu;
 mod pandoc_export;
 mod paint;
+mod pdf_export;
 mod tabs;
 #[cfg(test)]
 mod tests;
@@ -205,6 +206,19 @@ struct HtmlDialog {
     focus_text: bool,
 }
 
+/// Pandoc 导出弹窗：左侧选输出格式，右侧定保存目录与文件名。
+/// 这里的格式选择是「本次导出」的独立设置，不改写偏好设置里的默认值。
+#[derive(Default)]
+struct PandocExportDialog {
+    open: bool,
+    /// 选中的格式 id（见 `crate::pandoc::FORMATS`）。
+    format_id: String,
+    /// 保存目录；空串表示用当前工作目录。
+    dir: String,
+    /// 不含扩展名的文件名。
+    name: String,
+}
+
 /// 一个标签页的完整文档状态。除活动标签外，其余标签的状态都暂存在这里，
 /// 切换时与 MarkdApp 上的 doc/editor/outline/stats 字段整体换出换入。
 struct TabState {
@@ -271,6 +285,8 @@ pub struct MarkdApp {
     attachment_dialog: AttachmentDialog,
     /// 插入 HTML 内嵌弹窗（span / div / hr / br）。
     html_dialog: HtmlDialog,
+    /// Pandoc 导出格式选择弹窗。
+    pandoc_dialog: PandocExportDialog,
     /// 后台下载附件的结果通道：地址自己留着，通道断开（线程意外退出）时好把
     /// 卡片上的「下载中…」摘掉，否则那一栏会永远挂着。
     file_downloads: Vec<(
@@ -279,6 +295,8 @@ pub struct MarkdApp {
     )>,
     /// Pandoc 导出任务：后台进程 + 代际取消，结果每帧回收。
     pandoc: pandoc_export::PandocExport,
+    /// PDF 打印任务：浏览器无头转换 + 代际取消。
+    pdf: pdf_export::PdfExport,
     link_docs: HashMap<String, Vec<String>>,
     /// 后台线程算好的链接图，算完通过它回传。
     link_rx: Option<std::sync::mpsc::Receiver<HashMap<String, Vec<String>>>>,

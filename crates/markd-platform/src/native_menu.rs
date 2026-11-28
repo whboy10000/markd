@@ -44,6 +44,7 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
     let m_save = mk(&mut map, "save", "保存", Command::Save);
     let m_save_as = mk(&mut map, "save_as", "另存为…", Command::SaveAs);
     let m_export = mk(&mut map, "export", "导出 HTML", Command::ExportHtml);
+    let m_export_pdf = mk(&mut map, "export_pdf", "导出 PDF", Command::ExportPdf);
     let m_export_pandoc = mk(
         &mut map,
         "export_pandoc",
@@ -69,6 +70,7 @@ pub fn install(ctx: &egui::Context) -> CommandQueue {
             &m_save,
             &m_save_as,
             &m_export,
+            &m_export_pdf,
             &m_export_pandoc,
             &m_snapshot,
             &m_quit2,

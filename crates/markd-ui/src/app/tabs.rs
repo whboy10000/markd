@@ -346,20 +346,60 @@ impl MarkdApp {
         }
     }
 
-    /// 用外部 pandoc 异步导出：源文、目标路径和参数都在进线程前克隆好，
-    /// 界面不需要等 pandoc 退出。重复点击会让旧任务作废。
-    /// 目标格式、可执行路径、额外参数都来自设置页。
-    pub(super) fn export_with_pandoc(&mut self, ctx: &egui::Context) {
+    /// 打开 Pandoc 导出弹窗。格式默认值来自设置页，目录与文件名来自当前文档；
+    /// 用户在弹窗里改的东西只作用于这一次导出。
+    pub(super) fn open_pandoc_export_dialog(&mut self) {
         let format = crate::pandoc::format_by_id(&self.config.pandoc_format)
             .copied()
             .unwrap_or_else(|| *crate::pandoc::format_by_id("html5").unwrap());
-        let target = match crate::pandoc::output_path(self.doc.path.as_deref(), &format) {
-            Ok(p) => p,
-            Err(e) => {
-                self.status = format!("确定导出路径失败：{e}");
-                return;
-            }
+        let (dir, name) = match self.doc.path.as_deref() {
+            Some(p) => (
+                p.parent()
+                    .map(|d| d.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                p.file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            ),
+            None => (String::new(), self.doc.title()),
         };
+        self.pandoc_dialog = PandocExportDialog {
+            open: true,
+            format_id: format.id.to_string(),
+            dir,
+            name,
+        };
+    }
+
+    /// 弹窗里填写的目录/文件名 → 实际落盘路径。扩展名始终由格式决定，
+    /// 文件名留空时用 `untitled`，目录留空时落到当前工作目录。
+    pub(super) fn pandoc_export_target(
+        dir: &str,
+        name: &str,
+        format: &crate::pandoc::ExportFormat,
+    ) -> PathBuf {
+        let base = if dir.trim().is_empty() {
+            PathBuf::from(".")
+        } else {
+            PathBuf::from(dir.trim())
+        };
+        let stem = name.trim();
+        base.join(format!(
+            "{}.{}",
+            if stem.is_empty() { "untitled" } else { stem },
+            format.ext
+        ))
+    }
+
+    /// 用外部 pandoc 异步导出：源文、目标路径和参数都在进线程前克隆好，
+    /// 界面不需要等 pandoc 退出。重复点击会让旧任务作废。
+    /// 格式与目标路径来自弹窗，可执行路径、额外参数来自设置页。
+    pub(super) fn export_with_pandoc(
+        &mut self,
+        ctx: &egui::Context,
+        format: crate::pandoc::ExportFormat,
+        target: PathBuf,
+    ) {
         let request = crate::pandoc::PandocRequest {
             source: self.doc.source(),
             target: target.clone(),
@@ -374,6 +414,39 @@ impl MarkdApp {
         };
         self.pandoc.start(request, ctx);
         self.status = format!("正在用 Pandoc 导出 {}…", format.label);
+    }
+
+    /// 导出 PDF：复用项目自己的 HTML 渲染，再交给本机浏览器无头打印。
+    /// 浏览器检测不到时直接给出可操作提示，不启动后台线程。
+    pub(super) fn export_pdf(&mut self, ctx: &egui::Context) {
+        let Some(engine) = crate::pdf::resolve_engine(&self.config.pdf_browser_path) else {
+            self.status = "找不到 Chrome / Edge / Chromium：请安装其一，或在「偏好设置 → 导出」里指定浏览器路径。".to_string();
+            return;
+        };
+        let target = match self.doc.path.as_deref() {
+            Some(p) => p.with_extension("pdf"),
+            None => match std::env::current_dir() {
+                Ok(d) => d.join("untitled.pdf"),
+                Err(e) => {
+                    self.status = format!("确定 PDF 导出路径失败：{e}");
+                    return;
+                }
+            },
+        };
+        let request = crate::pdf::PdfRequest {
+            source: self.doc.source(),
+            title: self.doc.title(),
+            target: target.clone(),
+            base_dir: self
+                .doc
+                .path
+                .as_deref()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf()),
+            engine: engine.to_string_lossy().to_string(),
+        };
+        self.pdf.start(request, ctx);
+        self.status = "正在生成 PDF…".to_string();
     }
 
     pub(super) fn next_theme(&mut self) {

@@ -159,7 +159,7 @@ pub const FORMATS: &[ExportFormat] = &[
         ext: "pdf",
         standalone: false,
         group: FormatGroup::Documents,
-        hint: "PDF 由 LaTeX/Typst 等引擎渲染，内置 Pandoc 不含这些引擎；失败时请在「偏好设置 → 导出」里指定 --pdf-engine。",
+        hint: "PDF 由 LaTeX/Typst 等引擎渲染，内置 Pandoc 不含这些引擎；不想装引擎请用工具页「PDF 导出」。",
     },
     // 网页
     ExportFormat {
